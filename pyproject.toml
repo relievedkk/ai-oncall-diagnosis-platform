@@ -30,6 +30,8 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.1",
     "fastmcp>=2.14.0",
     "langchain-qwq>=0.3.4",
+    "pypdf>=4.0.0",
+    "docx2txt>=0.8",
 ]
 
 [project.optional-dependencies]

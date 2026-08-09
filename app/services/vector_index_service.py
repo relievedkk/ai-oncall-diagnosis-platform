@@ -88,7 +88,9 @@ class VectorIndexService:
             result.directory_path = str(dir_path)
 
             # 获取所有支持的文件
-            files = list(dir_path.glob("*.txt")) + list(dir_path.glob("*.md"))
+            files = []
+            for ext in ["*.txt", "*.md", "*.pdf", "*.docx"]:
+                files.extend(dir_path.glob(ext))
 
             if not files:
                 logger.warning(f"目录中没有找到支持的文件: {target_path}")
@@ -147,16 +149,12 @@ class VectorIndexService:
         logger.info(f"开始索引文件: {path}")
 
         try:
-            # 1. 读取文件内容
-            content = path.read_text(encoding="utf-8")
-            logger.info(f"读取文件: {path}, 内容长度: {len(content)} 字符")
-
-            # 2. 删除该文件的旧数据（如果存在）
+            # 1. 删除该文件的旧数据（如果存在）
             normalized_path = path.as_posix()
             vector_store_manager.delete_by_source(normalized_path)
 
-            # 3. 使用新的文档分割器
-            documents = document_splitter_service.split_document(content, normalized_path)
+            # 2. 文档分割（splitter 内部根据文件类型选择处理器加载和分片）
+            documents = document_splitter_service.split_document(normalized_path)
             logger.info(f"文档分割完成: {file_path} -> {len(documents)} 个分片")
 
             # 4. 添加文档到向量存储

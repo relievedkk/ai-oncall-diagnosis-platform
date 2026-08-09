@@ -3,172 +3,192 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ====================================
-echo Æô¶¯ SuperBizAgent ·þÎñ
+echo ï¿½ï¿½ï¿½ï¿½ SuperBizAgent ï¿½ï¿½ï¿½ï¿½
 echo ====================================
 echo.
 
-REM ¼ì²é uv ÊÇ·ñ°²×°£¨¿ÉÑ¡£¬Èç¹ûÃ»ÓÐ»áÊ¹ÓÃ pip£©
-echo [1/6] ¼ì²é°ü¹ÜÀíÆ÷...
+REM ï¿½ï¿½ï¿½ uv ï¿½Ç·ï¿½×°ï¿½ï¿½ï¿½ï¿½Ñ¡ï¿½ï¿½ï¿½ï¿½ï¿½Ã»ï¿½Ð»ï¿½Ê¹ï¿½ï¿½ pipï¿½ï¿½
+echo [1/6] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
 where uv >nul 2>&1
 if errorlevel 1 (
-    echo [ÐÅÏ¢] uv Î´°²×°£¬½«Ê¹ÓÃ´«Í³ pip ·½Ê½
-    echo [ÌáÊ¾] °²×° uv ¿ÉÌáÉýËÙ¶È£ºpip install uv
+    echo [ï¿½ï¿½Ï¢] uv Î´ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½Ã´ï¿½Í³ pip ï¿½ï¿½Ê½
+    echo [ï¿½ï¿½Ê¾] ï¿½ï¿½×° uv ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ù¶È£ï¿½pip install uv
     set USE_UV=0
 ) else (
-    echo [³É¹¦] ¼ì²âµ½ uv °ü¹ÜÀíÆ÷
+    echo [ï¿½É¹ï¿½] ï¿½ï¿½âµ½ uv ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     set USE_UV=1
 )
 echo.
 
-REM È·±£ Python °æ±¾ÕýÈ·
-echo [2/6] ÅäÖÃ Python °æ±¾...
+REM È·ï¿½ï¿½ Python ï¿½æ±¾ï¿½ï¿½È·
+echo [2/6] ï¿½ï¿½ï¿½ï¿½ Python ï¿½æ±¾...
 if exist .python-version (
     set /p PYTHON_VERSION=<.python-version
-    echo [ÐÅÏ¢] µ±Ç°ÅäÖÃ°æ±¾: !PYTHON_VERSION!
+    echo [ï¿½ï¿½Ï¢] ï¿½ï¿½Ç°ï¿½ï¿½ï¿½Ã°æ±¾: !PYTHON_VERSION!
     
-    REM ¼ì²éÊÇ·ñÎª 3.10£¨²»¼æÈÝ£©
+    REM ï¿½ï¿½ï¿½ï¿½Ç·ï¿½Îª 3.10ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý£ï¿½
     echo !PYTHON_VERSION! | findstr /C:"3.10" >nul
     if not errorlevel 1 (
-        echo [¾¯¸æ] Python 3.10 ²»¼æÈÝ£¬×Ô¶¯¸üÐÂµ½ 3.13...
+        echo [ï¿½ï¿½ï¿½ï¿½] Python 3.10 ï¿½ï¿½ï¿½ï¿½ï¿½Ý£ï¿½ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½Âµï¿½ 3.13...
         echo 3.13> .python-version
-        echo [³É¹¦] ÒÑ¸üÐÂµ½ Python 3.13
+        echo [ï¿½É¹ï¿½] ï¿½Ñ¸ï¿½ï¿½Âµï¿½ Python 3.13
     )
 ) else (
-    echo [ÐÅÏ¢] ´´½¨ .python-version ÎÄ¼þ...
+    echo [ï¿½ï¿½Ï¢] ï¿½ï¿½ï¿½ï¿½ .python-version ï¿½Ä¼ï¿½...
     echo 3.13> .python-version
 )
 echo.
 
-REM ´´½¨»òÍ¬²½ÐéÄâ»·¾³
-echo [3/6] ´´½¨/Í¬²½ÐéÄâ»·¾³...
+REM ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¬ï¿½ï¿½ï¿½ï¿½ï¿½â»·ï¿½ï¿½
+echo [3/6] ï¿½ï¿½ï¿½ï¿½/Í¬ï¿½ï¿½ï¿½ï¿½ï¿½â»·ï¿½ï¿½...
 if exist .venv\Scripts\python.exe (
-    echo [ÐÅÏ¢] ÐéÄâ»·¾³ÒÑ´æÔÚ£¬¼ì²é¸üÐÂ...
+    echo [ï¿½ï¿½Ï¢] ï¿½ï¿½ï¿½â»·ï¿½ï¿½ï¿½Ñ´ï¿½ï¿½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
     
-    REM Èç¹ûÓÐ uv£¬³¢ÊÔÊ¹ÓÃ uv sync
+    REM ï¿½ï¿½ï¿½ï¿½ï¿½ uvï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ uv sync
     if "%USE_UV%"=="1" (
         uv sync 2>nul
         if errorlevel 1 (
-            echo [¾¯¸æ] uv sync Ê§°Ü£¬Ê¹ÓÃ pip ¸üÐÂ...
+            echo [ï¿½ï¿½ï¿½ï¿½] uv sync Ê§ï¿½Ü£ï¿½Ê¹ï¿½ï¿½ pip ï¿½ï¿½ï¿½ï¿½...
             .venv\Scripts\python.exe -m pip install -e . -q
         ) else (
-            echo [³É¹¦] Ê¹ÓÃ uv Í¬²½Íê³É
+            echo [ï¿½É¹ï¿½] Ê¹ï¿½ï¿½ uv Í¬ï¿½ï¿½ï¿½ï¿½ï¿½
         )
     ) else (
-        echo [ÐÅÏ¢] Ê¹ÓÃ pip ¸üÐÂÒÀÀµ...
+        echo [ï¿½ï¿½Ï¢] Ê¹ï¿½ï¿½ pip ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
         .venv\Scripts\python.exe -m pip install -e . -q
     )
 ) else (
-    echo [ÐÅÏ¢] ´´½¨ÐÂµÄÐéÄâ»·¾³...
+    echo [ï¿½ï¿½Ï¢] ï¿½ï¿½ï¿½ï¿½ï¿½Âµï¿½ï¿½ï¿½ï¿½â»·ï¿½ï¿½...
     
-    REM Èç¹ûÓÐ uv£¬³¢ÊÔÊ¹ÓÃ uv sync
+    REM ï¿½ï¿½ï¿½ï¿½ï¿½ uvï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ uv sync
     if "%USE_UV%"=="1" (
-        echo [ÐÅÏ¢] ³¢ÊÔÊ¹ÓÃ uv sync ´´½¨...
+        echo [ï¿½ï¿½Ï¢] ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ uv sync ï¿½ï¿½ï¿½ï¿½...
         uv sync 2>nul
         if not errorlevel 1 (
-            echo [³É¹¦] Ê¹ÓÃ uv ´´½¨Íê³É
+            echo [ï¿½É¹ï¿½] Ê¹ï¿½ï¿½ uv ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
             goto :venv_created
         )
-        echo [¾¯¸æ] uv sync Ê§°Ü£¬»ØÍËµ½´«Í³·½Ê½...
+        echo [ï¿½ï¿½ï¿½ï¿½] uv sync Ê§ï¿½Ü£ï¿½ï¿½ï¿½ï¿½Ëµï¿½ï¿½ï¿½Í³ï¿½ï¿½Ê½...
     )
     
-    REM Ê¹ÓÃ´«Í³ Python venv ´´½¨
-    echo [ÐÅÏ¢] Ê¹ÓÃ python -m venv ´´½¨...
+    REM Ê¹ï¿½Ã´ï¿½Í³ Python venv ï¿½ï¿½ï¿½ï¿½
+    echo [ï¿½ï¿½Ï¢] Ê¹ï¿½ï¿½ python -m venv ï¿½ï¿½ï¿½ï¿½...
     python -m venv .venv
     if errorlevel 1 (
-        echo [´íÎó] ÐéÄâ»·¾³´´½¨Ê§°Ü
-        echo [ÌáÊ¾] ÇëÈ·±£ÒÑ°²×° Python 3.11+
+        echo [ï¿½ï¿½ï¿½ï¿½] ï¿½ï¿½ï¿½â»·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½
+        echo [ï¿½ï¿½Ê¾] ï¿½ï¿½È·ï¿½ï¿½ï¿½Ñ°ï¿½×° Python 3.11+
         pause
         exit /b 1
     )
     
-    REM °²×°ÒÀÀµ
-    echo [ÐÅÏ¢] °²×°ÏîÄ¿ÒÀÀµ£¨Õâ¿ÉÄÜÐèÒª¼¸·ÖÖÓ£©...
+    REM ï¿½ï¿½×°ï¿½ï¿½ï¿½ï¿½
+    echo [ï¿½ï¿½Ï¢] ï¿½ï¿½×°ï¿½ï¿½Ä¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òªï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½...
     .venv\Scripts\python.exe -m pip install --upgrade pip -q
     .venv\Scripts\python.exe -m pip install -e . -q
     if errorlevel 1 (
-        echo [´íÎó] ÒÀÀµ°²×°Ê§°Ü
+        echo [ï¿½ï¿½ï¿½ï¿½] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×°Ê§ï¿½ï¿½
         pause
         exit /b 1
     )
-    echo [³É¹¦] ÐéÄâ»·¾³´´½¨Íê³É
+    echo [ï¿½É¹ï¿½] ï¿½ï¿½ï¿½â»·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 )
 
 :venv_created
-echo [³É¹¦] ÐéÄâ»·¾³¾ÍÐ÷
+echo [ï¿½É¹ï¿½] ï¿½ï¿½ï¿½â»·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 echo.
 
-REM ÉèÖÃ Python ÃüÁî
+REM ï¿½ï¿½ï¿½ï¿½ Python ï¿½ï¿½ï¿½ï¿½
 set PYTHON_CMD=.venv\Scripts\python.exe
 
-REM Æô¶¯ Docker Compose
-echo [4/6] Æô¶¯ Milvus ÏòÁ¿Êý¾Ý¿â...
+REM ï¿½ï¿½ï¿½ï¿½ Docker Compose
+echo [4/6] ï¿½ï¿½ï¿½ï¿½ Milvus ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý¿ï¿½...
 docker ps --format "{{.Names}}" | findstr "milvus-standalone" >nul 2>&1
 if not errorlevel 1 (
-    echo [ÐÅÏ¢] Milvus ÈÝÆ÷ÒÑÔÚÔËÐÐ
+    echo [ï¿½ï¿½Ï¢] Milvus ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ) else (
     docker compose -f vector-database.yml up -d
     if errorlevel 1 (
-        echo [´íÎó] Docker Æô¶¯Ê§°Ü£¬ÇëÈ·±£ Docker Desktop ÒÑÆô¶¯
+        echo [ï¿½ï¿½ï¿½ï¿½] Docker ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½ï¿½ï¿½È·ï¿½ï¿½ Docker Desktop ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         pause
         exit /b 1
     )
-    echo [ÐÅÏ¢] µÈ´ý Milvus Æô¶¯£¨10Ãë£©...
+    echo [ï¿½ï¿½Ï¢] ï¿½È´ï¿½ Milvus ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½10ï¿½ë£©...
     timeout /t 10 /nobreak >nul
 )
-echo [³É¹¦] Milvus Êý¾Ý¿â¾ÍÐ÷
+echo [ï¿½É¹ï¿½] Milvus ï¿½ï¿½ï¿½Ý¿ï¿½ï¿½ï¿½ï¿½
 echo.
 
-REM Æô¶¯ CLS MCP ·þÎñ
-echo [5/6] Æô¶¯ CLS MCP ·þÎñ...
-start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
-timeout /t 2 /nobreak >nul
-echo [³É¹¦] CLS MCP ·þÎñÒÑÆô¶¯
+REM ï¿½ï¿½ï¿½ï¿½ CLS MCP ï¿½ï¿½ï¿½ï¿½
+echo [5/6] ï¿½ï¿½ï¿½ï¿½ CLS MCP ï¿½ï¿½ï¿½ï¿½...
+REM Read Tencent Cloud CLS credentials from .env
+set CLS_SECRET_ID=
+set CLS_SECRET_KEY=
+for /f "usebackq tokens=1,2 delims==" %%a in (".env") do (
+    if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
+    if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
+)
+REM Check Node.js and start official CLS MCP Server (or fallback to local mock)
+where npx >nul 2>&1
+if errorlevel 1 (
+    echo [WARNING] Node.js/npx not found, falling back to local mock CLS
+    start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
+    timeout /t 2 /nobreak >nul
+) else if "!CLS_SECRET_ID!"=="" (
+    echo [WARNING] TENCENTCLOUD_SECRET_ID not in .env, falling back to local mock CLS
+    start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
+    timeout /t 2 /nobreak >nul
+) else (
+    start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!&&set TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@latest"
+    echo [INFO] Waiting for official CLS MCP Server (first run downloads package, ~15-20s)...
+    timeout /t 15 /nobreak >nul
+)
+echo [ï¿½É¹ï¿½] CLS MCP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 echo.
 
-REM Æô¶¯ Monitor MCP ·þÎñ
-echo [6/6] Æô¶¯ Monitor MCP ·þÎñ...
+REM ï¿½ï¿½ï¿½ï¿½ Monitor MCP ï¿½ï¿½ï¿½ï¿½
+echo [6/6] ï¿½ï¿½ï¿½ï¿½ Monitor MCP ï¿½ï¿½ï¿½ï¿½...
 start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
 timeout /t 2 /nobreak >nul
-echo [³É¹¦] Monitor MCP ·þÎñÒÑÆô¶¯
+echo [ï¿½É¹ï¿½] Monitor MCP ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 echo.
 
-REM Æô¶¯ FastAPI ·þÎñ
-echo [7/8] Æô¶¯ FastAPI ·þÎñ...
+REM ï¿½ï¿½ï¿½ï¿½ FastAPI ï¿½ï¿½ï¿½ï¿½
+echo [7/8] ï¿½ï¿½ï¿½ï¿½ FastAPI ï¿½ï¿½ï¿½ï¿½...
 start "SuperBizAgent API" %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
-echo [ÐÅÏ¢] µÈ´ý·þÎñÆô¶¯£¨15Ãë£©...
+echo [ï¿½ï¿½Ï¢] ï¿½È´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½15ï¿½ë£©...
 timeout /t 15 /nobreak >nul
 echo.
 
-REM ¼ì²é·þÎñ×´Ì¬²¢ÉÏ´«ÎÄµµ
+REM ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½Ï´ï¿½ï¿½Äµï¿½
 echo.
-echo [ÐÅÏ¢] ¼ì²é·þÎñ×´Ì¬...
+echo [ï¿½ï¿½Ï¢] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´Ì¬...
 curl -s http://localhost:9900/health >nul 2>&1
 if errorlevel 1 (
-    echo [¾¯¸æ] ·þÎñ¿ÉÄÜ»¹Î´ÍêÈ«Æô¶¯£¬ÇëÉÔµÈÆ¬¿Ì
+    echo [ï¿½ï¿½ï¿½ï¿½] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü»ï¿½Î´ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ôµï¿½Æ¬ï¿½ï¿½
 ) else (
-    echo [³É¹¦] FastAPI ·þÎñÔËÐÐÕý³£
+    echo [ï¿½É¹ï¿½] FastAPI ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     echo.
     
-    REM µ÷ÓÃ API ÉÏ´« aiops-docs ÎÄµµµ½ÏòÁ¿Êý¾Ý¿â
-    echo [8/8] ÉÏ´«ÎÄµµµ½ÏòÁ¿Êý¾Ý¿â...
+    REM ï¿½ï¿½ï¿½ï¿½ API ï¿½Ï´ï¿½ aiops-docs ï¿½Äµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý¿ï¿½
+    echo [8/8] ï¿½Ï´ï¿½ï¿½Äµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý¿ï¿½...
     for %%f in (aiops-docs\*.md) do (
-        echo   ÉÏ´«: %%~nxf
+        echo   ï¿½Ï´ï¿½: %%~nxf
         curl -s -X POST http://localhost:9900/api/upload -F "file=@%%f" >nul 2>&1
     )
-    echo [³É¹¦] ÎÄµµÉÏ´«Íê³É
+    echo [ï¿½É¹ï¿½] ï¿½Äµï¿½ï¿½Ï´ï¿½ï¿½ï¿½ï¿½
 )
 
 echo.
 echo ====================================
-echo ·þÎñÆô¶¯Íê³É£¡
+echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½
 echo ====================================
-echo Web ½çÃæ: http://localhost:9900
-echo API ÎÄµµ: http://localhost:9900/docs
+echo Web ï¿½ï¿½ï¿½ï¿½: http://localhost:9900
+echo API ï¿½Äµï¿½: http://localhost:9900/docs
 echo.
-echo ²é¿´ÈÕÖ¾:
-echo   - FastAPI: logs\app_*.log£¨Loguru ÈÕÖ¾£¬°´ÌìÂÖ×ª£©
+echo ï¿½é¿´ï¿½ï¿½Ö¾:
+echo   - FastAPI: logs\app_*.logï¿½ï¿½Loguru ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×ªï¿½ï¿½
 echo   - CLS MCP: type mcp_cls.log
 echo   - Monitor: type mcp_monitor.log
-echo Í£Ö¹·þÎñ: stop-windows.bat
+echo Í£Ö¹ï¿½ï¿½ï¿½ï¿½: stop-windows.bat
 echo ====================================
 pause
