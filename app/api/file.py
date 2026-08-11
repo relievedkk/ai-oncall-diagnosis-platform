@@ -1,5 +1,6 @@
 """文件上传接口模块"""
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -112,7 +113,7 @@ async def index_directory(directory_path: str = None):
         logger.info(f"开始索引目录: {directory_path or 'uploads'}")
 
         # 执行索引
-        result = vector_index_service.index_directory(directory_path)
+        result = await asyncio.to_thread(vector_index_service.index_directory, directory_path)
 
         return JSONResponse(
             status_code=200,

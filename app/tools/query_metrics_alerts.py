@@ -61,7 +61,7 @@ def calculate_duration(active_at_str: str) -> str:
     return f"{seconds}s"
 
 
-def query_prometheus_alerts_api() -> tuple[dict[str, Any], str | None]:
+async def query_prometheus_alerts_api() -> tuple[dict[str, Any], str | None]:
     """请求 `GET {prometheus_base_url}/api/v1/alerts`。
 
     返回 (JSON 体, 错误信息)。成功时第二项为 None；HTTP 或 JSON 解析失败时第一项为空 dict。
@@ -70,8 +70,8 @@ def query_prometheus_alerts_api() -> tuple[dict[str, Any], str | None]:
     api_url = f"{base_url}{ALERTS_API_PATH}"
     logger.info("Querying Prometheus alerts: {}", api_url)
     try:
-        with httpx.Client(timeout=config.prometheus_request_timeout) as client:
-            resp = client.get(api_url)
+        async with httpx.AsyncClient(timeout=config.prometheus_request_timeout) as client:
+            resp = await client.get(api_url)
             resp.raise_for_status()
             body = resp.json()
     except httpx.HTTPError as e:
@@ -155,7 +155,7 @@ def _simplify_alerts(result: dict[str, Any]) -> tuple[list[dict[str, Any]], dict
 
 
 @tool
-def query_prometheus_alerts() -> str:
+async def query_prometheus_alerts() -> str:
     """查询 Prometheus 服务端当前活动告警（HTTP GET /api/v1/alerts）。
 
     适用场景：用户关心「有没有告警」「哪些规则在 firing/pending」「最近触发了什么告警」
@@ -172,7 +172,7 @@ def query_prometheus_alerts() -> str:
     Returns:
         str: JSON 字符串。成功时含告警列表与状态统计；失败时含 success=false 与 error。
     """
-    result, err = query_prometheus_alerts_api()
+    result, err = await query_prometheus_alerts_api()
     if err:
         out = {
             "success": False,

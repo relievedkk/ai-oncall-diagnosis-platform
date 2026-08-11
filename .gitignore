@@ -28,6 +28,7 @@ ENV/
 
 # uv
 .uv/
+.python-version
 
 # Poetry (legacy)
 poetry.lock

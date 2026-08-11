@@ -1,125 +1,124 @@
 @echo off
-chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ====================================
-echo ���� SuperBizAgent ����
+echo  Start SuperBizAgent Services
 echo ====================================
 echo.
 
-REM ��� uv �Ƿ�װ����ѡ�����û�л�ʹ�� pip��
-echo [1/6] ����������...
+REM Check if uv is installed (optional, fall back to pip if not)
+echo [1/8] Checking environment...
 where uv >nul 2>&1
 if errorlevel 1 (
-    echo [��Ϣ] uv δ��װ����ʹ�ô�ͳ pip ��ʽ
-    echo [��ʾ] ��װ uv �������ٶȣ�pip install uv
+    echo [INFO] uv not installed, using traditional pip mode
+    echo [TIP] Install uv for faster setup: pip install uv
     set USE_UV=0
 ) else (
-    echo [�ɹ�] ��⵽ uv ��������
+    echo [OK] uv detected, will use it
     set USE_UV=1
 )
 echo.
 
-REM ȷ�� Python �汾��ȷ
-echo [2/6] ���� Python �汾...
+REM Ensure correct Python version
+echo [2/8] Checking Python version...
 if exist .python-version (
     set /p PYTHON_VERSION=<.python-version
-    echo [��Ϣ] ��ǰ���ð汾: !PYTHON_VERSION!
-    
-    REM ����Ƿ�Ϊ 3.10�������ݣ�
+    echo [INFO] Current pinned version: !PYTHON_VERSION!
+
+    REM Check if it is 3.10 (incompatible)
     echo !PYTHON_VERSION! | findstr /C:"3.10" >nul
     if not errorlevel 1 (
-        echo [����] Python 3.10 �����ݣ��Զ����µ� 3.13...
+        echo [WARN] Python 3.10 is incompatible, auto-upgrading to 3.13...
         echo 3.13> .python-version
-        echo [�ɹ�] �Ѹ��µ� Python 3.13
+        echo [OK] Updated to Python 3.13
     )
 ) else (
-    echo [��Ϣ] ���� .python-version �ļ�...
+    echo [INFO] Creating .python-version file...
     echo 3.13> .python-version
 )
 echo.
 
-REM ������ͬ�����⻷��
-echo [3/6] ����/ͬ�����⻷��...
+REM Create or sync virtual environment
+echo [3/8] Creating/syncing virtual environment...
 if exist .venv\Scripts\python.exe (
-    echo [��Ϣ] ���⻷���Ѵ��ڣ�������...
-    
-    REM ����� uv������ʹ�� uv sync
+    echo [INFO] Virtual environment exists, syncing...
+
+    REM If uv is available, use uv sync
     if "%USE_UV%"=="1" (
         uv sync 2>nul
         if errorlevel 1 (
-            echo [����] uv sync ʧ�ܣ�ʹ�� pip ����...
+            echo [WARN] uv sync failed, retrying with pip...
             .venv\Scripts\python.exe -m pip install -e . -q
         ) else (
-            echo [�ɹ�] ʹ�� uv ͬ�����
+            echo [OK] Dependencies synced with uv
         )
     ) else (
-        echo [��Ϣ] ʹ�� pip ��������...
+        echo [INFO] Using pip to update dependencies...
         .venv\Scripts\python.exe -m pip install -e . -q
     )
 ) else (
-    echo [��Ϣ] �����µ����⻷��...
-    
-    REM ����� uv������ʹ�� uv sync
+    echo [INFO] Creating new virtual environment...
+
+    REM If uv is available, use uv sync
     if "%USE_UV%"=="1" (
-        echo [��Ϣ] ����ʹ�� uv sync ����...
+        echo [INFO] Trying uv sync to create venv...
         uv sync 2>nul
         if not errorlevel 1 (
-            echo [�ɹ�] ʹ�� uv �������
+            echo [OK] Venv created with uv
             goto :venv_created
         )
-        echo [����] uv sync ʧ�ܣ����˵���ͳ��ʽ...
+        echo [WARN] uv sync failed, falling back to traditional mode...
     )
-    
-    REM ʹ�ô�ͳ Python venv ����
-    echo [��Ϣ] ʹ�� python -m venv ����...
+
+    REM Use traditional Python venv
+    echo [INFO] Using python -m venv to create...
     python -m venv .venv
     if errorlevel 1 (
-        echo [����] ���⻷������ʧ��
-        echo [��ʾ] ��ȷ���Ѱ�װ Python 3.11+
+        echo [ERROR] Virtual environment creation failed
+        echo [TIP] Make sure Python 3.11+ is installed
         pause
         exit /b 1
     )
-    
-    REM ��װ����
-    echo [��Ϣ] ��װ��Ŀ�������������Ҫ�����ӣ�...
+
+    REM Install dependencies
+    echo [INFO] Installing project dependencies ^(may take a while^)...
     .venv\Scripts\python.exe -m pip install --upgrade pip -q
     .venv\Scripts\python.exe -m pip install -e . -q
     if errorlevel 1 (
-        echo [����] ������װʧ��
+        echo [ERROR] Dependency installation failed
         pause
         exit /b 1
     )
-    echo [�ɹ�] ���⻷���������
+    echo [OK] Virtual environment created
 )
 
 :venv_created
-echo [�ɹ�] ���⻷������
+echo [OK] Virtual environment ready
 echo.
 
-REM ���� Python ����
+REM Set Python command
 set PYTHON_CMD=.venv\Scripts\python.exe
 
-REM ���� Docker Compose
-echo [4/6] ���� Milvus �������ݿ�...
+REM Start Docker Compose (Milvus)
+echo [4/8] Starting Milvus vector database...
 docker ps --format "{{.Names}}" | findstr "milvus-standalone" >nul 2>&1
 if not errorlevel 1 (
-    echo [��Ϣ] Milvus ������������
+    echo [INFO] Milvus is already running
 ) else (
     docker compose -f vector-database.yml up -d
     if errorlevel 1 (
-        echo [����] Docker ����ʧ�ܣ���ȷ�� Docker Desktop ������
+        echo [ERROR] Docker startup failed, make sure Docker Desktop is running
         pause
         exit /b 1
     )
-    echo [��Ϣ] �ȴ� Milvus ������10�룩...
+    echo [INFO] Waiting for Milvus to be ready ^(10s^)...
     timeout /t 10 /nobreak >nul
 )
-echo [�ɹ�] Milvus ���ݿ����
+echo [OK] Milvus database ready
 echo.
 
-REM ���� CLS MCP ����
-echo [5/6] ���� CLS MCP ����...
+REM Start CLS MCP service
+echo [5/8] Starting CLS MCP service...
 REM Read Tencent Cloud CLS credentials from .env
 set CLS_SECRET_ID=
 set CLS_SECRET_KEY=
@@ -139,56 +138,56 @@ if errorlevel 1 (
     timeout /t 2 /nobreak >nul
 ) else (
     start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!&&set TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@latest"
-    echo [INFO] Waiting for official CLS MCP Server (first run downloads package, ~15-20s)...
+    echo [INFO] Waiting for official CLS MCP Server ^(first run downloads package, ~15-20s^)...
     timeout /t 15 /nobreak >nul
 )
-echo [�ɹ�] CLS MCP ����������
+echo [OK] CLS MCP service started
 echo.
 
-REM ���� Monitor MCP ����
-echo [6/6] ���� Monitor MCP ����...
+REM Start Monitor MCP service
+echo [6/8] Starting Monitor MCP service...
 start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
 timeout /t 2 /nobreak >nul
-echo [�ɹ�] Monitor MCP ����������
+echo [OK] Monitor MCP service started
 echo.
 
-REM ���� FastAPI ����
-echo [7/8] ���� FastAPI ����...
+REM Start FastAPI service
+echo [7/8] Starting FastAPI service...
 start "SuperBizAgent API" %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
-echo [��Ϣ] �ȴ�����������15�룩...
+echo [INFO] Waiting for service to start (15s)...
 timeout /t 15 /nobreak >nul
 echo.
 
-REM ������״̬���ϴ��ĵ�
+REM Check service status and upload documents
 echo.
-echo [��Ϣ] ������״̬...
+echo [INFO] Checking service status...
 curl -s http://localhost:9900/health >nul 2>&1
 if errorlevel 1 (
-    echo [����] ������ܻ�δ��ȫ���������Ե�Ƭ��
+    echo [ERROR] Service may not be fully started, please wait a moment
 ) else (
-    echo [�ɹ�] FastAPI ������������
+    echo [OK] FastAPI service is running
     echo.
-    
-    REM ���� API �ϴ� aiops-docs �ĵ����������ݿ�
-    echo [8/8] �ϴ��ĵ����������ݿ�...
+
+    REM Use API to upload aiops-docs documents into vector database
+    echo [8/8] Uploading documents to vector database...
     for %%f in (aiops-docs\*.md) do (
-        echo   �ϴ�: %%~nxf
+        echo   Uploading: %%~nxf
         curl -s -X POST http://localhost:9900/api/upload -F "file=@%%f" >nul 2>&1
     )
-    echo [�ɹ�] �ĵ��ϴ����
+    echo [OK] Document upload complete
 )
 
 echo.
 echo ====================================
-echo ����������ɣ�
+echo  All services started!
 echo ====================================
-echo Web ����: http://localhost:9900
-echo API �ĵ�: http://localhost:9900/docs
+echo Web UI:   http://localhost:9900
+echo API docs: http://localhost:9900/docs
 echo.
-echo �鿴��־:
-echo   - FastAPI: logs\app_*.log��Loguru ��־��������ת��
+echo View logs:
+echo   - FastAPI: logs\app_*.log (Loguru, auto-rotated)
 echo   - CLS MCP: type mcp_cls.log
 echo   - Monitor: type mcp_monitor.log
-echo ֹͣ����: stop-windows.bat
+echo Stop services: stop-windows.bat
 echo ====================================
 pause
