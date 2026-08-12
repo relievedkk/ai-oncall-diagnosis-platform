@@ -12,8 +12,9 @@ import os
 
 from app.config import config
 from loguru import logger
-from app.api import chat, health, file, aiops
+from app.api import chat, health, file, aiops, metrics
 from app.core.milvus_client import milvus_manager
+from app.core.auth import ApiKeyMiddleware
 
 
 @asynccontextmanager
@@ -49,17 +50,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 配置 CORS
+# 配置中间件
+# 注册顺序：后注册者先执行（Starlette 栈式）。CORS 最外层处理预检，ApiKey 次之校验受保护路由
+app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制具体域名
-    allow_credentials=True,
+    allow_origins=["*"],  # 生产环境应限制具体域名
+    allow_credentials=False,  # API Key 模式无需 cookie 凭据；与 allow_origins=["*"] 共存时必须为 False
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # 注册路由
 app.include_router(health.router, tags=["健康检查"])
+app.include_router(metrics.router, tags=["监控指标"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])

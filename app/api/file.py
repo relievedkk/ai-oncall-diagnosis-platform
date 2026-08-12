@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.services.vector_index_service import vector_index_service
+from app.core.auth import is_path_allowed
 from loguru import logger
 
 router = APIRouter()
@@ -103,6 +104,9 @@ async def index_directory(directory_path: str = None):
     """
     索引指定目录下的所有文件
 
+    安全限制：仅允许索引配置项 ALLOWED_INDEX_ROOTS 中的目录子树，
+    防止任意路径读取。
+
     Args:
         directory_path: 目录路径（可选，默认使用 uploads 目录）
 
@@ -110,7 +114,16 @@ async def index_directory(directory_path: str = None):
         JSONResponse: 索引结果
     """
     try:
-        logger.info(f"开始索引目录: {directory_path or 'uploads'}")
+        target = directory_path if directory_path else "uploads"
+
+        if not is_path_allowed(target):
+            logger.warning(f"索引目录被拒绝（不在白名单内）: {target}")
+            raise HTTPException(
+                status_code=403,
+                detail="目标目录不在允许的索引范围内",
+            )
+
+        logger.info(f"开始索引目录: {target}")
 
         # 执行索引
         result = await asyncio.to_thread(vector_index_service.index_directory, directory_path)

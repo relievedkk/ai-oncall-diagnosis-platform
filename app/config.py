@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     prometheus_base_url: str = "http://127.0.0.1:9090"
     prometheus_request_timeout: float = 10.0
 
+    # 安全配置
+    # API Key 认证：为空且 auth_enabled=True 时拒绝所有受保护请求（防误配裸奔）
+    api_key: str = ""
+    auth_enabled: bool = True
+    # 允许索引的根目录（逗号分隔），index_directory 仅允许访问这些目录的子树
+    allowed_index_roots: str = "uploads,aiops-docs"
+
+    @property
+    def allowed_index_root_list(self) -> list[str]:
+        """解析允许的索引根目录列表。"""
+        return [r.strip() for r in self.allowed_index_roots.split(",") if r.strip()]
+
     @property
     def mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""

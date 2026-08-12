@@ -25,7 +25,7 @@ if errorlevel 1 (
 echo.
 
 REM Stop Monitor MCP service
-echo [3/4] Stopping Monitor MCP service...
+echo [3/5] Stopping Monitor MCP service...
 taskkill /FI "WINDOWTITLE eq Monitor MCP Server*" /F >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Monitor MCP service was not running, skipped.
@@ -34,8 +34,23 @@ if errorlevel 1 (
 )
 echo.
 
+REM Stop Prometheus stack
+echo [4/5] Stopping Prometheus stack...
+docker ps --format "{{.Names}}" | findstr "prometheus" >nul 2>&1
+if not errorlevel 1 (
+    docker compose -f monitoring.yml down
+    if errorlevel 1 (
+        echo [ERROR] Docker stop failed.
+    ) else (
+        echo [OK] Prometheus container stopped.
+    )
+) else (
+    echo [INFO] Prometheus container was not running.
+)
+echo.
+
 REM Stop Docker (Milvus)
-echo [4/4] Stopping Milvus container...
+echo [5/5] Stopping Milvus container...
 docker ps --format "{{.Names}}" | findstr "milvus" >nul 2>&1
 if not errorlevel 1 (
     docker compose -f vector-database.yml down

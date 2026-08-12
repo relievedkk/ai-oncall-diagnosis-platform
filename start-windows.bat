@@ -100,7 +100,7 @@ REM Set Python command
 set PYTHON_CMD=.venv\Scripts\python.exe
 
 REM Start Docker Compose (Milvus)
-echo [4/8] Starting Milvus vector database...
+echo [4/9] Starting Milvus vector database...
 docker ps --format "{{.Names}}" | findstr "milvus-standalone" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Milvus is already running
@@ -117,8 +117,26 @@ if not errorlevel 1 (
 echo [OK] Milvus database ready
 echo.
 
+REM Start Prometheus stack
+echo [5/9] Starting Prometheus stack...
+docker ps --format "{{.Names}}" | findstr "prometheus" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Prometheus is already running
+) else (
+    docker compose -f monitoring.yml up -d
+    if errorlevel 1 (
+        echo [ERROR] Prometheus startup failed, make sure Docker Desktop is running
+        pause
+        exit /b 1
+    )
+    echo [INFO] Waiting for Prometheus to be ready ^(10s^)...
+    timeout /t 10 /nobreak >nul
+)
+echo [OK] Prometheus stack ready ^(http://localhost:9090^)
+echo.
+
 REM Start CLS MCP service
-echo [5/8] Starting CLS MCP service...
+echo [6/9] Starting CLS MCP service...
 REM Read Tencent Cloud CLS credentials from .env
 set CLS_SECRET_ID=
 set CLS_SECRET_KEY=
@@ -145,7 +163,7 @@ echo [OK] CLS MCP service started
 echo.
 
 REM Start Monitor MCP service
-echo [6/8] Starting Monitor MCP service...
+echo [7/9] Starting Monitor MCP service...
 start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
 timeout /t 2 /nobreak >nul
 echo [OK] Monitor MCP service started
@@ -169,7 +187,7 @@ if errorlevel 1 (
     echo.
 
     REM Use API to upload aiops-docs documents into vector database
-    echo [8/8] Uploading documents to vector database...
+    echo [9/9] Uploading documents to vector database...
     for %%f in (aiops-docs\*.md) do (
         echo   Uploading: %%~nxf
         curl -s -X POST http://localhost:9900/api/upload -F "file=@%%f" >nul 2>&1
