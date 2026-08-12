@@ -125,8 +125,8 @@ async def index_directory(directory_path: str = None):
 
         logger.info(f"开始索引目录: {target}")
 
-        # 执行索引
-        result = await asyncio.to_thread(vector_index_service.index_directory, directory_path)
+        # 执行索引（传校验过的 target，保证「校验什么就执行什么」）
+        result = await asyncio.to_thread(vector_index_service.index_directory, target)
 
         return JSONResponse(
             status_code=200,

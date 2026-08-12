@@ -60,6 +60,30 @@ class Settings(BaseSettings):
     # 允许索引的根目录（逗号分隔），index_directory 仅允许访问这些目录的子树
     allowed_index_roots: str = "uploads,aiops-docs"
 
+    # CORS 配置
+    # 允许的跨域来源（逗号分隔）；生产应填具体域名（如 https://oncall.example.com）
+    # 留空表示禁止所有跨域，仅同源可访问
+    cors_allowed_origins: str = ""
+    # 允许的方法（逗号分隔）；按最小权限只开实际需要的方法
+    cors_allowed_methods: str = "GET,POST,DELETE"
+    # 允许的请求头（逗号分隔）；按最小权限只开实际需要的头
+    cors_allowed_headers: str = "Content-Type,X-API-Key,Accept"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """解析允许的跨域来源列表。"""
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+
+    @property
+    def cors_method_list(self) -> list[str]:
+        """解析允许的方法列表。"""
+        return [m.strip() for m in self.cors_allowed_methods.split(",") if m.strip()]
+
+    @property
+    def cors_header_list(self) -> list[str]:
+        """解析允许的请求头列表。"""
+        return [h.strip() for h in self.cors_allowed_headers.split(",") if h.strip()]
+
     @property
     def allowed_index_root_list(self) -> list[str]:
         """解析允许的索引根目录列表。"""

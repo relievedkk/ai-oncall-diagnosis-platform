@@ -53,12 +53,22 @@ app = FastAPI(
 # 配置中间件
 # 注册顺序：后注册者先执行（Starlette 栈式）。CORS 最外层处理预检，ApiKey 次之校验受保护路由
 app.add_middleware(ApiKeyMiddleware)
+
+# CORS 来源策略：
+#   - 配置了 CORS_ALLOWED_ORIGINS -> 只允许这些来源（生产推荐）
+#   - 未配置 + DEBUG=true           -> 回退 ["*"] 仅用于本机调试
+#   - 未配置 + 非调试                -> 空列表（默认拒绝所有跨域，仅同源可访问）
+_cors_origins = config.cors_origin_list
+if not _cors_origins and config.debug:
+    _cors_origins = ["*"]
+    logger.warning("[CORS] 未配置 CORS_ALLOWED_ORIGINS 且 DEBUG=true，临时开放所有来源供调试，生产环境必须显式配置")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制具体域名
-    allow_credentials=False,  # API Key 模式无需 cookie 凭据；与 allow_origins=["*"] 共存时必须为 False
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=config.cors_method_list,
+    allow_headers=config.cors_header_list,
 )
 
 # 注册路由
