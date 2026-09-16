@@ -1,18 +1,21 @@
-# SuperBizAgent
+# AI 智能运维与 OnCall 诊断平台
 
-> 企业级智能对话和运维助手，支持 RAG 知识库问答和 AIOps 智能诊断
+> 原项目名：SuperBizAgent。一个面向告警分析与故障排查场景的 AI Agent 系统，支持 RAG 知识库问答、智能对话和 AIOps 诊断。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+系统可将内部运维文档、Prometheus 指标与告警、腾讯云 CLS 日志查询能力整合到统一对话入口，帮助研发和运维人员快速完成问题咨询、告警分析和排障建议生成。
+
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
 [![LangChain](https://img.shields.io/badge/LangChain-latest-orange.svg)](https://www.langchain.com/)
 
 ## ✨ 核心特性
 
-- 🤖 **智能对话** - LangChain 多轮对话 + 流式输出
-- 📚 **RAG 问答** - 向量检索增强，支持文档上传、自动建立向量索引、自动更新知识库
-- 🔧 **AIOps 诊断** - Plan-Execute-Replan 自动故障诊断和根因分析
+- 🤖 **智能对话** - 基于 LangChain 的工具调用对话，支持普通与 SSE 流式响应
+- 📚 **RAG 问答** - 文档上传、分块、向量化与 Milvus 检索增强生成
+- 🔧 **AIOps 诊断** - Plan-Execute-Replan 工作流，自动生成诊断计划、查询结果并输出处置建议
 - 🌐 **Web 界面** - 现代化 UI，支持多种对话模式：快速问答/流式对话
-- 🔌 **MCP 集成** - 日志查询和监控数据工具接入
+- 🔌 **MCP 集成** - 支持腾讯云 CLS MCP 日志查询与监控工具接入
+- 📈 **Prometheus 监控** - 暴露应用指标，并提供 Prometheus 抓取与告警规则示例
 
 ## 🛠️ 技术栈
 
@@ -20,12 +23,15 @@
 - **LLM**: 阿里云 DashScope (通义千问)
 - **向量库**: Milvus
 - **工具协议**: MCP (Model Context Protocol)
+- **监控与部署**: Prometheus + Docker Compose
 
 ## 🚀 快速开始
 
 ### 环境要求
-- Python 3.10+
+- Python 3.11+
+- Docker Desktop（运行 Milvus、Prometheus）
 - 阿里云 DashScope API Key ([获取地址](https://dashscope.aliyun.com/))
+- Node.js 18+（可选；接入官方腾讯云 CLS MCP 时需要）
 
 ### 安装和启动
 
@@ -34,7 +40,7 @@
 ```bash
 # 1. 克隆项目
 git clone <repository_url>
-cd super_biz_agent_py
+cd "Oncall Agent"
 
 # 2. 安装依赖（推荐使用 uv）
 # 方式 1: 使用 uv（推荐，更快）
@@ -59,12 +65,22 @@ make start
 
 #### Windows 环境（PowerShell/CMD）
 
-如果Windows 不支持 `make` 命令，可以手动执行以下步骤以启动服务：
+推荐使用根目录的一键脚本，它会依次启动 Milvus、Prometheus、CLS MCP、Monitor MCP、FastAPI，并将 `aiops-docs` 下的 Markdown 文档上传到知识库：
+
+```powershell
+# 启动所有服务
+.\start-windows.bat
+
+# 停止所有服务（保留 Docker 数据卷）
+.\stop-windows.bat
+```
+
+如需逐项启动或排查问题，可手动执行以下步骤：
 
 ```powershell
 # 1. 克隆项目
 git clone <repository_url>
-cd super_biz_agent_py
+cd "Oncall Agent"
 
 # 2. 创建虚拟环境并安装依赖
 # 方式 1: 使用 uv（推荐，更快）
@@ -94,38 +110,30 @@ docker compose -f vector-database.yml up -d
 # 6. 等待 Milvus 启动完成（约 5-10 秒）
 timeout /t 10
 
-# 7. 启动 MCP 服务
-# 启动 CLS 日志查询服务（新开一个 PowerShell 窗口）
-python mcp_servers/cls_server.py
+# 7. 启动 Prometheus
+docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 
-# 启动 Monitor 监控服务（新开一个 PowerShell 窗口）
+# 8. 启动 MCP 服务（新开 PowerShell 窗口）
+# 未配置腾讯云凭证时，可启动本地 CLS 示例服务
+python mcp_servers/cls_server.py
 python mcp_servers/monitor_server.py
 
-# 8. 启动 FastAPI 主服务（新开一个 PowerShell 窗口）
+# 9. 启动 FastAPI 主服务（新开一个 PowerShell 窗口）
 # 注意：日志会自动输出到 logs\app_YYYY-MM-DD.log
 python -m uvicorn app.main:app --host 0.0.0.0 --port 9900
 
-# 9. 上传文档到向量库（新开一个 PowerShell 窗口）
+# 10. 上传文档到向量库（新开一个 PowerShell 窗口）
 # 等待服务启动完成后执行
 timeout /t 5
 python -c "import requests, os, time; [requests.post('http://localhost:9900/api/upload', files={'file': open(f'aiops-docs/{f}', 'rb')}) or time.sleep(1) for f in os.listdir('aiops-docs') if f.endswith('.md')]"
 ```
 
-**Windows 一键启动脚本**（推荐）
-
-使用启动脚本：
-
-```powershell
-# 启动所有服务
-.\start-windows.bat
-
-# 停止所有服务
-.\stop-windows.bat
-```
-
 ### 访问服务
 - **Web 界面**: http://localhost:9900
 - **API 文档**: http://localhost:9900/docs
+- **应用指标**: http://localhost:9900/metrics
+- **Prometheus**: http://localhost:9090
+- **Milvus Attu**: http://localhost:8000
 
 ## 📡 API 接口
 
@@ -137,7 +145,7 @@ python -c "import requests, os, time; [requests.post('http://localhost:9900/api/
 | 流式对话 | POST | `/api/chat_stream` | SSE 流式输出 |
 | AIOps 诊断 | POST | `/api/aiops` | 自动故障诊断（流式） |
 | 文件上传 | POST | `/api/upload` | 上传并索引文档 |
-| 健康检查 | GET | `/api/health` | 服务状态检查 |
+| 健康检查 | GET | `/health` | 服务状态检查 |
 
 ### 使用示例
 
@@ -163,7 +171,7 @@ curl -X POST "http://localhost:9900/api/aiops" \
 ## 📁 项目结构
 
 ```
-super_biz_agent_py/
+Oncall Agent/
 ├── app/                                    # 应用核心
 │   ├── __init__.py                         # 包初始化（自动加载日志配置）
 │   ├── main.py                             # FastAPI 应用入口
@@ -173,7 +181,8 @@ super_biz_agent_py/
 │   │   ├── chat.py                         # 对话接口（RAG 聊天）
 │   │   ├── aiops.py                        # AIOps 接口（故障诊断）
 │   │   ├── file.py                         # 文件管理（文档上传）
-│   │   └── health.py                       # 健康检查（服务状态）
+│   │   ├── health.py                       # 健康检查（服务状态）
+│   │   └── metrics.py                      # Prometheus 指标接口
 │   ├── services/                           # 业务服务层
 │   │   ├── __init__.py
 │   │   ├── rag_agent_service.py            # RAG Agent（LangGraph 状态图）
@@ -228,6 +237,8 @@ super_biz_agent_py/
 ├── start-windows.bat                       # Windows 启动脚本
 ├── stop-windows.bat                        # Windows 停止脚本
 ├── vector-database.yml                     # Milvus Docker Compose 配置
+├── monitoring.yml                          # Prometheus Docker Compose 配置
+├── monitoring/                             # Prometheus 抓取与告警规则
 ├── pyproject.toml                          # 项目配置（依赖、元数据）
 ├── uv.lock                                 # uv 依赖锁定文件
 ├── pyrightconfig.json                      # Pyright 类型检查配置
@@ -239,20 +250,46 @@ super_biz_agent_py/
 通过 `.env` 文件配置：
 
 ```bash
-# 阿里云LLM DashScope 配置（必填）
-# 秘钥管理： https://bailian.console.aliyun.com/cn-beijing/?spm=5176.29597918.J_SEsSjsNv72yRuRFS2VknO.2.61ac133ccTVQLw&tab=demohouse#/api-key
-DASHSCOPE_API_KEY=your-api-key （配置你自己的秘钥）
-DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # 不配置则默认会使用新加坡站点
+# 应用配置
+APP_NAME=AI 智能运维与 OnCall 诊断平台
+DEBUG=False
+HOST=0.0.0.0
+PORT=9900
+
+# 阿里云 DashScope 配置（必填）
+DASHSCOPE_API_KEY=your-api-key-here
+DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 DASHSCOPE_MODEL=qwen-max
+DASHSCOPE_EMBEDDING_MODEL=text-embedding-v4
 
 # Milvus 配置
 MILVUS_HOST=localhost
 MILVUS_PORT=19530
+MILVUS_TIMEOUT=10000
 
 # RAG 配置
 RAG_TOP_K=3
+RAG_MODEL=qwen-max
 CHUNK_MAX_SIZE=800
 CHUNK_OVERLAP=100
+
+# MCP 服务：本地官方 CLS MCP（启动脚本会自动读取腾讯云凭证）
+MCP_CLS_TRANSPORT=streamable-http
+MCP_CLS_URL=http://127.0.0.1:3000/mcp
+MCP_MONITOR_TRANSPORT=streamable-http
+MCP_MONITOR_URL=http://127.0.0.1:8004/mcp
+
+# 腾讯云凭证：仅本地保存，禁止提交到 Git 仓库
+TENCENTCLOUD_SECRET_ID=your-secret-id
+TENCENTCLOUD_SECRET_KEY=your-secret-key
+
+# Prometheus
+PROMETHEUS_BASE_URL=http://127.0.0.1:9090
+PROMETHEUS_REQUEST_TIMEOUT=10.0
+
+# 演示环境可关闭认证；生产环境请启用并配置 API_KEY
+AUTH_ENABLED=false
+# API_KEY=replace-with-a-long-random-secret
 ```
 
 ## 🎯 AIOps 智能运维
