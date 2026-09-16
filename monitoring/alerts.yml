@@ -1,0 +1,11 @@
+groups:
+  - name: superbiz-agent
+    rules:
+      - alert: SuperBizAgentDown
+        expr: up{job="superbiz-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: SuperBizAgent 不可用
+          description: SuperBizAgent 连续 1 分钟无法被 Prometheus 抓取。

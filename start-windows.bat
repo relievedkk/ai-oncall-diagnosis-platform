@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+set MONITORING_PROJECT=oncallagent-monitoring
 
 echo ====================================
 echo  Start SuperBizAgent Services
@@ -123,7 +124,7 @@ docker ps --format "{{.Names}}" | findstr "prometheus" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Prometheus is already running
 ) else (
-    docker compose -f monitoring.yml up -d
+    docker compose -p !MONITORING_PROJECT! -f monitoring.yml up -d
     if errorlevel 1 (
         echo [ERROR] Prometheus startup failed, make sure Docker Desktop is running
         pause
@@ -140,40 +141,73 @@ echo [6/9] Starting CLS MCP service...
 REM Read Tencent Cloud CLS credentials from .env
 set CLS_SECRET_ID=
 set CLS_SECRET_KEY=
-for /f "usebackq tokens=1,2 delims==" %%a in (".env") do (
-    if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
-    if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
+if exist .env (
+    for /f "usebackq tokens=1,2 delims==" %%a in (".env") do (
+        if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
+        if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
+    )
 )
 REM Check Node.js and start official CLS MCP Server (or fallback to local mock)
 where npx >nul 2>&1
 if errorlevel 1 (
-    echo [WARNING] Node.js/npx not found, falling back to local mock CLS
-    start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
-    timeout /t 2 /nobreak >nul
+    echo [WARNING] Node.js/npx not found, falling back to local mock CLS on port 8003
+    set MCP_CLS_TRANSPORT=streamable-http
+    set MCP_CLS_URL=http://127.0.0.1:8003/mcp
+    netstat -ano | findstr /R /C:":8003 .*LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Local CLS mock is already running on port 8003
+    ) else (
+        start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
+        timeout /t 2 /nobreak >nul
+    )
 ) else if "!CLS_SECRET_ID!"=="" (
-    echo [WARNING] TENCENTCLOUD_SECRET_ID not in .env, falling back to local mock CLS
-    start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
-    timeout /t 2 /nobreak >nul
+    echo [WARNING] TENCENTCLOUD_SECRET_ID not in .env, falling back to local mock CLS on port 8003
+    set MCP_CLS_TRANSPORT=streamable-http
+    set MCP_CLS_URL=http://127.0.0.1:8003/mcp
+    netstat -ano | findstr /R /C:":8003 .*LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Local CLS mock is already running on port 8003
+    ) else (
+        start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
+        timeout /t 2 /nobreak >nul
+    )
 ) else (
-    start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!&&set TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@latest"
-    echo [INFO] Waiting for official CLS MCP Server ^(first run downloads package, ~15-20s^)...
-    timeout /t 15 /nobreak >nul
+    set MCP_CLS_TRANSPORT=streamable-http
+    set MCP_CLS_URL=http://127.0.0.1:3000/mcp
+    netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Official CLS MCP Server is already running on port 3000
+    ) else (
+        start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!&&set TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@latest"
+        echo [INFO] Waiting for official CLS MCP Server ^(first run downloads package, ~15-20s^)...
+        timeout /t 15 /nobreak >nul
+    )
 )
 echo [OK] CLS MCP service started
 echo.
 
 REM Start Monitor MCP service
 echo [7/9] Starting Monitor MCP service...
-start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
-timeout /t 2 /nobreak >nul
+netstat -ano | findstr /R /C:":8004 .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Monitor MCP service is already running on port 8004
+) else (
+    start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
+    timeout /t 2 /nobreak >nul
+)
 echo [OK] Monitor MCP service started
 echo.
 
 REM Start FastAPI service
-echo [7/8] Starting FastAPI service...
-start "SuperBizAgent API" %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
-echo [INFO] Waiting for service to start (15s)...
-timeout /t 15 /nobreak >nul
+echo [8/9] Starting FastAPI service...
+netstat -ano | findstr /R /C:":9900 .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] FastAPI service is already running on port 9900
+) else (
+    start "SuperBizAgent API" /min %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
+    echo [INFO] Waiting for service to start (15s)...
+    timeout /t 15 /nobreak >nul
+)
 echo.
 
 REM Check service status and upload documents

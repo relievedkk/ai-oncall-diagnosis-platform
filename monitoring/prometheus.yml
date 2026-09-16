@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]
+
+  - job_name: superbiz-agent
+    metrics_path: /metrics
+    static_configs:
+      # Docker Desktop uses this hostname to reach the FastAPI process on Windows.
+      - targets: ["host.docker.internal:9900"]
