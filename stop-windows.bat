@@ -2,13 +2,13 @@
 setlocal enabledelayedexpansion
 set MONITORING_PROJECT=oncallagent-monitoring
 echo ====================================
-echo  Stop SuperBizAgent Services
+echo  Stop AI OnCall Diagnosis Platform
 echo ====================================
 echo.
 
 REM Stop FastAPI service
-echo [1/4] Stopping FastAPI service...
-taskkill /FI "WINDOWTITLE eq SuperBizAgent API*" /F >nul 2>&1
+echo [1/5] Stopping FastAPI service...
+taskkill /FI "WINDOWTITLE eq AI OnCall API*" /F >nul 2>&1
 if errorlevel 1 (
     echo [INFO] FastAPI service was not running, skipped.
 ) else (
@@ -18,7 +18,7 @@ call :stop_listener 9900 FastAPI
 echo.
 
 REM Stop CLS MCP service
-echo [2/4] Stopping CLS MCP service...
+echo [2/5] Stopping CLS MCP service...
 taskkill /FI "WINDOWTITLE eq CLS MCP Server*" /F >nul 2>&1
 if errorlevel 1 (
     echo [INFO] CLS MCP service was not running, skipped.

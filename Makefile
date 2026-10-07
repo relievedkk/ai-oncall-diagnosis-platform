@@ -1,4 +1,4 @@
-# SuperBizAgent Python 版本 Makefile
+# AI 智能运维与 OnCall 诊断平台 Makefile
 # 用于自动化项目初始化、Docker 管理和文档向量化
 
 # ============================================================
@@ -9,6 +9,7 @@ UPLOAD_API = $(SERVER_URL)/api/upload
 HEALTH_CHECK_API = $(SERVER_URL)/health
 DOCS_DIR = aiops-docs
 MILVUS_CONTAINER = milvus-standalone
+MONITORING_PROJECT = oncallagent-monitoring
 
 # 颜色输出
 GREEN = \033[0;32m
@@ -21,14 +22,15 @@ NC = \033[0m
         install install-dev dev run test test-quick format lint fix type-check \
         security pre-commit-install pre-commit check-all coverage docs shell \
         ipython watch add add-dev remove list-docs test-upload sync logs \
-        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp
+        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp \
+        monitoring-up monitoring-down monitoring-status
 
 # ============================================================
 # 默认目标：显示帮助信息
 # ============================================================
 help:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
-	@echo "$(GREEN)  SuperBizAgent Python 版本 - Makefile 命令$(NC)"
+	@echo "$(GREEN)  AI 智能运维与 OnCall 诊断平台 - Makefile 命令$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo ""
 	@echo "$(CYAN)【一键操作】$(NC)"
@@ -37,11 +39,13 @@ help:
 	@echo "$(CYAN)【Docker 管理】$(NC)"
 	@echo "  $(YELLOW)make up$(NC)           - 🐳 启动 Milvus 容器"
 	@echo "  $(YELLOW)make down$(NC)         - 🛑 停止 Milvus 容器"
+	@echo "  $(YELLOW)make monitoring-up$(NC)   - 📈 启动 Prometheus/Alertmanager"
+	@echo "  $(YELLOW)make monitoring-down$(NC) - 🛑 停止 Prometheus/Alertmanager"
 	@echo "  $(YELLOW)make status$(NC)       - 📊 查看容器状态"
 	@echo ""
 	@echo "$(CYAN)【服务管理】$(NC)"
-	@echo "  $(YELLOW)make start$(NC)        - 🚀 启动所有服务（MCP + FastAPI）"
-	@echo "  $(YELLOW)make stop$(NC)         - 🛑 停止所有服务（MCP + FastAPI）"
+	@echo "  $(YELLOW)make start$(NC)        - 🚀 启动全部依赖与应用服务"
+	@echo "  $(YELLOW)make stop$(NC)         - 🛑 停止全部依赖与应用服务"
 	@echo "  $(YELLOW)make restart$(NC)      - 🔄 重启所有服务"
 	@echo "  $(YELLOW)make check$(NC)        - 🔍 检查 FastAPI 服务状态"
 	@echo "  $(YELLOW)make status-mcp$(NC)   - 📊 查看 MCP 服务状态"
@@ -85,7 +89,7 @@ help:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)使用示例:$(NC)"
 	@echo "  1. 一键初始化: $(YELLOW)make init$(NC)"
-	@echo "  2. 启动服务:   $(YELLOW)make start$(NC) (自动启动 CLS + Monitor MCP + FastAPI)"
+	@echo "  2. 启动服务:   $(YELLOW)make start$(NC) (Milvus + 监控 + MCP + FastAPI)"
 	@echo "  3. 检查状态:   $(YELLOW)make status-mcp$(NC)"
 	@echo "  4. 停止服务:   $(YELLOW)make stop$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
@@ -95,19 +99,16 @@ help:
 # ============================================================
 init:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
-	@echo "$(GREEN)🚀 开始一键初始化 SuperBizAgent...$(NC)"
+	@echo "$(GREEN)🚀 开始初始化 AI 智能运维与 OnCall 诊断平台...$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo ""
-	@echo "$(YELLOW)步骤 1/4: 启动 Docker 容器（Milvus 向量数据库）$(NC)"
-	@$(MAKE) up
-	@echo ""
-	@echo "$(YELLOW)步骤 2/4: 启动 FastAPI 服务$(NC)"
+	@echo "$(YELLOW)步骤 1/3: 启动全部依赖与应用服务$(NC)"
 	@$(MAKE) start
 	@echo ""
-	@echo "$(YELLOW)步骤 3/4: 等待服务就绪$(NC)"
+	@echo "$(YELLOW)步骤 2/3: 等待服务就绪$(NC)"
 	@$(MAKE) wait
 	@echo ""
-	@echo "$(YELLOW)步骤 4/4: 上传文档到向量数据库$(NC)"
+	@echo "$(YELLOW)步骤 3/3: 上传文档到向量数据库$(NC)"
 	@$(MAKE) upload
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
@@ -117,7 +118,9 @@ init:
 	@echo "$(GREEN)🌐 服务访问地址:$(NC)"
 	@echo "   API 服务: $(SERVER_URL)"
 	@echo "   API 文档: $(SERVER_URL)/docs"
-	@echo "   Attu (Milvus Web UI): http://localhost:8000"
+	@echo "   Prometheus: http://localhost:9090"
+	@echo "   Alertmanager: http://localhost:9093"
+	@echo "   Attu (Milvus Web UI): http://localhost:8001"
 	@echo "   MinIO: http://localhost:9001 (admin/minioadmin)"
 	@echo ""
 	@echo "$(YELLOW)💡 提示: 服务正在后台运行$(NC)"
@@ -152,7 +155,7 @@ up:
 			echo ""; \
 			echo "$(GREEN)🌐 服务访问地址:$(NC)"; \
 			echo "   Milvus: localhost:19530"; \
-			echo "   Attu (Web UI): http://localhost:8000"; \
+			echo "   Attu (Web UI): http://localhost:8001"; \
 			echo "   MinIO: http://localhost:9001 (admin/minioadmin)"; \
 		else \
 			echo "$(RED)❌ 容器启动失败$(NC)"; \
@@ -184,6 +187,22 @@ status:
 		echo "$(YELLOW)⚠️  没有找到 Milvus 相关容器$(NC)"; \
 		echo "$(YELLOW)提示: 请先创建 Milvus 容器$(NC)"; \
 	fi
+
+# 启动监控栈（Prometheus、Alertmanager、Node Exporter、cAdvisor）
+monitoring-up:
+	@echo "$(YELLOW)📈 启动监控栈...$(NC)"
+	docker compose -p $(MONITORING_PROJECT) -f monitoring.yml up -d --build
+	@echo "$(GREEN)✅ 监控栈已启动：Prometheus http://localhost:9090，Alertmanager http://localhost:9093$(NC)"
+
+# 停止监控栈（保留命名数据卷）
+monitoring-down:
+	@echo "$(YELLOW)🛑 停止监控栈...$(NC)"
+	docker compose -p $(MONITORING_PROJECT) -f monitoring.yml down
+	@echo "$(GREEN)✅ 监控栈已停止，数据卷已保留$(NC)"
+
+# 查看监控容器状态
+monitoring-status:
+	docker compose -p $(MONITORING_PROJECT) -f monitoring.yml ps
 
 # ============================================================
 # MCP 服务管理
@@ -287,11 +306,15 @@ status-mcp:
 # FastAPI 服务管理
 # ============================================================
 
-# 启动所有服务（MCP + FastAPI）
+# 启动所有服务（Docker 依赖 + MCP + FastAPI）
 start:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)🚀 启动所有服务$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
+	@echo ""
+	@$(MAKE) up
+	@echo ""
+	@$(MAKE) monitoring-up
 	@echo ""
 	@$(MAKE) start-cls
 	@sleep 1
@@ -320,7 +343,7 @@ start-api:
 		echo "$(YELLOW)   日志: server.log$(NC)"; \
 	fi
 
-# 停止所有服务（FastAPI + MCP）
+# 停止所有服务（FastAPI + MCP + Docker 依赖）
 stop:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)🛑 停止所有服务$(NC)"
@@ -331,6 +354,10 @@ stop:
 	@$(MAKE) stop-cls
 	@echo ""
 	@$(MAKE) stop-monitor
+	@echo ""
+	@$(MAKE) monitoring-down
+	@echo ""
+	@$(MAKE) down
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)✅ 所有服务已停止！$(NC)"
@@ -440,7 +467,8 @@ upload:
 		echo "$(RED)❌ 目录 $(DOCS_DIR) 不存在！$(NC)"; \
 		exit 1; \
 	fi
-	@count=0; \
+	@api_key=$$(if [ -f .env ]; then sed -n 's/^API_KEY=//p' .env | tail -n 1 | tr -d '\r'; fi); \
+	count=0; \
 	success=0; \
 	failed=0; \
 	for file in $(DOCS_DIR)/*.md; do \
@@ -450,6 +478,7 @@ upload:
 			echo "$(YELLOW)  [$$count] 上传文件: $$filename$(NC)"; \
 			response=$$(curl -s -w "\n%{http_code}" -X POST $(UPLOAD_API) \
 				-F "file=@$$file" \
+				-H "X-API-Key: $$api_key" \
 				-H "Accept: application/json"); \
 			http_code=$$(echo "$$response" | tail -n1); \
 			body=$$(echo "$$response" | sed '$$d'); \
@@ -484,13 +513,15 @@ list-docs:
 # 测试上传单个文件
 test-upload:
 	@echo "$(YELLOW)🧪 测试上传单个文件...$(NC)"
-	@first_file=$$(ls $(DOCS_DIR)/*.md 2>/dev/null | head -n1); \
+	@api_key=$$(if [ -f .env ]; then sed -n 's/^API_KEY=//p' .env | tail -n 1 | tr -d '\r'; fi); \
+	first_file=$$(ls $(DOCS_DIR)/*.md 2>/dev/null | head -n1); \
 	if [ -n "$$first_file" ]; then \
 		echo "$(YELLOW)上传文件: $$first_file$(NC)"; \
 		curl -X POST $(UPLOAD_API) \
 			-F "file=@$$first_file" \
+			-H "X-API-Key: $$api_key" \
 			-H "Accept: application/json" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2, ensure_ascii=False))" 2>/dev/null || \
-			curl -X POST $(UPLOAD_API) -F "file=@$$first_file"; \
+			curl -X POST $(UPLOAD_API) -F "file=@$$first_file" -H "X-API-Key: $$api_key"; \
 	else \
 		echo "$(RED)测试文件不存在$(NC)"; \
 	fi

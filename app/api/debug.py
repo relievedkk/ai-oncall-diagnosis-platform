@@ -16,5 +16,5 @@ async def set_synthetic_fault(state: str):
         raise HTTPException(status_code=422, detail="state must be active or resolved")
 
     value = 1 if state == "active" else 0
-    SYNTHETIC_FAULT.labels(service="superbiz-agent", fault="e2e").set(value)
-    return {"service": "superbiz-agent", "fault": "e2e", "state": state, "value": value}
+    SYNTHETIC_FAULT.labels(service="ai-oncall-agent", fault="e2e").set(value)
+    return {"service": "ai-oncall-agent", "fault": "e2e", "state": state, "value": value}

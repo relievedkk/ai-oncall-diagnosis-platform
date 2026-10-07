@@ -15,7 +15,7 @@ scrape_configs:
     static_configs:
       - targets: ["prometheus:9090"]
 
-  - job_name: superbiz-agent
+  - job_name: ai-oncall-agent
     metrics_path: /metrics
     static_configs:
       # Docker Desktop uses this hostname to reach the FastAPI process on Windows.

@@ -200,6 +200,50 @@ body {
     height: 16px;
 }
 
+.api-key-panel {
+    padding: 12px;
+    border-top: 1px solid #dadce0;
+    color: #5f6368;
+}
+
+.api-key-panel label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.api-key-controls {
+    display: flex;
+    gap: 6px;
+}
+
+.api-key-controls input {
+    min-width: 0;
+    flex: 1;
+    padding: 7px 8px;
+    border: 1px solid #bdc1c6;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 12px;
+}
+
+.api-key-controls button {
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: #1a73e8;
+    color: #ffffff;
+    cursor: pointer;
+}
+
+.api-key-panel small {
+    display: block;
+    margin-top: 6px;
+    font-size: 10px;
+    line-height: 1.4;
+}
+
 /* 主内容区域 */
 .main-content {
     flex: 1;

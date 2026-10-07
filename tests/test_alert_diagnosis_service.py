@@ -18,8 +18,8 @@ def _payload(status: str = "firing") -> AlertmanagerWebhook:
                     "labels": {
                         "alertname": "HighHTTPErrorRate",
                         "severity": "critical",
-                        "service": "superbiz-agent",
-                        "job": "superbiz-agent",
+                        "service": "ai-oncall-agent",
+                        "job": "ai-oncall-agent",
                     },
                     "annotations": {
                         "summary": "error rate high",

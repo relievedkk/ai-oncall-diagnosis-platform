@@ -1,88 +1,88 @@
 groups:
-  - name: superbiz-agent-availability
+  - name: ai-oncall-agent-availability
     rules:
-      - alert: SuperBizAgentDown
-        expr: up{job="superbiz-agent"} == 0
+      - alert: AIOnCallAgentDown
+        expr: up{job="ai-oncall-agent"} == 0
         for: 1m
         labels:
           severity: critical
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
-          summary: SuperBizAgent 不可用
-          description: SuperBizAgent 连续 1 分钟无法被 Prometheus 抓取。
+          summary: AI OnCall 服务不可用
+          description: AI OnCall 服务连续 1 分钟无法被 Prometheus 抓取。
 
-  - name: superbiz-agent-golden-signals
+  - name: ai-oncall-agent-golden-signals
     rules:
       - alert: HighHTTPErrorRate
         expr: |
           (
-            sum(rate(oncall_http_requests_total{job="superbiz-agent",status=~"5.."}[5m]))
+            sum(rate(oncall_http_requests_total{job="ai-oncall-agent",status=~"5.."}[5m]))
             /
-            clamp_min(sum(rate(oncall_http_requests_total{job="superbiz-agent"}[5m])), 0.001)
+            clamp_min(sum(rate(oncall_http_requests_total{job="ai-oncall-agent"}[5m])), 0.001)
           ) > 0.05
           and
-          sum(rate(oncall_http_requests_total{job="superbiz-agent"}[5m])) > 0.1
+          sum(rate(oncall_http_requests_total{job="ai-oncall-agent"}[5m])) > 0.1
         for: 5m
         labels:
           severity: critical
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
-          summary: SuperBizAgent HTTP 5xx 错误率过高
+          summary: AI OnCall HTTP 5xx 错误率过高
           description: 最近 5 分钟 HTTP 5xx 错误率持续高于 5%。
 
       - alert: HighP95Latency
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le) (rate(oncall_http_request_duration_seconds_bucket{job="superbiz-agent"}[5m]))
+            sum by (le) (rate(oncall_http_request_duration_seconds_bucket{job="ai-oncall-agent"}[5m]))
           ) > 1
           and
-          sum(rate(oncall_http_requests_total{job="superbiz-agent"}[5m])) > 0.1
+          sum(rate(oncall_http_requests_total{job="ai-oncall-agent"}[5m])) > 0.1
         for: 5m
         labels:
           severity: warning
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
-          summary: SuperBizAgent P95 响应时间过高
+          summary: AI OnCall P95 响应时间过高
           description: 最近 5 分钟 HTTP P95 响应时间持续高于 1 秒。
 
       - alert: HighProcessCPU
-        expr: oncall_process_cpu_percent{job="superbiz-agent"} > 80
+        expr: oncall_process_cpu_percent{job="ai-oncall-agent"} > 80
         for: 5m
         labels:
           severity: warning
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
-          summary: SuperBizAgent 进程 CPU 使用率过高
-          description: SuperBizAgent 进程 CPU 连续 5 分钟超过单核的 80%。
+          summary: AI OnCall 进程 CPU 使用率过高
+          description: AI OnCall 进程 CPU 连续 5 分钟超过单核的 80%。
 
       - alert: HighProcessMemory
-        expr: oncall_process_resident_memory_bytes{job="superbiz-agent"} > 1073741824
+        expr: oncall_process_resident_memory_bytes{job="ai-oncall-agent"} > 1073741824
         for: 5m
         labels:
           severity: warning
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
-          summary: SuperBizAgent 进程内存过高
-          description: SuperBizAgent 常驻内存连续 5 分钟超过 1 GiB。
+          summary: AI OnCall 进程内存过高
+          description: AI OnCall 常驻内存连续 5 分钟超过 1 GiB。
 
       - alert: AIOpsDiagnosisFailure
-        expr: increase(oncall_aiops_diagnoses_total{job="superbiz-agent",status="failed"}[10m]) > 0
+        expr: increase(oncall_aiops_diagnoses_total{job="ai-oncall-agent",status="failed"}[10m]) > 0
         labels:
           severity: warning
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
           summary: AIOps 自动诊断失败
           description: 最近 10 分钟内至少有一次 AIOps 自动诊断失败。
 
-  - name: superbiz-agent-e2e
+  - name: ai-oncall-agent-e2e
     rules:
       - alert: AIOpsSyntheticFault
-        expr: oncall_synthetic_fault{service="superbiz-agent",fault="e2e"} == 1
+        expr: oncall_synthetic_fault{service="ai-oncall-agent",fault="e2e"} == 1
         for: 15s
         labels:
           severity: warning
-          service: superbiz-agent
+          service: ai-oncall-agent
         annotations:
           summary: AIOps 端到端测试故障
           description: 这是受控故障注入产生的测试告警，用于验证 Prometheus 到 AI Ops 的完整链路。

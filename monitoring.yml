@@ -6,7 +6,7 @@ services:
     image: oncallagent-prometheus:local
     container_name: prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - prometheus_data:/prometheus
     command:
@@ -25,7 +25,7 @@ services:
     image: oncallagent-alertmanager:local
     container_name: alertmanager
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     volumes:
       - alertmanager_data:/alertmanager
     command:
@@ -33,7 +33,7 @@ services:
       - --storage.path=/alertmanager
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
     container_name: node-exporter
     command:
       - --path.rootfs=/host
@@ -41,7 +41,7 @@ services:
       - /:/host:ro
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: gcr.io/cadvisor/cadvisor@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57
     container_name: cadvisor
     privileged: true
     devices:

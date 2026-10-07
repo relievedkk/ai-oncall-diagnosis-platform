@@ -1,8 +1,8 @@
 [project]
-name = "super-biz-agent-py"
+name = "ai-oncall-diagnosis-platform"
 version = "1.2.1"
-description = "基于 LangChain 的智能业务代理系统 - 支持 RAG 知识库和 AIOps 智能运维"
-authors = [{name = "chief"}]
+description = "融合 RAG、MCP、Prometheus 与 Alertmanager 的 AI OnCall 诊断平台"
+authors = [{name = "relievedkk"}]
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [

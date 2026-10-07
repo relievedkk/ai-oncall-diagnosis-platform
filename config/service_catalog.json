@@ -1,20 +1,20 @@
 {
   "services": {
-    "superbiz-agent": {
+    "ai-oncall-agent": {
       "display_name": "AI 智能运维与 OnCall 诊断平台",
-      "aliases": ["SuperBizAgent", "oncall-agent", "host.docker.internal:9900"],
-      "prometheus_job": "superbiz-agent",
+      "aliases": ["AI OnCall Diagnosis Platform", "oncall-agent", "host.docker.internal:9900"],
+      "prometheus_job": "ai-oncall-agent",
       "metrics": {
-        "cpu": "oncall_process_cpu_percent{job=\"superbiz-agent\"}",
-        "memory": "oncall_process_resident_memory_bytes{job=\"superbiz-agent\"}",
-        "error_rate": "sum(rate(oncall_http_requests_total{job=\"superbiz-agent\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(oncall_http_requests_total{job=\"superbiz-agent\"}[5m])), 0.001)",
-        "latency_p95": "histogram_quantile(0.95, sum by (le) (rate(oncall_http_request_duration_seconds_bucket{job=\"superbiz-agent\"}[5m])))"
+        "cpu": "oncall_process_cpu_percent{job=\"ai-oncall-agent\"}",
+        "memory": "oncall_process_resident_memory_bytes{job=\"ai-oncall-agent\"}",
+        "error_rate": "sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m])), 0.001)",
+        "latency_p95": "histogram_quantile(0.95, sum by (le) (rate(oncall_http_request_duration_seconds_bucket{job=\"ai-oncall-agent\"}[5m])))"
       },
       "cls": {
         "region": "",
         "logset_id": "",
         "topic_id": "",
-        "query_hint": "service:superbiz-agent"
+        "query_hint": "service:ai-oncall-agent"
       },
       "owner": "oncall-team"
     }

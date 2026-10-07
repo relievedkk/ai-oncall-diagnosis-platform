@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能OnCall助手</title>
+    <title>AI 智能运维与 OnCall 诊断平台</title>
     <link rel="stylesheet" href="/static/styles.css">
     <!-- Markdown 渲染库 -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
@@ -35,7 +35,15 @@
                         <!-- 历史对话列表将在这里动态生成 -->
                     </div>
                 </div>
-                
+
+                <div class="api-key-panel">
+                    <label for="apiKeyInput">API Key（认证开启时填写）</label>
+                    <div class="api-key-controls">
+                        <input type="password" id="apiKeyInput" autocomplete="off" placeholder="仅保存在当前浏览器会话">
+                        <button type="button" id="saveApiKeyBtn">保存</button>
+                    </div>
+                    <small>留空并保存可清除；不会写入服务器或本地文件。</small>
+                </div>
             </div>
         </aside>
 

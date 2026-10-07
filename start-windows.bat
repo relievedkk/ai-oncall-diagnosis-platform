@@ -3,12 +3,12 @@ setlocal enabledelayedexpansion
 set MONITORING_PROJECT=oncallagent-monitoring
 
 echo ====================================
-echo  Start SuperBizAgent Services
+echo  Start AI OnCall Diagnosis Platform
 echo ====================================
 echo.
 
 REM Check if uv is installed (optional, fall back to pip if not)
-echo [1/8] Checking environment...
+echo [1/9] Checking environment and configuration...
 where uv >nul 2>&1
 if errorlevel 1 (
     echo [INFO] uv not installed, using traditional pip mode
@@ -18,10 +18,47 @@ if errorlevel 1 (
     echo [OK] uv detected, will use it
     set USE_UV=1
 )
+
+if not exist .env (
+    if exist .env.example (
+        copy /Y .env.example .env >nul
+        echo [ACTION REQUIRED] Created .env from .env.example.
+        echo [ACTION REQUIRED] Edit .env, set DASHSCOPE_API_KEY, then run this script again.
+        exit /b 1
+    ) else (
+        echo [ERROR] .env and .env.example are both missing.
+        exit /b 1
+    )
+)
+
+set DASH_SCOPE_KEY=
+set APP_API_KEY=
+set APP_AUTH_ENABLED=
+set CLS_SECRET_ID=
+set CLS_SECRET_KEY=
+for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+    if "%%a"=="DASHSCOPE_API_KEY" set DASH_SCOPE_KEY=%%b
+    if "%%a"=="API_KEY" set APP_API_KEY=%%b
+    if "%%a"=="AUTH_ENABLED" set APP_AUTH_ENABLED=%%b
+    if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
+    if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
+)
+if "!DASH_SCOPE_KEY!"=="" (
+    echo [ERROR] DASHSCOPE_API_KEY is empty. Edit .env before starting.
+    exit /b 1
+)
+if "!DASH_SCOPE_KEY!"=="replace-with-your-dashscope-api-key" (
+    echo [ERROR] DASHSCOPE_API_KEY still contains the placeholder value. Edit .env before starting.
+    exit /b 1
+)
+if /I "!APP_AUTH_ENABLED!"=="true" if "!APP_API_KEY!"=="" (
+    echo [ERROR] AUTH_ENABLED=true requires a non-empty API_KEY in .env.
+    exit /b 1
+)
 echo.
 
 REM Ensure correct Python version
-echo [2/8] Checking Python version...
+echo [2/9] Checking Python version...
 if exist .python-version (
     set /p PYTHON_VERSION=<.python-version
     echo [INFO] Current pinned version: !PYTHON_VERSION!
@@ -40,7 +77,7 @@ if exist .python-version (
 echo.
 
 REM Create or sync virtual environment
-echo [3/8] Creating/syncing virtual environment...
+echo [3/9] Creating/syncing virtual environment...
 if exist .venv\Scripts\python.exe (
     echo [INFO] Virtual environment exists, syncing...
 
@@ -133,15 +170,6 @@ echo.
 
 REM Start CLS MCP service
 echo [6/9] Starting CLS MCP service...
-REM Read Tencent Cloud CLS credentials from .env
-set CLS_SECRET_ID=
-set CLS_SECRET_KEY=
-if exist .env (
-    for /f "usebackq tokens=1,2 delims==" %%a in (".env") do (
-        if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
-        if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
-    )
-)
 REM Check Node.js and start official CLS MCP Server (or fallback to local mock)
 where npx >nul 2>&1
 if errorlevel 1 (
@@ -199,7 +227,7 @@ netstat -ano | findstr /R /C:":9900 .*LISTENING" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] FastAPI service is already running on port 9900
 ) else (
-    start "SuperBizAgent API" /min %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
+    start "AI OnCall API" /min %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
     echo [INFO] Waiting for service to start (15s)...
     timeout /t 15 /nobreak >nul
 )
@@ -219,7 +247,7 @@ if errorlevel 1 (
     echo [9/9] Uploading documents to vector database...
     for %%f in (aiops-docs\*.md) do (
         echo   Uploading: %%~nxf
-        curl -s -X POST http://localhost:9900/api/upload -F "file=@%%f" >nul 2>&1
+        curl -s -X POST http://localhost:9900/api/upload -H "X-API-Key: !APP_API_KEY!" -F "file=@%%f" >nul 2>&1
     )
     echo [OK] Document upload complete
 )

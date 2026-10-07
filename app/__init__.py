@@ -1,4 +1,4 @@
-"""SuperBizAgent Python 版本
+"""AI 智能运维与 OnCall 诊断平台
 
 基于 LangChain 的智能业务代理系统
 """

@@ -15,7 +15,7 @@ def test_query_service_metric_returns_prometheus_evidence(monkeypatch):
     )
 
     result = monitor_server._query_service_metric(
-        "superbiz-agent",
+        "ai-oncall-agent",
         "error_rate",
         None,
         None,
@@ -31,7 +31,7 @@ def test_query_service_metric_returns_prometheus_evidence(monkeypatch):
 
 def test_query_service_metric_rejects_unknown_metric():
     try:
-        monitor_server._query_service_metric("superbiz-agent", "random", None, None, "1m")
+        monitor_server._query_service_metric("ai-oncall-agent", "random", None, None, "1m")
     except ValueError as exc:
         assert "metric must be one of" in str(exc)
     else:

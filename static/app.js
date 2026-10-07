@@ -1,7 +1,8 @@
-// SuperBizAgent 前端应用
-class SuperBizAgentApp {
+// AI 智能运维与 OnCall 诊断平台前端应用
+class AIOnCallApp {
     constructor() {
-        this.apiBaseUrl = 'http://localhost:9900/api';
+        this.apiBaseUrl = '/api';
+        this.apiKey = sessionStorage.getItem('aiOnCallApiKey') || '';
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
@@ -109,6 +110,8 @@ class SuperBizAgentApp {
         this.modeDropdown = document.getElementById('modeDropdown');
         this.currentModeText = document.getElementById('currentModeText');
         this.fileInput = document.getElementById('fileInput');
+        this.apiKeyInput = document.getElementById('apiKeyInput');
+        this.saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
         
         // 聊天区域元素
         this.chatMessages = document.getElementById('chatMessages');
@@ -116,6 +119,10 @@ class SuperBizAgentApp {
         this.chatContainer = document.querySelector('.chat-container');
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
+
+        if (this.apiKeyInput) {
+            this.apiKeyInput.value = this.apiKey;
+        }
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -203,6 +210,28 @@ class SuperBizAgentApp {
         if (this.fileInput) {
             this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         }
+
+        if (this.saveApiKeyBtn) {
+            this.saveApiKeyBtn.addEventListener('click', () => this.saveApiKey());
+        }
+    }
+
+    saveApiKey() {
+        this.apiKey = this.apiKeyInput ? this.apiKeyInput.value.trim() : '';
+        if (this.apiKey) {
+            sessionStorage.setItem('aiOnCallApiKey', this.apiKey);
+            this.showNotification('API Key 已保存到当前浏览器会话', 'success');
+        } else {
+            sessionStorage.removeItem('aiOnCallApiKey');
+            this.showNotification('API Key 已清除', 'success');
+        }
+    }
+
+    getRequestHeaders(headers = {}) {
+        if (!this.apiKey) {
+            return headers;
+        }
+        return { ...headers, 'X-API-Key': this.apiKey };
     }
 
     // 切换工具菜单显示/隐藏
@@ -439,7 +468,9 @@ class SuperBizAgentApp {
         
         try {
             // 从后端获取会话历史
-            const response = await fetch(`/api/chat/session/${historyId}`);
+            const response = await fetch(`/api/chat/session/${historyId}`, {
+                headers: this.getRequestHeaders()
+            });
             if (response.ok) {
                 const data = await response.json();
                 const backendHistory = data.history || [];
@@ -508,9 +539,9 @@ class SuperBizAgentApp {
             // 调用后端API清空会话
             const response = await fetch('/api/chat/clear', {
                 method: 'POST',
-                headers: {
+                headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
-                },
+                }),
                 body: JSON.stringify({
                     session_id: historyId
                 })
@@ -683,9 +714,9 @@ class SuperBizAgentApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/chat`, {
                 method: 'POST',
-                headers: {
+                headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
-                },
+                }),
                 body: JSON.stringify({
                     Id: this.sessionId,
                     Question: message
@@ -739,9 +770,9 @@ class SuperBizAgentApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/chat_stream`, {
                 method: 'POST',
-                headers: {
+                headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
-                },
+                }),
                 body: JSON.stringify({
                     Id: this.sessionId,
                     Question: message
@@ -1135,6 +1166,7 @@ class SuperBizAgentApp {
             // 发送上传请求
             const response = await fetch(`${this.apiBaseUrl}/upload`, {
                 method: 'POST',
+                headers: this.getRequestHeaders(),
                 body: formData
             });
 
@@ -1180,9 +1212,9 @@ class SuperBizAgentApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/aiops`, {
                 method: 'POST',
-                headers: {
+                headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
-                },
+                }),
                 body: JSON.stringify({
                     session_id: this.sessionId
                 })
@@ -1687,5 +1719,5 @@ document.head.appendChild(style);
 
 // 初始化应用
 document.addEventListener('DOMContentLoaded', () => {
-    new SuperBizAgentApp();
+    new AIOnCallApp();
 });
