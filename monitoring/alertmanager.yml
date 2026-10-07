@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: oncall-agent
+  group_by: [alertname, service, instance]
+  group_wait: 2s
+  group_interval: 30s
+  repeat_interval: 4h
+
+receivers:
+  - name: oncall-agent
+    webhook_configs:
+      - url: http://host.docker.internal:9900/api/alerts/webhook
+        send_resolved: true

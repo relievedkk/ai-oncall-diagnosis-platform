@@ -20,6 +20,13 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        if path == "/api/alerts/webhook" and config.alertmanager_webhook_token:
+            supplied = request.headers.get("Authorization", "")
+            expected = f"Bearer {config.alertmanager_webhook_token}"
+            if not secrets.compare_digest(supplied, expected):
+                return JSONResponse(status_code=401, content={"detail": "Invalid Alertmanager webhook token"})
+            return await call_next(request)
+
         if (
             not config.auth_enabled
             or request.method == "OPTIONS"

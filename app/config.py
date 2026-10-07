@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     prometheus_base_url: str = "http://127.0.0.1:9090"
     prometheus_request_timeout: float = 10.0
 
+    # Alertmanager / service catalog
+    alertmanager_webhook_token: str = ""
+    service_catalog_path: str = "config/service_catalog.json"
+
+    # Local end-to-end diagnostics only. Keep disabled outside an isolated test environment.
+    fault_injection_enabled: bool = False
+
     # 安全配置
     # API Key 认证：为空且 auth_enabled=True 时拒绝所有受保护请求（防误配裸奔）
     api_key: str = ""

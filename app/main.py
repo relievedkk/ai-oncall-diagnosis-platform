@@ -12,9 +12,10 @@ import os
 
 from app.config import config
 from loguru import logger
-from app.api import chat, health, file, aiops, metrics
+from app.api import aiops, alerts, chat, debug, file, health, metrics
 from app.core.milvus_client import milvus_manager
 from app.core.auth import ApiKeyMiddleware
+from app.core.metrics import prometheus_http_middleware
 
 
 @asynccontextmanager
@@ -50,6 +51,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Record real request rate, status, and latency for Prometheus alerting.
+app.middleware("http")(prometheus_http_middleware)
+
 # 配置中间件
 # 注册顺序：后注册者先执行（Starlette 栈式）。CORS 最外层处理预检，ApiKey 次之校验受保护路由
 app.add_middleware(ApiKeyMiddleware)
@@ -77,6 +81,8 @@ app.include_router(metrics.router, tags=["监控指标"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
+app.include_router(alerts.router, prefix="/api", tags=["Alertmanager"])
+app.include_router(debug.router, prefix="/api", tags=["本地故障注入"])
 
 # 挂载静态文件
 static_dir = "static"

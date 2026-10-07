@@ -133,7 +133,27 @@ python -c "import requests, os, time; [requests.post('http://localhost:9900/api/
 - **API 文档**: http://localhost:9900/docs
 - **应用指标**: http://localhost:9900/metrics
 - **Prometheus**: http://localhost:9090
-- **Milvus Attu**: http://localhost:8000
+- **Alertmanager**: http://localhost:9093
+- **Milvus Attu**: http://localhost:8001
+
+### 真实告警诊断链路
+
+Prometheus 每 15 秒采集 FastAPI、Node Exporter 和 cAdvisor 指标。告警进入 `firing` 后，Alertmanager 会调用 `POST /api/alerts/webhook`，后台自动创建 AIOps 诊断任务。
+
+- 查看自动诊断任务：`GET /api/aiops/jobs`
+- 查看单个任务：`GET /api/aiops/jobs/{diagnosis_id}`
+- 服务到 Prometheus/CLS 的映射：`config/service_catalog.json`
+- Monitor MCP 返回真实 Prometheus 数据，并附带 PromQL 和查询时间范围。
+
+本地端到端测试可临时设置 `FAULT_INJECTION_ENABLED=true`，再调用：
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:9900/api/debug/fault/active
+# 完成验证后立即恢复
+Invoke-RestMethod -Method Post http://localhost:9900/api/debug/fault/resolved
+```
+
+故障注入默认关闭，不应在生产环境开启。
 
 ## 📡 API 接口
 
@@ -286,6 +306,15 @@ TENCENTCLOUD_SECRET_KEY=your-secret-key
 # Prometheus
 PROMETHEUS_BASE_URL=http://127.0.0.1:9090
 PROMETHEUS_REQUEST_TIMEOUT=10.0
+
+# 服务到 Prometheus/CLS 的映射文件
+SERVICE_CATALOG_PATH=config/service_catalog.json
+
+# Alertmanager Webhook Bearer Token（本地可留空，生产必须配置）
+ALERTMANAGER_WEBHOOK_TOKEN=
+
+# 仅本地端到端测试使用
+FAULT_INJECTION_ENABLED=false
 
 # 演示环境可关闭认证；生产环境请启用并配置 API_KEY
 AUTH_ENABLED=false

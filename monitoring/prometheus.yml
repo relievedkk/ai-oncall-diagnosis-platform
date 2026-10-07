@@ -5,6 +5,11 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
@@ -15,3 +20,11 @@ scrape_configs:
     static_configs:
       # Docker Desktop uses this hostname to reach the FastAPI process on Windows.
       - targets: ["host.docker.internal:9900"]
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

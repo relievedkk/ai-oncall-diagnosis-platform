@@ -120,20 +120,15 @@ echo.
 
 REM Start Prometheus stack
 echo [5/9] Starting Prometheus stack...
-docker ps --format "{{.Names}}" | findstr "prometheus" >nul 2>&1
-if not errorlevel 1 (
-    echo [INFO] Prometheus is already running
-) else (
-    docker compose -p !MONITORING_PROJECT! -f monitoring.yml up -d
-    if errorlevel 1 (
-        echo [ERROR] Prometheus startup failed, make sure Docker Desktop is running
-        pause
-        exit /b 1
-    )
-    echo [INFO] Waiting for Prometheus to be ready ^(10s^)...
-    timeout /t 10 /nobreak >nul
+docker compose -p !MONITORING_PROJECT! -f monitoring.yml up -d --build
+if errorlevel 1 (
+    echo [ERROR] Monitoring stack startup failed, make sure Docker Desktop is running
+    pause
+    exit /b 1
 )
-echo [OK] Prometheus stack ready ^(http://localhost:9090^)
+echo [INFO] Waiting for Prometheus and Alertmanager to be ready ^(10s^)...
+timeout /t 10 /nobreak >nul
+echo [OK] Monitoring stack ready ^(Prometheus: http://localhost:9090, Alertmanager: http://localhost:9093^)
 echo.
 
 REM Start CLS MCP service

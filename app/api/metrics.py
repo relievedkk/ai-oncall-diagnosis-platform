@@ -3,6 +3,8 @@
 from fastapi import APIRouter
 from fastapi.responses import Response
 
+from app.core.metrics import refresh_process_metrics
+
 router = APIRouter()
 
 
@@ -17,4 +19,5 @@ async def metrics() -> Response:
             media_type="text/plain; version=0.0.4",
             status_code=503,
         )
+    refresh_process_metrics()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
