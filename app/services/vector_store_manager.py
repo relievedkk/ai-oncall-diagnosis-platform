@@ -1,6 +1,5 @@
 """向量存储管理器 - 封装 Milvus VectorStore 操作"""
 
-from typing import List
 
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
@@ -9,7 +8,6 @@ from loguru import logger
 from app.config import config
 from app.core.milvus_client import milvus_manager
 from app.services.vector_embedding_service import vector_embedding_service
-
 
 # 统一使用 biz collection
 COLLECTION_NAME = "biz"
@@ -33,8 +31,9 @@ class VectorStoreManager:
             _ = milvus_manager.connect()
 
             connection_args = {
-                "host": config.milvus_host,
-                "port": config.milvus_port,
+                # Newer pymilvus MilvusClient versions use ``uri``; passing only
+                # host/port can silently fall back to localhost inside containers.
+                "uri": f"http://{config.milvus_host}:{config.milvus_port}",
             }
 
             # 创建 LangChain Milvus VectorStore
@@ -60,7 +59,7 @@ class VectorStoreManager:
             logger.error(f"VectorStore 初始化失败: {e}")
             raise
 
-    def add_documents(self, documents: List[Document]) -> List[str]:
+    def add_documents(self, documents: list[Document]) -> list[str]:
         """
         批量添加文档到向量存储（自动批量向量化）
 
@@ -105,17 +104,17 @@ class VectorStoreManager:
         try:
             # 使用 milvus_manager 获取已连接的 collection
             collection = milvus_manager.get_collection()
-            
+
             # metadata 是 JSON 字段，使用 JSON 路径查询语法
             # _source 是文档的来源文件路径
             expr = f'metadata["_source"] == "{file_path}"'
-            
+
             result = collection.delete(expr)
             deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
-            
+
             logger.info(f"删除文件旧数据: {file_path}, 删除数量: {deleted_count}")
             return deleted_count
-            
+
         except Exception as e:
             logger.warning(f"删除旧数据失败 (可能是首次索引): {e}")
             return 0
@@ -129,7 +128,7 @@ class VectorStoreManager:
         """
         return self.vector_store
 
-    def similarity_search(self, query: str, k: int = 3) -> List[Document]:
+    def similarity_search(self, query: str, k: int = 3) -> list[Document]:
         """
         相似度搜索
 

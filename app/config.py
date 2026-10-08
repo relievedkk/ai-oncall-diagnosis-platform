@@ -3,7 +3,8 @@
 使用 Pydantic Settings 实现类型安全的配置管理
 """
 
-from typing import Dict, Any
+from typing import Any
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +32,17 @@ class Settings(BaseSettings):
     database_connect_retry_seconds: float = 2.0
     database_pool_size: int = 10
     database_max_overflow: int = 20
+
+    # Celery / RabbitMQ 独立诊断队列
+    celery_broker_url: str = "amqp://oncall:oncall@127.0.0.1:5672//"
+    celery_default_queue: str = "diagnosis.default"
+    celery_critical_queue: str = "diagnosis.critical"
+    celery_task_soft_time_limit: int = 1740
+    celery_task_time_limit: int = 1800
+    celery_task_max_retries: int = 5
+    diagnosis_lease_seconds: int = 90
+    diagnosis_heartbeat_seconds: int = 30
+    outbox_poll_interval_seconds: float = 1.0
 
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
@@ -105,7 +117,7 @@ class Settings(BaseSettings):
         return [r.strip() for r in self.allowed_index_roots.split(",") if r.strip()]
 
     @property
-    def mcp_servers(self) -> Dict[str, Dict[str, Any]]:
+    def mcp_servers(self) -> dict[str, dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""
         return {
             "cls": {

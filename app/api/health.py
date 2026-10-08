@@ -1,22 +1,26 @@
 """健康检查接口"""
 
+import asyncio
 from typing import Any
+from urllib.parse import urlparse
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from loguru import logger
+
 from app.config import config
 from app.core.milvus_client import milvus_manager
 from app.db.session import database_manager
-from loguru import logger
 
 router = APIRouter()
 
 
 @router.get("/health")
 async def health_check():
-    
+
     """健康检查接口
     检查服务状态和数据库连接状态
-    
+
     Returns:
         JSONResponse: 健康检查结果
     """
@@ -26,7 +30,7 @@ async def health_check():
         "version": config.app_version,
         "status": "healthy"
     }
-    
+
     # 检查 Milvus 连接状态
     try:
         milvus_healthy = milvus_manager.health_check()
@@ -48,22 +52,40 @@ async def health_check():
         "status": "connected" if postgres_healthy else "disconnected",
         "message": "PostgreSQL 连接正常" if postgres_healthy else "PostgreSQL 连接异常",
     }
-    
+
+    broker_url = urlparse(config.celery_broker_url)
+    rabbitmq_healthy = False
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(broker_url.hostname or "127.0.0.1", broker_url.port or 5672),
+            timeout=2,
+        )
+        writer.close()
+        await writer.wait_closed()
+        rabbitmq_healthy = True
+    except (OSError, TimeoutError):
+        pass
+    health_data["rabbitmq"] = {
+        "status": "connected" if rabbitmq_healthy else "disconnected",
+        "message": "RabbitMQ 连接正常" if rabbitmq_healthy else "RabbitMQ 连接异常",
+    }
+
     # 判断整体健康状态
     overall_status = "healthy"
     status_code = 200
-    
+
     # 如果 Milvus 不可用，服务不可用
     if (
         health_data["milvus"]["status"] != "connected"
         or health_data["postgresql"]["status"] != "connected"
+        or health_data["rabbitmq"]["status"] != "connected"
     ):
         overall_status = "unhealthy"
         status_code = 503
-        health_data["error"] = "数据库不可用"
-    
+        health_data["error"] = "依赖服务不可用"
+
     health_data["status"] = overall_status
-    
+
     return JSONResponse(
         status_code=status_code,
         content={

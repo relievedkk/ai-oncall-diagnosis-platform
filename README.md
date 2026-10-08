@@ -13,6 +13,7 @@
 - **AIOps 诊断**：通过 Planner、Executor、Replanner 自动规划排障步骤并生成诊断报告。
 - **真实可观测数据**：FastAPI 暴露请求量、错误率、延迟、CPU、内存及诊断任务指标。
 - **自动告警闭环**：Prometheus 触发规则后由 Alertmanager 回调应用，并自动创建诊断任务。
+- **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由 Celery Worker 独立执行，支持优先级队列、重试、心跳和执行租约。
 - **MCP 工具接入**：Monitor MCP 查询真实 Prometheus 数据；CLS MCP 可连接腾讯云日志或使用本地示例数据。
 
 ## 系统架构
@@ -22,16 +23,19 @@ flowchart LR
     User[用户 / OnCall 工程师] --> Web[Web 与 FastAPI]
     Docs[运维文档] --> RAG[RAG 索引服务]
     RAG --> Milvus[(Milvus)]
-    Web --> PostgreSQL[(PostgreSQL)]
+    Web -->|任务 + Outbox 原子写入| PostgreSQL[(PostgreSQL)]
     Web --> Agent[对话 Agent / AIOps Agent]
     Agent --> Milvus
     Agent --> Monitor[Monitor MCP]
     Agent --> CLS[CLS MCP]
     Web -->|/metrics| Prometheus[Prometheus]
     Prometheus -->|告警规则| Alertmanager[Alertmanager]
-    Alertmanager -->|Webhook| Jobs[自动诊断任务]
-    Jobs --> Agent
-    Jobs --> PostgreSQL
+    Alertmanager -->|Webhook| Web
+    PostgreSQL --> Publisher[Outbox Publisher]
+    Publisher --> RabbitMQ[(RabbitMQ)]
+    RabbitMQ --> Worker[Celery Worker]
+    Worker --> Agent
+    Worker --> PostgreSQL
     Monitor --> Prometheus
     CLS --> Logs[腾讯云 CLS / 本地示例日志]
 ```
@@ -41,9 +45,11 @@ flowchart LR
 1. FastAPI 持续暴露应用运行指标。
 2. Prometheus 每 15 秒采集指标并计算告警规则。
 3. 告警进入 `firing` 后，Alertmanager 调用 `/api/alerts/webhook`。
-4. 后台创建 AIOps 诊断任务，查询 Prometheus、CLS 和 Milvus。
-5. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
-6. 最终 Markdown 报告独立持久化；告警恢复后，任务状态同步更新为 `resolved`。
+4. FastAPI 在同一数据库事务内创建诊断任务和 Outbox 事件，然后立即响应。
+5. Outbox Publisher 将事件可靠发布到 RabbitMQ；严重告警进入高优先级队列。
+6. 独立 Celery Worker 领取任务，通过租约与心跳避免重复执行，再查询 Prometheus、CLS 和 Milvus。
+7. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
+8. 最终 Markdown 报告独立持久化；临时失败自动重试，告警恢复后任务状态同步更新为 `resolved`。
 
 ## 快速开始
 
@@ -73,7 +79,8 @@ notepad .env
 启动脚本会依次完成：
 
 - 创建或同步 `.venv`
-- 启动 PostgreSQL、Milvus、MinIO 和 Attu
+- 构建诊断 Worker，并启动 PostgreSQL、RabbitMQ、Milvus、MinIO 和 Attu
+- 执行数据库迁移，启动 Celery Worker 与 Outbox Publisher
 - 启动 Prometheus、Alertmanager、Node Exporter 和 cAdvisor
 - 启动 CLS MCP 与 Monitor MCP
 - 启动 FastAPI
@@ -107,7 +114,7 @@ make init
 后续可使用：
 
 ```bash
-make start       # 启动 Milvus、监控栈、MCP 和 FastAPI
+make start       # 启动数据库、RabbitMQ、Worker、监控栈、MCP 和 FastAPI
 make stop        # 停止全部服务，保留 Docker 数据卷
 make restart     # 重启全部服务
 make check       # 检查 FastAPI 健康状态
@@ -124,6 +131,7 @@ make status-mcp  # 查看 MCP 服务状态
 | Prometheus | http://localhost:9090 | 查询指标、目标状态和告警规则 |
 | Alertmanager | http://localhost:9093 | 查看正在触发或已恢复的告警 |
 | Attu | http://localhost:8001 | 查看和管理 Milvus 中的向量数据 |
+| RabbitMQ 管理界面 | http://localhost:15672 | 查看诊断队列、消息速率和消费者；本地默认 `oncall/oncall` |
 | PostgreSQL | `localhost:5432` | 持久化诊断任务、步骤、证据和报告；无 Web 页面 |
 
 ## 配置
@@ -160,6 +168,12 @@ SERVICE_CATALOG_PATH=config/service_catalog.json
 # PostgreSQL 诊断存储
 DATABASE_URL=postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
 DATABASE_AUTO_CREATE=true
+
+# RabbitMQ / Celery 独立任务队列
+CELERY_BROKER_URL=amqp://oncall:oncall@127.0.0.1:5672//
+CELERY_DEFAULT_QUEUE=diagnosis.default
+CELERY_CRITICAL_QUEUE=diagnosis.critical
+CELERY_TASK_MAX_RETRIES=5
 
 # 默认禁止故障注入
 FAULT_INJECTION_ENABLED=false
@@ -203,8 +217,8 @@ API_KEY=请替换为足够长的随机值
 一键脚本失败时，可以分别启动组件。以下 PowerShell 命令使用不同终端窗口执行。
 
 ```powershell
-# 终端 1：Docker 依赖
-docker compose -f vector-database.yml up -d
+# 终端 1：Docker 依赖、数据库迁移与诊断 Worker
+docker compose -f vector-database.yml up -d --build
 docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 
 # 终端 2：本地 CLS MCP
@@ -240,7 +254,7 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 
 当 `AUTH_ENABLED=false` 时，表格中的认证接口也可在本地直接访问。
 
-任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会写入同一套表。
+任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会先可靠入队，再由独立 Worker 写入同一套表。浏览器断开或 FastAPI 重启不会中断已经入队的诊断。
 
 ### 请求示例
 
@@ -293,8 +307,11 @@ ai-oncall-diagnosis-platform/
 │   ├── db/                          # PostgreSQL 会话与诊断数据模型
 │   ├── models/                      # API 与告警数据模型
 │   ├── repositories/                # 诊断持久化 Repository
-│   ├── services/                    # RAG、向量库、自动诊断与服务目录
+│   ├── services/                    # RAG、向量库、诊断编排与服务目录
+│   ├── tasks/                       # Celery 诊断任务
 │   ├── tools/                       # 知识库、时间和 Prometheus 工具
+│   ├── workers/                     # Transactional Outbox 发布进程
+│   ├── celery_app.py                # Celery、交换机和队列配置
 │   └── main.py                      # FastAPI 入口
 ├── aiops-docs/                      # 示例运维知识文档
 ├── config/service_catalog.json      # 服务、Prometheus 和 CLS 映射
@@ -305,7 +322,8 @@ ai-oncall-diagnosis-platform/
 ├── tests/                           # 自动化测试
 ├── .env.example                     # 安全配置模板
 ├── monitoring.yml                   # 监控栈 Docker Compose
-├── vector-database.yml              # Milvus Docker Compose
+├── Dockerfile.worker                # Celery Worker / Publisher 镜像
+├── vector-database.yml              # 数据库、RabbitMQ、Milvus 与 Worker Compose
 ├── start-windows.bat                # Windows 一键启动
 ├── stop-windows.bat                 # Windows 一键停止
 ├── Makefile                         # Linux/macOS 管理命令
@@ -329,6 +347,7 @@ uv run pytest -q
 
 - MinIO 使用本地默认凭证，并映射了管理端口。
 - PostgreSQL 使用本地开发凭证并映射了端口，生产环境必须更换密码并限制网络访问。
+- RabbitMQ 使用本地开发凭证，管理界面和 AMQP 端口仅绑定到回环地址；生产环境仍必须更换密码并启用 TLS。
 - Prometheus、Alertmanager、Milvus 和 Attu 默认映射到宿主机端口。
 - cAdvisor 使用特权模式并读取 Docker/宿主机相关目录。
 - `/metrics`、`/health` 和 API 文档为公开端点。
@@ -350,6 +369,15 @@ docker compose -f vector-database.yml ps
 docker compose -f vector-database.yml restart standalone
 ```
 
+### 诊断任务一直处于 queued / retrying
+
+```bash
+docker compose -f vector-database.yml ps
+docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-worker outbox-publisher
+```
+
+在 RabbitMQ 管理界面检查 `diagnosis.critical` 和 `diagnosis.default` 是否存在消费者。数据库中的 Outbox 事件会在发布失败后退避重试；Worker 异常退出后，执行租约到期的任务可被再次领取。
+
 ### Prometheus 没有数据
 
 1. 确认 http://localhost:9900/metrics 可以打开。
@@ -363,7 +391,7 @@ netstat -ano | findstr :9900
 taskkill /F /PID <PID>
 ```
 
-主要端口：`9900`、`5432`、`8001`、`8003`、`8004`、`9090`、`9093`、`19530`。
+主要端口：`9900`、`5432`、`5672`、`15672`、`8001`、`8003`、`8004`、`9090`、`9093`、`19530`。
 
 ## 参考资源
 
@@ -372,6 +400,8 @@ taskkill /F /PID <PID>
 - [LangGraph](https://langchain-ai.github.io/langgraph/)
 - [Milvus](https://milvus.io/)
 - [Prometheus](https://prometheus.io/)
+- [Celery](https://docs.celeryq.dev/)
+- [RabbitMQ](https://www.rabbitmq.com/)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 - [阿里云 DashScope](https://dashscope.aliyun.com/)
 

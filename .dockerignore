@@ -1,0 +1,17 @@
+.git
+.venv
+.env
+__pycache__
+*.pyc
+*.log
+*.pid
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov
+logs
+uploads
+volumes
+AI智能运维与OnCall诊断平台-技术面试题.md
+AI智能运维与OnCall诊断平台-秋招面试背诵版.md
+project_ai_oncall_diagnosis_platform.md

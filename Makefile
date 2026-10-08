@@ -37,8 +37,8 @@ help:
 	@echo "  $(YELLOW)make init$(NC)         - 🚀 一键初始化（Docker → 服务 → 上传文档）"
 	@echo ""
 	@echo "$(CYAN)【Docker 管理】$(NC)"
-	@echo "  $(YELLOW)make up$(NC)           - 🐳 启动 Milvus 容器"
-	@echo "  $(YELLOW)make down$(NC)         - 🛑 停止 Milvus 容器"
+	@echo "  $(YELLOW)make up$(NC)           - 🐳 启动数据库、RabbitMQ 与诊断 Worker"
+	@echo "  $(YELLOW)make down$(NC)         - 🛑 停止基础设施与诊断 Worker"
 	@echo "  $(YELLOW)make monitoring-up$(NC)   - 📈 启动 Prometheus/Alertmanager"
 	@echo "  $(YELLOW)make monitoring-down$(NC) - 🛑 停止 Prometheus/Alertmanager"
 	@echo "  $(YELLOW)make status$(NC)       - 📊 查看容器状态"
@@ -89,7 +89,7 @@ help:
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)使用示例:$(NC)"
 	@echo "  1. 一键初始化: $(YELLOW)make init$(NC)"
-	@echo "  2. 启动服务:   $(YELLOW)make start$(NC) (Milvus + 监控 + MCP + FastAPI)"
+	@echo "  2. 启动服务:   $(YELLOW)make start$(NC) (数据库 + RabbitMQ + Worker + 监控 + MCP + FastAPI)"
 	@echo "  3. 检查状态:   $(YELLOW)make status-mcp$(NC)"
 	@echo "  4. 停止服务:   $(YELLOW)make stop$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
@@ -123,6 +123,7 @@ init:
 	@echo "   Attu (Milvus Web UI): http://localhost:8001"
 	@echo "   MinIO: http://localhost:9001 (admin/minioadmin)"
 	@echo "   PostgreSQL: localhost:5432"
+	@echo "   RabbitMQ 管理界面: http://localhost:15672"
 	@echo ""
 	@echo "$(YELLOW)💡 提示: 服务正在后台运行$(NC)"
 	@echo "   查看日志: $(YELLOW)tail -f server.log$(NC)"
@@ -140,18 +141,18 @@ up:
 		colima start 2>/dev/null || (echo "$(RED)❌ 无法启动 Docker，请手动启动$(NC)" && exit 1); \
 		sleep 3; \
 	fi
-	@echo "$(YELLOW)🚀 启动 PostgreSQL 与 Milvus 相关容器...$(NC)"
-	@docker compose -f vector-database.yml up -d
+	@echo "$(YELLOW)🚀 启动数据库、RabbitMQ 与诊断 Worker...$(NC)"
+	@docker compose -f vector-database.yml up -d --build
 	@echo "$(YELLOW)⏳ 等待容器启动...$(NC)"
 	@sleep 5
 	@docker compose -f vector-database.yml ps
-	@echo "$(GREEN)✅ 数据库容器已启动：PostgreSQL localhost:5432，Milvus localhost:19530$(NC)"
+	@echo "$(GREEN)✅ 基础设施已启动：PostgreSQL localhost:5432，RabbitMQ localhost:5672，Milvus localhost:19530$(NC)"
 
 # 停止 Docker 容器
 down:
 	@echo "$(YELLOW)🛑 停止 Docker 容器...$(NC)"
 	@docker compose -f vector-database.yml down
-	@echo "$(GREEN)✅ PostgreSQL 与 Milvus 容器已停止$(NC)"
+	@echo "$(GREEN)✅ 数据库、RabbitMQ 与诊断 Worker 已停止$(NC)"
 
 # 查看容器状态
 status:

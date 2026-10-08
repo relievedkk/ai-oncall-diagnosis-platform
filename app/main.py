@@ -3,21 +3,21 @@
 主应用程序，配置路由、中间件、静态文件等
 """
 
+import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from contextlib import asynccontextmanager
-import os
-
-from app.config import config
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
+
 from app.api import aiops, alerts, chat, debug, file, health, metrics
-from app.core.milvus_client import milvus_manager
+from app.config import config
 from app.core.auth import ApiKeyMiddleware
 from app.core.metrics import prometheus_http_middleware
+from app.core.milvus_client import milvus_manager
 from app.db.session import database_manager
-from app.repositories.diagnosis import diagnosis_repository
 from app.services.alert_diagnosis_service import alert_diagnosis_service
 
 
@@ -33,19 +33,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔌 正在连接 PostgreSQL...")
     await database_manager.initialize()
-    interrupted = await diagnosis_repository.mark_incomplete_as_interrupted()
-    if interrupted:
-        logger.warning("已将 {} 个未完成的历史诊断标记为 interrupted", interrupted)
-    
+
     # 连接 Milvus
     logger.info("🔌 正在连接 Milvus...")
     milvus_manager.connect()
     logger.info("✅ Milvus 连接成功")
-    
+
     logger.info("=" * 60)
-    
+
     yield
-    
+
     # 关闭时执行
     await alert_diagnosis_service.shutdown()
     logger.info("🔌 正在关闭 Milvus 连接...")
@@ -114,7 +111,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "app.main:app",
         host=config.host,

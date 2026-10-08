@@ -47,6 +47,13 @@ class DiagnosisJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    worker_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     steps: Mapped[list[DiagnosisStep]] = relationship(
         back_populates="job", cascade="all, delete-orphan", passive_deletes=True
@@ -59,6 +66,9 @@ class DiagnosisJob(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         uselist=False,
+    )
+    outbox_events: Mapped[list[OutboxEvent]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", passive_deletes=True
     )
 
     __table_args__ = (Index("ix_diagnosis_jobs_created_at", "created_at"),)
@@ -127,3 +137,37 @@ class DiagnosisReport(Base):
     )
 
     job: Mapped[DiagnosisJob] = relationship(back_populates="report")
+
+
+class OutboxEvent(Base):
+    """Transactional hand-off from PostgreSQL to RabbitMQ."""
+
+    __tablename__ = "outbox_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    diagnosis_id: Mapped[str] = mapped_column(
+        ForeignKey("diagnosis_jobs.diagnosis_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    task_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    queue_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    job: Mapped[DiagnosisJob] = relationship(back_populates="outbox_events")
+
+    __table_args__ = (Index("ix_outbox_events_dispatch", "status", "available_at"),)

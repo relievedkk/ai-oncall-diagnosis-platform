@@ -1,0 +1,17 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /app
+
+RUN useradd --create-home --uid 10001 oncall \
+    && pip install --no-cache-dir uv
+
+COPY --chown=oncall:oncall . /app
+RUN chown oncall:oncall /app
+USER oncall
+RUN uv sync --frozen --no-dev
+
+CMD ["uv", "run", "--no-sync", "celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "--pool=solo"]

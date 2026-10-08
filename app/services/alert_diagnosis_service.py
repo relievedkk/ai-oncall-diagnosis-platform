@@ -1,4 +1,4 @@
-"""Persisted diagnosis orchestration for Alertmanager and manual runs."""
+"""Queue-facing diagnosis service for Alertmanager and manual requests."""
 
 from __future__ import annotations
 
@@ -9,26 +9,29 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from loguru import logger
-
-from app.core.metrics import AIOPS_ACTIVE, AIOPS_DIAGNOSES
+from app.config import config
 from app.models.alerts import AlertmanagerAlert, AlertmanagerWebhook
 from app.repositories.diagnosis import (
     DiagnosisRepository,
     InMemoryDiagnosisRepository,
     diagnosis_repository,
 )
-from app.services.aiops_service import aiops_service
+from app.services.diagnosis_runner import DiagnosisRunner, build_alert_task
 from app.services.service_catalog import service_catalog
 
 
 class AlertDiagnosisService:
-    """Create diagnoses and durably record their lifecycle and workflow events."""
+    """Persist requests atomically and let Celery execute them independently."""
 
-    def __init__(self, repository: DiagnosisRepository | None = None) -> None:
-        # New instances are isolated test-friendly services. The application singleton
-        # below explicitly receives the PostgreSQL repository.
+    def __init__(
+        self,
+        repository: DiagnosisRepository | None = None,
+        *,
+        inline_worker: bool | None = None,
+    ) -> None:
         self.repository = repository or InMemoryDiagnosisRepository()
+        self.inline_worker = repository is None if inline_worker is None else inline_worker
+        self.runner = DiagnosisRunner(self.repository)
         self._tasks: set[asyncio.Task[Any]] = set()
 
     @staticmethod
@@ -48,29 +51,13 @@ class AlertDiagnosisService:
 
     @staticmethod
     def build_task(alert: AlertmanagerAlert, service_name: str, service: dict[str, Any]) -> str:
-        payload = {
-            "alertname": alert.labels.get("alertname", "unknown"),
-            "severity": alert.labels.get("severity", "unknown"),
-            "service": service_name,
-            "instance": alert.labels.get("instance", ""),
-            "starts_at": alert.starts_at,
-            "summary": alert.annotations.get("summary", ""),
-            "description": alert.annotations.get("description", ""),
-            "prometheus_job": service.get("prometheus_job", service_name),
-            "metrics": service.get("metrics", {}),
-            "cls": service.get("cls", {}),
-            "owner": service.get("owner", "unknown"),
-        }
-        return (
-            "对下列 Alertmanager firing 告警执行真实诊断。\n"
-            f"告警与服务映射：{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
-            "要求：\n"
-            "1. 先用 Prometheus 告警工具确认告警仍在 firing。\n"
-            "2. 只查询该服务及告警时间窗口的真实指标和日志；优先使用上述 metrics 和 CLS 映射。\n"
-            "3. 每个结论都要写明证据来源、查询时间范围和关键数值。\n"
-            "4. 工具无法获取数据时必须明确写明证据缺失，禁止编造。\n"
-            "5. 输出 Markdown 报告，包含告警摘要、指标证据、日志证据、根因判断、处理建议和恢复验证项。"
-        )
+        return build_alert_task(alert, service_name, service)
+
+    @staticmethod
+    def _queue_for_severity(severity: str | None) -> str:
+        if (severity or "").lower() == "critical":
+            return config.celery_critical_queue
+        return config.celery_default_queue
 
     async def handle_webhook(self, payload: AlertmanagerWebhook) -> list[str]:
         diagnosis_ids: list[str] = []
@@ -81,8 +68,9 @@ class AlertDiagnosisService:
 
             event_key = self._event_key(alert)
             diagnosis_id = self._diagnosis_id(event_key)
-            service_name, service = service_catalog.resolve(alert.labels)
-            job, created = await self.repository.create_or_get_job(
+            service_name, _ = service_catalog.resolve(alert.labels)
+            queue_name = self._queue_for_severity(alert.labels.get("severity"))
+            job, created = await self.repository.create_or_get_job_and_enqueue(
                 {
                     "diagnosis_id": diagnosis_id,
                     "event_key": event_key,
@@ -94,75 +82,22 @@ class AlertDiagnosisService:
                     "alert_name": alert.labels.get("alertname"),
                     "severity": alert.labels.get("severity"),
                     "alert": alert.model_dump(by_alias=True),
-                }
+                },
+                queue_name,
             )
             diagnosis_ids.append(diagnosis_id)
 
             should_run = created
             if not created and job["status"] == "interrupted":
-                await self.repository.reset_interrupted(diagnosis_id)
-                should_run = True
-            if not should_run:
-                continue
-
-            task = asyncio.create_task(
-                self._run_alert_diagnosis(diagnosis_id, alert, service_name, service),
-                name=f"alert-diagnosis-{diagnosis_id}",
-            )
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+                should_run = await self.repository.requeue_interrupted(diagnosis_id, queue_name)
+            if should_run and self.inline_worker:
+                self._start_inline(diagnosis_id)
 
         return diagnosis_ids
 
-    async def _run_alert_diagnosis(
-        self,
-        diagnosis_id: str,
-        alert: AlertmanagerAlert,
-        service_name: str,
-        service: dict[str, Any],
-    ) -> None:
-        trigger = "alertmanager"
-        AIOPS_DIAGNOSES.labels(trigger=trigger, status="started").inc()
-        AIOPS_ACTIVE.labels(trigger=trigger).inc()
-        await self.repository.update_job(diagnosis_id, status="running", error=None)
-        try:
-            prompt = self.build_task(alert, service_name, service)
-            async for event in aiops_service.execute(prompt, session_id=diagnosis_id):
-                await self.repository.record_event(diagnosis_id, event)
-                if event.get("type") == "error":
-                    raise RuntimeError(str(event.get("message", "diagnosis failed")))
-
-            await self.repository.update_job(diagnosis_id, status="completed", error=None)
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status="completed").inc()
-        except asyncio.CancelledError:
-            await self.repository.record_event(
-                diagnosis_id,
-                {
-                    "type": "error",
-                    "stage": "interrupted",
-                    "message": "diagnosis task was cancelled",
-                },
-            )
-            await self.repository.update_job(
-                diagnosis_id, status="interrupted", error="diagnosis task was cancelled"
-            )
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status="interrupted").inc()
-            raise
-        except Exception as exc:
-            logger.exception("Alert-triggered diagnosis failed: {}", diagnosis_id)
-            await self.repository.record_event(
-                diagnosis_id,
-                {"type": "error", "stage": "exception", "message": str(exc)},
-            )
-            await self.repository.update_job(diagnosis_id, status="failed", error=str(exc))
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status="failed").inc()
-        finally:
-            AIOPS_ACTIVE.labels(trigger=trigger).dec()
-
-    async def diagnose_manual(self, session_id: str) -> AsyncGenerator[dict[str, Any], None]:
-        """Run the existing SSE diagnosis while persisting the same durable artifacts."""
+    async def enqueue_manual(self, session_id: str) -> str:
         diagnosis_id = f"diag-manual-{uuid.uuid4().hex[:16]}"
-        await self.repository.create_or_get_job(
+        await self.repository.create_or_get_job_and_enqueue(
             {
                 "diagnosis_id": diagnosis_id,
                 "event_key": f"manual:{diagnosis_id}",
@@ -174,59 +109,60 @@ class AlertDiagnosisService:
                 "alert_name": "ManualDiagnosis",
                 "severity": None,
                 "alert": {"session_id": session_id, "source": "manual"},
-            }
+            },
+            config.celery_default_queue,
         )
-        created_event = {
-            "type": "status",
-            "stage": "job_created",
-            "message": "诊断任务已创建",
-            "diagnosis_id": diagnosis_id,
-        }
-        await self.repository.record_event(diagnosis_id, created_event)
-        yield created_event
-
-        trigger = "manual"
-        AIOPS_DIAGNOSES.labels(trigger=trigger, status="started").inc()
-        AIOPS_ACTIVE.labels(trigger=trigger).inc()
-        await self.repository.update_job(diagnosis_id, status="running")
-        terminal_status = "completed"
-        try:
-            async for event in aiops_service.diagnose(session_id=session_id):
-                event = {**event, "diagnosis_id": diagnosis_id}
-                await self.repository.record_event(diagnosis_id, event)
-                if event.get("type") == "error":
-                    terminal_status = "failed"
-                    await self.repository.update_job(
-                        diagnosis_id, status="failed", error=str(event.get("message", "failed"))
-                    )
-                yield event
-            if terminal_status == "completed":
-                await self.repository.update_job(diagnosis_id, status="completed", error=None)
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status=terminal_status).inc()
-        except asyncio.CancelledError:
-            await self.repository.record_event(
-                diagnosis_id,
-                {"type": "error", "stage": "interrupted", "message": "client disconnected"},
-            )
-            await self.repository.update_job(
-                diagnosis_id, status="interrupted", error="client disconnected"
-            )
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status="interrupted").inc()
-            raise
-        except Exception as exc:
-            error_event = {
-                "type": "error",
-                "stage": "exception",
-                "message": f"诊断异常: {exc}",
+        await self.repository.record_event(
+            diagnosis_id,
+            {
+                "type": "status",
+                "stage": "job_created",
+                "message": "诊断任务已进入独立队列",
                 "diagnosis_id": diagnosis_id,
-            }
-            await self.repository.record_event(diagnosis_id, error_event)
-            await self.repository.update_job(diagnosis_id, status="failed", error=str(exc))
-            AIOPS_DIAGNOSES.labels(trigger=trigger, status="failed").inc()
-            logger.exception("Manual diagnosis failed: {}", diagnosis_id)
-            yield error_event
-        finally:
-            AIOPS_ACTIVE.labels(trigger=trigger).dec()
+            },
+        )
+        if self.inline_worker:
+            self._start_inline(diagnosis_id)
+        return diagnosis_id
+
+    async def diagnose_manual(self, session_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        diagnosis_id = await self.enqueue_manual(session_id)
+        async for event in self.stream_job(diagnosis_id):
+            yield event
+
+    async def stream_job(self, diagnosis_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        seen_evidence: set[int] = set()
+        while True:
+            job = await self.repository.get_job(diagnosis_id)
+            if job is None:
+                yield {
+                    "type": "error",
+                    "stage": "queue",
+                    "message": "诊断任务不存在",
+                    "diagnosis_id": diagnosis_id,
+                }
+                return
+            for evidence in job["evidence"]:
+                evidence_id = int(evidence["id"])
+                if evidence_id in seen_evidence:
+                    continue
+                seen_evidence.add(evidence_id)
+                yield evidence["payload"]
+            if job["status"] in {"completed", "failed", "interrupted"}:
+                return
+            await asyncio.sleep(0.5)
+
+    def _start_inline(self, diagnosis_id: str) -> None:
+        task = asyncio.create_task(
+            self.runner.run(
+                diagnosis_id,
+                celery_task_id=f"inline-{diagnosis_id}",
+                worker_name="inline-test-worker",
+            ),
+            name=f"inline-diagnosis-{diagnosis_id}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def get_job(self, diagnosis_id: str) -> dict[str, Any] | None:
         return await self.repository.get_job(diagnosis_id)
@@ -235,7 +171,6 @@ class AlertDiagnosisService:
         return await self.repository.list_jobs()
 
     async def shutdown(self) -> None:
-        """Cancel in-flight jobs before the database pool is disposed."""
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -243,4 +178,7 @@ class AlertDiagnosisService:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-alert_diagnosis_service = AlertDiagnosisService(repository=diagnosis_repository)
+alert_diagnosis_service = AlertDiagnosisService(
+    repository=diagnosis_repository,
+    inline_worker=False,
+)

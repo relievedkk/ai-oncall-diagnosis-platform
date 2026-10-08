@@ -139,17 +139,17 @@ echo.
 REM Set Python command
 set PYTHON_CMD=.venv\Scripts\python.exe
 
-REM Start Docker Compose (PostgreSQL + Milvus)
-echo [4/9] Starting PostgreSQL and Milvus databases...
-docker compose -f vector-database.yml up -d
+REM Start Docker Compose (PostgreSQL + RabbitMQ + Milvus + diagnosis workers)
+echo [4/9] Starting databases, RabbitMQ and diagnosis workers...
+docker compose -f vector-database.yml up -d --build
 if errorlevel 1 (
     echo [ERROR] Docker startup failed, make sure Docker Desktop is running
     pause
     exit /b 1
 )
-echo [INFO] Waiting for PostgreSQL and Milvus to be ready ^(10s^)...
+echo [INFO] Waiting for infrastructure and workers to be ready ^(10s^)...
 timeout /t 10 /nobreak >nul
-echo [OK] PostgreSQL and Milvus databases ready
+echo [OK] PostgreSQL, RabbitMQ, Milvus and diagnosis workers ready
 echo.
 
 REM Start Prometheus stack
@@ -255,6 +255,7 @@ echo  All services started!
 echo ====================================
 echo Web UI:   http://localhost:9900
 echo API docs: http://localhost:9900/docs
+echo RabbitMQ: http://localhost:15672 ^(oncall/oncall for local development^)
 echo.
 echo View logs:
 echo   - FastAPI: logs\app_*.log (Loguru, auto-rotated)
