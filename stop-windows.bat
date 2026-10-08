@@ -55,18 +55,18 @@ if not errorlevel 1 (
 )
 echo.
 
-REM Stop Docker (Milvus)
-echo [5/5] Stopping Milvus container...
-docker ps --format "{{.Names}}" | findstr "milvus" >nul 2>&1
+REM Stop Docker (PostgreSQL + Milvus)
+echo [5/5] Stopping PostgreSQL and Milvus containers...
+docker ps --format "{{.Names}}" | findstr /R "milvus oncall-postgres" >nul 2>&1
 if not errorlevel 1 (
     docker compose -f vector-database.yml down
     if errorlevel 1 (
         echo [ERROR] Docker stop failed.
     ) else (
-        echo [OK] Milvus container stopped.
+        echo [OK] PostgreSQL and Milvus containers stopped.
     )
 ) else (
-    echo [INFO] Milvus container was not running.
+    echo [INFO] PostgreSQL and Milvus containers were not running.
 )
 echo.
 
@@ -76,7 +76,7 @@ echo ====================================
 echo.
 echo Tip:
 echo   - Service data volumes were preserved.
-echo   - To remove all Milvus Docker data volumes, run:
+echo   - To remove PostgreSQL and Milvus Docker data volumes, run:
 echo     docker compose -f vector-database.yml down -v
 echo.
 pause

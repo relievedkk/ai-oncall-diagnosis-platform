@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 9900
 
+    # PostgreSQL：持久化诊断任务、步骤、证据和报告
+    database_url: str = "postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall"
+    database_auto_create: bool = True
+    database_connect_retries: int = 15
+    database_connect_retry_seconds: float = 2.0
+    database_pool_size: int = 10
+    database_max_overflow: int = 20
+
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
     dashscope_model: str = "qwen-max"

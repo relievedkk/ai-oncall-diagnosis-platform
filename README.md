@@ -22,6 +22,7 @@ flowchart LR
     User[用户 / OnCall 工程师] --> Web[Web 与 FastAPI]
     Docs[运维文档] --> RAG[RAG 索引服务]
     RAG --> Milvus[(Milvus)]
+    Web --> PostgreSQL[(PostgreSQL)]
     Web --> Agent[对话 Agent / AIOps Agent]
     Agent --> Milvus
     Agent --> Monitor[Monitor MCP]
@@ -30,6 +31,7 @@ flowchart LR
     Prometheus -->|告警规则| Alertmanager[Alertmanager]
     Alertmanager -->|Webhook| Jobs[自动诊断任务]
     Jobs --> Agent
+    Jobs --> PostgreSQL
     Monitor --> Prometheus
     CLS --> Logs[腾讯云 CLS / 本地示例日志]
 ```
@@ -40,8 +42,8 @@ flowchart LR
 2. Prometheus 每 15 秒采集指标并计算告警规则。
 3. 告警进入 `firing` 后，Alertmanager 调用 `/api/alerts/webhook`。
 4. 后台创建 AIOps 诊断任务，查询 Prometheus、CLS 和 Milvus。
-5. Planner、Executor、Replanner 迭代执行并生成根因、证据与处置建议。
-6. 告警恢复后，任务状态同步更新为 `resolved`。
+5. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
+6. 最终 Markdown 报告独立持久化；告警恢复后，任务状态同步更新为 `resolved`。
 
 ## 快速开始
 
@@ -71,7 +73,7 @@ notepad .env
 启动脚本会依次完成：
 
 - 创建或同步 `.venv`
-- 启动 Milvus、MinIO 和 Attu
+- 启动 PostgreSQL、Milvus、MinIO 和 Attu
 - 启动 Prometheus、Alertmanager、Node Exporter 和 cAdvisor
 - 启动 CLS MCP 与 Monitor MCP
 - 启动 FastAPI
@@ -122,6 +124,7 @@ make status-mcp  # 查看 MCP 服务状态
 | Prometheus | http://localhost:9090 | 查询指标、目标状态和告警规则 |
 | Alertmanager | http://localhost:9093 | 查看正在触发或已恢复的告警 |
 | Attu | http://localhost:8001 | 查看和管理 Milvus 中的向量数据 |
+| PostgreSQL | `localhost:5432` | 持久化诊断任务、步骤、证据和报告；无 Web 页面 |
 
 ## 配置
 
@@ -154,11 +157,21 @@ MCP_MONITOR_URL=http://127.0.0.1:8004/mcp
 PROMETHEUS_BASE_URL=http://127.0.0.1:9090
 SERVICE_CATALOG_PATH=config/service_catalog.json
 
+# PostgreSQL 诊断存储
+DATABASE_URL=postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
+DATABASE_AUTO_CREATE=true
+
 # 默认禁止故障注入
 FAULT_INJECTION_ENABLED=false
 ```
 
 完整字段及安全说明见 [.env.example](.env.example)。`.env` 已加入 `.gitignore`，不要把真实密钥提交到仓库。
+
+本地首次启动时会自动执行 Alembic 数据库迁移。生产环境建议设置 `DATABASE_AUTO_CREATE=false`，在发布阶段单独执行：
+
+```bash
+uv run alembic upgrade head
+```
 
 ### API 认证
 
@@ -227,6 +240,8 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 
 当 `AUTH_ENABLED=false` 时，表格中的认证接口也可在本地直接访问。
 
+任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会写入同一套表。
+
 ### 请求示例
 
 ```bash
@@ -275,7 +290,9 @@ ai-oncall-diagnosis-platform/
 │   ├── agent/aiops/                 # Planner、Executor、Replanner
 │   ├── api/                         # 对话、文件、告警、指标和调试接口
 │   ├── core/                        # 配置、认证、LLM、Milvus、指标
+│   ├── db/                          # PostgreSQL 会话与诊断数据模型
 │   ├── models/                      # API 与告警数据模型
+│   ├── repositories/                # 诊断持久化 Repository
 │   ├── services/                    # RAG、向量库、自动诊断与服务目录
 │   ├── tools/                       # 知识库、时间和 Prometheus 工具
 │   └── main.py                      # FastAPI 入口
@@ -283,6 +300,7 @@ ai-oncall-diagnosis-platform/
 ├── config/service_catalog.json      # 服务、Prometheus 和 CLS 映射
 ├── mcp_servers/                     # CLS MCP 与 Monitor MCP
 ├── monitoring/                      # Prometheus 与 Alertmanager 配置
+├── migrations/                      # Alembic 数据库迁移
 ├── static/                          # Web 前端
 ├── tests/                           # 自动化测试
 ├── .env.example                     # 安全配置模板
@@ -310,6 +328,7 @@ uv run pytest -q
 仓库内的 Compose 文件面向本地开发，不能原样暴露到公网：
 
 - MinIO 使用本地默认凭证，并映射了管理端口。
+- PostgreSQL 使用本地开发凭证并映射了端口，生产环境必须更换密码并限制网络访问。
 - Prometheus、Alertmanager、Milvus 和 Attu 默认映射到宿主机端口。
 - cAdvisor 使用特权模式并读取 Docker/宿主机相关目录。
 - `/metrics`、`/health` 和 API 文档为公开端点。
@@ -344,7 +363,7 @@ netstat -ano | findstr :9900
 taskkill /F /PID <PID>
 ```
 
-主要端口：`9900`、`8001`、`8003`、`8004`、`9090`、`9093`、`19530`。
+主要端口：`9900`、`5432`、`8001`、`8003`、`8004`、`9090`、`9093`、`19530`。
 
 ## 参考资源
 

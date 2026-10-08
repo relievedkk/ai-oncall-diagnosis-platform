@@ -16,6 +16,9 @@ from app.api import aiops, alerts, chat, debug, file, health, metrics
 from app.core.milvus_client import milvus_manager
 from app.core.auth import ApiKeyMiddleware
 from app.core.metrics import prometheus_http_middleware
+from app.db.session import database_manager
+from app.repositories.diagnosis import diagnosis_repository
+from app.services.alert_diagnosis_service import alert_diagnosis_service
 
 
 @asynccontextmanager
@@ -27,6 +30,12 @@ async def lifespan(app: FastAPI):
     logger.info(f"📝 环境: {'开发' if config.debug else '生产'}")
     logger.info(f"🌐 监听地址: http://{config.host}:{config.port}")
     logger.info(f"📚 API 文档: http://{config.host}:{config.port}/docs")
+
+    logger.info("🔌 正在连接 PostgreSQL...")
+    await database_manager.initialize()
+    interrupted = await diagnosis_repository.mark_incomplete_as_interrupted()
+    if interrupted:
+        logger.warning("已将 {} 个未完成的历史诊断标记为 interrupted", interrupted)
     
     # 连接 Milvus
     logger.info("🔌 正在连接 Milvus...")
@@ -38,8 +47,10 @@ async def lifespan(app: FastAPI):
     yield
     
     # 关闭时执行
+    await alert_diagnosis_service.shutdown()
     logger.info("🔌 正在关闭 Milvus 连接...")
     milvus_manager.close()
+    await database_manager.close()
     logger.info(f"👋 {config.app_name} 关闭")
 
 

@@ -292,12 +292,15 @@ class AIOpsService:
         past_steps = state.get("past_steps", [])
 
         if past_steps:
-            last_step, _ = past_steps[-1]
+            last_step, result = past_steps[-1]
             return {
                 "type": "step_complete",
                 "stage": "step_executed",
                 "message": f"步骤执行完成 ({len(past_steps)}/{len(past_steps) + len(plan)})",
                 "current_step": last_step,
+                # 完整步骤输出会作为诊断证据持久化；前端可按需只展示摘要。
+                "result": result,
+                "result_preview": str(result)[:500],
                 "remaining_steps": len(plan)
             }
         else:

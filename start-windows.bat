@@ -1,6 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 set MONITORING_PROJECT=oncallagent-monitoring
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 
 echo ====================================
 echo  Start AI OnCall Diagnosis Platform
@@ -137,22 +139,17 @@ echo.
 REM Set Python command
 set PYTHON_CMD=.venv\Scripts\python.exe
 
-REM Start Docker Compose (Milvus)
-echo [4/9] Starting Milvus vector database...
-docker ps --format "{{.Names}}" | findstr "milvus-standalone" >nul 2>&1
-if not errorlevel 1 (
-    echo [INFO] Milvus is already running
-) else (
-    docker compose -f vector-database.yml up -d
-    if errorlevel 1 (
-        echo [ERROR] Docker startup failed, make sure Docker Desktop is running
-        pause
-        exit /b 1
-    )
-    echo [INFO] Waiting for Milvus to be ready ^(10s^)...
-    timeout /t 10 /nobreak >nul
+REM Start Docker Compose (PostgreSQL + Milvus)
+echo [4/9] Starting PostgreSQL and Milvus databases...
+docker compose -f vector-database.yml up -d
+if errorlevel 1 (
+    echo [ERROR] Docker startup failed, make sure Docker Desktop is running
+    pause
+    exit /b 1
 )
-echo [OK] Milvus database ready
+echo [INFO] Waiting for PostgreSQL and Milvus to be ready ^(10s^)...
+timeout /t 10 /nobreak >nul
+echo [OK] PostgreSQL and Milvus databases ready
 echo.
 
 REM Start Prometheus stack

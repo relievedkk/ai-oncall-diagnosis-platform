@@ -41,6 +41,13 @@ async def test_firing_alert_creates_and_completes_diagnosis(monkeypatch):
     async def fake_execute(prompt: str, session_id: str):
         captured["prompt"] = prompt
         captured["session_id"] = session_id
+        yield {"type": "plan", "stage": "plan_created", "plan": ["query metrics"]}
+        yield {
+            "type": "step_complete",
+            "stage": "step_executed",
+            "current_step": "query metrics",
+            "result": "http_5xx_rate=0.08",
+        }
         yield {"type": "report", "report": "# evidence-backed report"}
         yield {"type": "complete", "response": "# evidence-backed report"}
 
@@ -55,6 +62,14 @@ async def test_firing_alert_creates_and_completes_diagnosis(monkeypatch):
     assert job is not None
     assert job["status"] == "completed"
     assert job["report"] == "# evidence-backed report"
+    assert job["steps"][0]["status"] == "completed"
+    assert job["steps"][0]["result"] == "http_5xx_rate=0.08"
+    assert [item["evidence_type"] for item in job["evidence"]] == [
+        "plan",
+        "step_complete",
+        "report",
+        "complete",
+    ]
     assert "HighHTTPErrorRate" in captured["prompt"]
     assert "Prometheus" in captured["prompt"]
 
@@ -77,3 +92,32 @@ async def test_resolved_notification_updates_alert_state(monkeypatch):
     assert job is not None
     assert job["alert_status"] == "resolved"
     assert job["resolved_at"] == "2026-10-07T10:10:00+08:00"
+
+
+@pytest.mark.asyncio
+async def test_manual_diagnosis_is_persisted(monkeypatch):
+    async def fake_diagnose(session_id: str):
+        yield {"type": "plan", "stage": "plan_created", "plan": ["inspect logs"]}
+        yield {
+            "type": "step_complete",
+            "stage": "step_executed",
+            "current_step": "inspect logs",
+            "result": "timeout_count=12",
+        }
+        yield {
+            "type": "complete",
+            "stage": "diagnosis_complete",
+            "diagnosis": {"status": "completed", "report": "# manual report"},
+        }
+
+    monkeypatch.setattr(aiops_service, "diagnose", fake_diagnose)
+    service = AlertDiagnosisService()
+    events = [event async for event in service.diagnose_manual("manual-session")]
+
+    diagnosis_id = events[0]["diagnosis_id"]
+    job = await service.get_job(diagnosis_id)
+    assert job is not None
+    assert job["trigger"] == "manual"
+    assert job["status"] == "completed"
+    assert job["steps"][0]["result"] == "timeout_count=12"
+    assert job["report"] == "# manual report"
