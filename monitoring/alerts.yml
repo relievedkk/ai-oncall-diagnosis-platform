@@ -75,6 +75,48 @@ groups:
           summary: AIOps 自动诊断失败
           description: 最近 10 分钟内至少有一次 AIOps 自动诊断失败。
 
+  - name: ai-oncall-agent-queue-reliability
+    rules:
+      - alert: DiagnosisDeadLetterBacklog
+        expr: oncall_rabbitmq_queue_messages{queue="diagnosis.dead-letter",state="ready"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 诊断任务进入死信队列
+          description: 至少一个诊断任务已耗尽重试，需要人工检查或重放。
+
+      - alert: DiagnosisQueueHasNoConsumer
+        expr: oncall_rabbitmq_queue_consumers{queue=~"diagnosis.(critical|default)"} < 1
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 诊断队列没有可用 Worker
+          description: critical 或 default 队列连续 2 分钟没有消费者。
+
+      - alert: DiagnosisOutboxStalled
+        expr: oncall_outbox_oldest_pending_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+          service: ai-oncall-agent
+        annotations:
+          summary: 诊断 Outbox 发布阻塞
+          description: 最老的待发布诊断事件已滞留超过 60 秒。
+
+      - alert: QueueObserverDown
+        expr: oncall_queue_observer_up == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: ai-oncall-agent
+        annotations:
+          summary: 队列可观测采集失败
+          description: 应用无法通过 RabbitMQ 管理 API 完成认证并读取队列状态。
+
   - name: ai-oncall-agent-e2e
     rules:
       - alert: AIOpsSyntheticFault

@@ -148,7 +148,7 @@ class AlertDiagnosisService:
                     continue
                 seen_evidence.add(evidence_id)
                 yield evidence["payload"]
-            if job["status"] in {"completed", "failed", "interrupted"}:
+            if job["status"] in {"completed", "failed", "interrupted", "dead_lettered"}:
                 return
             await asyncio.sleep(0.5)
 

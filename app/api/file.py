@@ -5,10 +5,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-
-from app.services.vector_index_service import vector_index_service
-from app.core.auth import is_path_allowed
 from loguru import logger
+
+from app.core.auth import is_path_allowed
+from app.services.vector_index_service import vector_index_service
 
 router = APIRouter()
 
@@ -69,16 +69,27 @@ async def upload_file(file: UploadFile = File(...)):
 
         logger.info(f"文件上传成功: {file_path}")
 
-        # 5. 自动创建向量索引
+        # 6. 自动创建向量索引。该操作是同步且可能较慢，放入线程避免阻塞事件循环。
         try:
             logger.info(f"开始为上传文件创建向量索引: {file_path}")
-            vector_index_service.index_single_file(str(file_path))
+            await asyncio.to_thread(
+                vector_index_service.index_single_file,
+                str(file_path),
+            )
             logger.info(f"向量索引创建成功: {file_path}")
         except Exception as e:
             logger.error(f"向量索引创建失败: {file_path}, 错误: {e}")
-            # 注意：即使索引失败，文件上传仍然成功，只是记录错误日志
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "文件已保存，但向量索引创建失败，可稍后重试索引",
+                    "filename": safe_filename,
+                    "index_status": "failed",
+                    "error": str(e),
+                },
+            ) from e
 
-        # 6. 返回响应
+        # 7. 只有文件保存和向量索引都成功才返回成功。
         return JSONResponse(
             status_code=200,
             content={
@@ -96,7 +107,7 @@ async def upload_file(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}") from e
 
 
 @router.post("/index_directory")
@@ -137,9 +148,11 @@ async def index_directory(directory_path: str = None):
             },
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"索引目录失败: {e}")
-        raise HTTPException(status_code=500, detail=f"索引目录失败: {e}")
+        raise HTTPException(status_code=500, detail=f"索引目录失败: {e}") from e
 
 
 def _get_file_extension(filename: str) -> str:

@@ -47,6 +47,14 @@ async def test_firing_alert_creates_and_completes_diagnosis(monkeypatch):
             "stage": "step_executed",
             "current_step": "query metrics",
             "result": "http_5xx_rate=0.08",
+            "tool_evidence": [
+                {
+                    "evidence_type": "metric",
+                    "source": "query_service_metric",
+                    "query": {"metric": "http_5xx_rate"},
+                    "result": "0.08",
+                }
+            ],
         }
         yield {"type": "report", "report": "# evidence-backed report"}
         yield {"type": "complete", "response": "# evidence-backed report"}
@@ -67,11 +75,13 @@ async def test_firing_alert_creates_and_completes_diagnosis(monkeypatch):
     assert [item["evidence_type"] for item in job["evidence"]] == [
         "plan",
         "step_complete",
+        "metric",
         "report",
         "complete",
     ]
     assert "HighHTTPErrorRate" in captured["prompt"]
     assert "Prometheus" in captured["prompt"]
+    assert job["evidence"][2]["source"] == "query_service_metric"
 
     duplicate_ids = await service.handle_webhook(_payload())
     assert duplicate_ids == diagnosis_ids

@@ -6,9 +6,9 @@
     ".git",
     "logs"
   ],
-  "pythonPath": "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
-  "pythonVersion": "3.10",
-  "pythonPlatform": "Darwin",
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   
   "reportMissingImports": "none",

@@ -4,13 +4,15 @@
 """
 
 import json
+
 from fastapi import APIRouter, HTTPException
-from sse_starlette.sse import EventSourceResponse
-from app.models.request import ChatRequest, ClearRequest
-from app.models.response import SessionInfoResponse, ApiResponse
-from app.agent.mcp_client import format_exception_chain
-from app.services.rag_agent_service import rag_agent_service
 from loguru import logger
+from sse_starlette.sse import EventSourceResponse
+
+from app.agent.mcp_client import format_exception_chain
+from app.models.request import ChatRequest, ClearRequest
+from app.models.response import ApiResponse, SessionInfoResponse
+from app.services.rag_agent_service import rag_agent_service
 
 router = APIRouter()
 
@@ -181,7 +183,7 @@ async def clear_session(request: ClearRequest):
         操作结果
     """
     try:
-        success = rag_agent_service.clear_session(request.session_id)
+        success = await rag_agent_service.clear_session(request.session_id)
         logger.info(f"清空会话: {request.session_id}, 结果: {success}")
 
         return ApiResponse(
@@ -192,7 +194,7 @@ async def clear_session(request: ClearRequest):
 
     except Exception as e:
         logger.error(f"清空会话错误: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/chat/session/{session_id}", response_model=SessionInfoResponse)
@@ -206,7 +208,7 @@ async def get_session_info(session_id: str) -> SessionInfoResponse:
         会话信息
     """
     try:
-        history = rag_agent_service.get_session_history(session_id)
+        history = await rag_agent_service.get_session_history(session_id)
 
         return SessionInfoResponse(
             session_id=session_id,
@@ -216,4 +218,4 @@ async def get_session_info(session_id: str) -> SessionInfoResponse:
 
     except Exception as e:
         logger.error(f"获取会话信息错误: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

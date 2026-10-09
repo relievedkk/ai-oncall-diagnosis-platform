@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+from typing import Any
 
 from celery import Task
 from loguru import logger
@@ -18,6 +20,31 @@ from app.services.diagnosis_runner import (
 
 _worker_loop: asyncio.AbstractEventLoop | None = None
 _runner = DiagnosisRunner(diagnosis_repository)
+
+
+def build_dead_letter_payload(
+    diagnosis_id: str,
+    error: str,
+    retries: int,
+) -> dict[str, Any]:
+    """Build the durable failure envelope stored in the dead-letter queue."""
+    return {
+        "diagnosis_id": diagnosis_id,
+        "error": error,
+        "retries": retries,
+        "failed_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def publish_dead_letter(diagnosis_id: str, error: str, retries: int) -> None:
+    """Publish a terminal failure for operational inspection and manual replay."""
+    celery_app.send_task(
+        "app.tasks.diagnosis.dead_letter",
+        kwargs={"payload": build_dead_letter_payload(diagnosis_id, error, retries)},
+        task_id=f"dead-{diagnosis_id}-{retries}",
+        queue=config.celery_dead_letter_queue,
+        routing_key="dead",
+    )
 
 
 def _run_async(coroutine):
@@ -49,6 +76,15 @@ def run_diagnosis(self: Task, diagnosis_id: str) -> str:
     except Exception as exc:
         retries = int(self.request.retries or 0)
         if retries >= config.celery_task_max_retries:
+            error = str(exc)
+            _run_async(diagnosis_repository.mark_dead_lettered(diagnosis_id, error))
+            try:
+                publish_dead_letter(diagnosis_id, error, retries)
+            except Exception:
+                logger.exception(
+                    "Failed to publish dead-letter envelope for diagnosis {}",
+                    diagnosis_id,
+                )
             raise
         _run_async(diagnosis_repository.prepare_retry(diagnosis_id, str(exc)))
         countdown = min(300, 10 * (2**retries))

@@ -37,12 +37,22 @@ class Settings(BaseSettings):
     celery_broker_url: str = "amqp://oncall:oncall@127.0.0.1:5672//"
     celery_default_queue: str = "diagnosis.default"
     celery_critical_queue: str = "diagnosis.critical"
+    celery_dead_letter_queue: str = "diagnosis.dead-letter"
     celery_task_soft_time_limit: int = 1740
     celery_task_time_limit: int = 1800
     celery_task_max_retries: int = 5
     diagnosis_lease_seconds: int = 90
     diagnosis_heartbeat_seconds: int = 30
     outbox_poll_interval_seconds: float = 1.0
+    rabbitmq_management_url: str = "http://127.0.0.1:15672"
+    rabbitmq_default_user: str = "oncall"
+    rabbitmq_default_pass: str = "oncall"
+    queue_observer_interval_seconds: float = 15.0
+
+    # LangGraph durable checkpoints. The explicit URL uses psycopg syntax;
+    # when empty it is derived from DATABASE_URL.
+    langgraph_checkpoint_enabled: bool = True
+    langgraph_checkpoint_database_url: str = ""
 
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
@@ -115,6 +125,13 @@ class Settings(BaseSettings):
     def allowed_index_root_list(self) -> list[str]:
         """解析允许的索引根目录列表。"""
         return [r.strip() for r in self.allowed_index_roots.split(",") if r.strip()]
+
+    @property
+    def checkpoint_database_url(self) -> str:
+        """Return a psycopg-compatible URL for LangGraph checkpoints."""
+        if self.langgraph_checkpoint_database_url:
+            return self.langgraph_checkpoint_database_url
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
     @property
     def mcp_servers(self) -> dict[str, dict[str, Any]]:

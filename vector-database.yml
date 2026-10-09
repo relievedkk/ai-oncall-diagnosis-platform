@@ -4,6 +4,7 @@ x-diagnosis-environment: &diagnosis-environment
   CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
   CELERY_DEFAULT_QUEUE: ${CELERY_DEFAULT_QUEUE:-diagnosis.default}
   CELERY_CRITICAL_QUEUE: ${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
+  CELERY_DEAD_LETTER_QUEUE: ${CELERY_DEAD_LETTER_QUEUE:-diagnosis.dead-letter}
   CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-5}
   DIAGNOSIS_LEASE_SECONDS: ${DIAGNOSIS_LEASE_SECONDS:-90}
   DIAGNOSIS_HEARTBEAT_SECONDS: ${DIAGNOSIS_HEARTBEAT_SECONDS:-30}
@@ -72,8 +73,19 @@ services:
         condition: service_healthy
     restart: "no"
 
-  diagnosis-worker:
-    container_name: oncall-diagnosis-worker
+  queue-bootstrap:
+    image: ai-oncall-worker:local
+    command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.queue_bootstrap"]
+    environment: *diagnosis-environment
+    depends_on:
+      diagnosis-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    restart: "no"
+
+  diagnosis-critical-worker:
+    container_name: oncall-diagnosis-critical-worker
     image: ai-oncall-worker:local
     command:
       - uv
@@ -85,13 +97,35 @@ services:
       - worker
       - --loglevel=INFO
       - --pool=solo
-      - --queues=diagnosis.critical,diagnosis.default
+      - --hostname=critical@%h
+      - --queues=diagnosis.critical
     environment: *diagnosis-environment
     depends_on:
-      diagnosis-migrate:
+      queue-bootstrap:
         condition: service_completed_successfully
-      rabbitmq:
+      standalone:
         condition: service_healthy
+    restart: unless-stopped
+
+  diagnosis-default-worker:
+    container_name: oncall-diagnosis-default-worker
+    image: ai-oncall-worker:local
+    command:
+      - uv
+      - run
+      - --no-sync
+      - celery
+      - -A
+      - app.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --pool=solo
+      - --hostname=default@%h
+      - --queues=diagnosis.default
+    environment: *diagnosis-environment
+    depends_on:
+      queue-bootstrap:
+        condition: service_completed_successfully
       standalone:
         condition: service_healthy
     restart: unless-stopped
@@ -102,10 +136,8 @@ services:
     command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.outbox_publisher"]
     environment: *diagnosis-environment
     depends_on:
-      diagnosis-migrate:
+      queue-bootstrap:
         condition: service_completed_successfully
-      rabbitmq:
-        condition: service_healthy
     restart: unless-stopped
 
   etcd:

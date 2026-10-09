@@ -15,10 +15,12 @@ from loguru import logger
 from app.api import aiops, alerts, chat, debug, file, health, metrics
 from app.config import config
 from app.core.auth import ApiKeyMiddleware
+from app.core.checkpoint import checkpoint_manager
 from app.core.metrics import prometheus_http_middleware
 from app.core.milvus_client import milvus_manager
 from app.db.session import database_manager
 from app.services.alert_diagnosis_service import alert_diagnosis_service
+from app.services.queue_observer import queue_observer
 
 
 @asynccontextmanager
@@ -33,11 +35,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔌 正在连接 PostgreSQL...")
     await database_manager.initialize()
+    await checkpoint_manager.initialize()
 
     # 连接 Milvus
     logger.info("🔌 正在连接 Milvus...")
     milvus_manager.connect()
     logger.info("✅ Milvus 连接成功")
+
+    await queue_observer.start()
 
     logger.info("=" * 60)
 
@@ -45,6 +50,8 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     await alert_diagnosis_service.shutdown()
+    await queue_observer.stop()
+    await checkpoint_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")
     milvus_manager.close()
     await database_manager.close()
@@ -110,12 +117,6 @@ async def root():
 
 
 if __name__ == "__main__":
-    import uvicorn
+    from app.server import main
 
-    uvicorn.run(
-        "app.main:app",
-        host=config.host,
-        port=config.port,
-        reload=config.debug,
-        log_level="info"
-    )
+    main()

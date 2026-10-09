@@ -1,9 +1,8 @@
-"""健康检查接口"""
+"""Liveness and dependency-aware readiness endpoints."""
 
-import asyncio
 from typing import Any
-from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -11,86 +10,71 @@ from loguru import logger
 from app.config import config
 from app.core.milvus_client import milvus_manager
 from app.db.session import database_manager
+from app.services.queue_observer import queue_observer
 
 router = APIRouter()
 
 
-@router.get("/health")
-async def health_check():
+@router.get("/live")
+async def liveness() -> dict[str, str]:
+    """Report that the API process is alive without probing dependencies."""
+    return {"status": "alive", "service": config.app_name, "version": config.app_version}
 
-    """健康检查接口
-    检查服务状态和数据库连接状态
 
-    Returns:
-        JSONResponse: 健康检查结果
-    """
-    # 检查服务基本状态
-    health_data: dict[str, Any] = {  # pyright: ignore[reportExplicitAny]
+async def _readiness_response() -> JSONResponse:
+    health_data: dict[str, Any] = {
         "service": config.app_name,
         "version": config.app_version,
-        "status": "healthy"
     }
 
-    # 检查 Milvus 连接状态
     try:
         milvus_healthy = milvus_manager.health_check()
-        milvus_status: str = "connected" if milvus_healthy else "disconnected"
-        milvus_message: str = "Milvus 连接正常" if milvus_healthy else "Milvus 连接异常"
-        health_data["milvus"] = {
-            "status": milvus_status,
-            "message": milvus_message
-        }
-    except Exception as e:
-        logger.warning(f"Milvus 健康检查失败: {e}")
-        health_data["milvus"] = {
-            "status": "error",
-            "message": f"Milvus 检查失败: {str(e)}"
-        }
+    except Exception as exc:
+        logger.warning("Milvus 健康检查失败: {}", exc)
+        milvus_healthy = False
+    health_data["milvus"] = {
+        "status": "connected" if milvus_healthy else "disconnected",
+    }
 
     postgres_healthy = await database_manager.health_check()
     health_data["postgresql"] = {
         "status": "connected" if postgres_healthy else "disconnected",
-        "message": "PostgreSQL 连接正常" if postgres_healthy else "PostgreSQL 连接异常",
     }
 
-    broker_url = urlparse(config.celery_broker_url)
     rabbitmq_healthy = False
+    queues: dict[str, Any] = {}
+    rabbitmq_error: str | None = None
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(broker_url.hostname or "127.0.0.1", broker_url.port or 5672),
-            timeout=2,
-        )
-        writer.close()
-        await writer.wait_closed()
+        queues = await queue_observer.rabbitmq_queues()
         rabbitmq_healthy = True
-    except (OSError, TimeoutError):
-        pass
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        rabbitmq_error = str(exc)
     health_data["rabbitmq"] = {
-        "status": "connected" if rabbitmq_healthy else "disconnected",
-        "message": "RabbitMQ 连接正常" if rabbitmq_healthy else "RabbitMQ 连接异常",
+        "status": "authenticated" if rabbitmq_healthy else "disconnected",
+        "queues": queues,
+        **({"error": rabbitmq_error} if rabbitmq_error else {}),
     }
 
-    # 判断整体健康状态
-    overall_status = "healthy"
-    status_code = 200
-
-    # 如果 Milvus 不可用，服务不可用
-    if (
-        health_data["milvus"]["status"] != "connected"
-        or health_data["postgresql"]["status"] != "connected"
-        or health_data["rabbitmq"]["status"] != "connected"
-    ):
-        overall_status = "unhealthy"
-        status_code = 503
-        health_data["error"] = "依赖服务不可用"
-
-    health_data["status"] = overall_status
-
+    ready = milvus_healthy and postgres_healthy and rabbitmq_healthy
+    status_code = 200 if ready else 503
+    health_data["status"] = "ready" if ready else "not_ready"
     return JSONResponse(
         status_code=status_code,
         content={
             "code": status_code,
-            "message": "服务运行正常" if overall_status == "healthy" else "服务不可用",
-            "data": health_data
-        }
+            "message": "服务已就绪" if ready else "依赖服务未就绪",
+            "data": health_data,
+        },
     )
+
+
+@router.get("/ready")
+async def readiness() -> JSONResponse:
+    """Probe PostgreSQL, Milvus and authenticated RabbitMQ management access."""
+    return await _readiness_response()
+
+
+@router.get("/health")
+async def health_check() -> JSONResponse:
+    """Backward-compatible alias for the readiness endpoint."""
+    return await _readiness_response()

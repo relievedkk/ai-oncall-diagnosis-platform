@@ -34,6 +34,34 @@ SYNTHETIC_FAULT = Gauge(
     "Controlled fault used only by the local end-to-end test harness.",
     ("service", "fault"),
 )
+DIAGNOSIS_JOBS = Gauge(
+    "oncall_diagnosis_jobs",
+    "Persisted diagnosis jobs by current status.",
+    ("status",),
+)
+OUTBOX_EVENTS = Gauge(
+    "oncall_outbox_events",
+    "Transactional outbox events by current status.",
+    ("status",),
+)
+OUTBOX_OLDEST_PENDING_SECONDS = Gauge(
+    "oncall_outbox_oldest_pending_seconds",
+    "Age in seconds of the oldest unpublished diagnosis event.",
+)
+RABBITMQ_QUEUE_MESSAGES = Gauge(
+    "oncall_rabbitmq_queue_messages",
+    "Messages ready or unacknowledged in a diagnosis queue.",
+    ("queue", "state"),
+)
+RABBITMQ_QUEUE_CONSUMERS = Gauge(
+    "oncall_rabbitmq_queue_consumers",
+    "Consumers attached to a diagnosis queue.",
+    ("queue",),
+)
+QUEUE_OBSERVER_UP = Gauge(
+    "oncall_queue_observer_up",
+    "Whether the latest authenticated RabbitMQ management scrape succeeded.",
+)
 PROCESS_CPU_PERCENT = Gauge(
     "oncall_process_cpu_percent",
     "Current FastAPI process CPU usage as a percentage of one logical CPU.",

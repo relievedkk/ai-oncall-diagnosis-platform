@@ -141,7 +141,7 @@ set PYTHON_CMD=.venv\Scripts\python.exe
 
 REM Start Docker Compose (PostgreSQL + RabbitMQ + Milvus + diagnosis workers)
 echo [4/9] Starting databases, RabbitMQ and diagnosis workers...
-docker compose -f vector-database.yml up -d --build
+docker compose -f vector-database.yml up -d --build --remove-orphans
 if errorlevel 1 (
     echo [ERROR] Docker startup failed, make sure Docker Desktop is running
     pause
@@ -224,7 +224,7 @@ netstat -ano | findstr /R /C:":9900 .*LISTENING" >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] FastAPI service is already running on port 9900
 ) else (
-    start "AI OnCall API" /min %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 9900
+    start "AI OnCall API" /min %PYTHON_CMD% -m app.server
     echo [INFO] Waiting for service to start (15s)...
     timeout /t 15 /nobreak >nul
 )

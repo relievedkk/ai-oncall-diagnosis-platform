@@ -57,7 +57,7 @@ echo.
 
 REM Stop Docker infrastructure and diagnosis workers
 echo [5/5] Stopping databases, RabbitMQ and diagnosis workers...
-docker ps --format "{{.Names}}" | findstr /R "milvus oncall-postgres oncall-rabbitmq oncall-diagnosis-worker oncall-outbox-publisher" >nul 2>&1
+docker ps --format "{{.Names}}" | findstr /R "milvus oncall-postgres oncall-rabbitmq oncall-diagnosis-critical-worker oncall-diagnosis-default-worker oncall-outbox-publisher" >nul 2>&1
 if not errorlevel 1 (
     docker compose -f vector-database.yml down
     if errorlevel 1 (

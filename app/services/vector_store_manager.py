@@ -18,12 +18,13 @@ class VectorStoreManager:
 
     def __init__(self):
         """初始化向量存储管理器"""
-        self.vector_store = None
+        self.vector_store: Milvus | None = None
         self.collection_name = COLLECTION_NAME
-        self._initialize_vector_store()
 
     def _initialize_vector_store(self):
         """初始化 Milvus VectorStore"""
+        if self.vector_store is not None:
+            return self.vector_store
         try:
             # 必须在 PyMilvus / langchain_milvus 访问 Collection 之前建立连接，
             # 否则会出现 ConnectionNotExistException: should create connection first.
@@ -54,6 +55,7 @@ class VectorStoreManager:
                 f"VectorStore 初始化成功: {config.milvus_host}:{config.milvus_port}, "
                 f"collection: {self.collection_name}"
             )
+            return self.vector_store
 
         except Exception as e:
             logger.error(f"VectorStore 初始化失败: {e}")
@@ -79,7 +81,8 @@ class VectorStoreManager:
 
             # LangChain Milvus 的 add_documents 会自动调用 embedding_function
             # 并进行批量处理，性能更好
-            result_ids = self.vector_store.add_documents(documents, ids=ids)
+            vector_store = self._initialize_vector_store()
+            result_ids = vector_store.add_documents(documents, ids=ids)
 
             elapsed = time.time() - start_time
             logger.info(
@@ -126,7 +129,7 @@ class VectorStoreManager:
         Returns:
             Milvus: VectorStore 实例
         """
-        return self.vector_store
+        return self._initialize_vector_store()
 
     def similarity_search(self, query: str, k: int = 3) -> list[Document]:
         """
@@ -140,7 +143,8 @@ class VectorStoreManager:
             List[Document]: 相关文档列表
         """
         try:
-            docs = self.vector_store.similarity_search(query, k=k)
+            vector_store = self._initialize_vector_store()
+            docs = vector_store.similarity_search(query, k=k)
             logger.debug(f"相似度搜索完成: query='{query}', 结果数={len(docs)}")
             return docs
         except Exception as e:

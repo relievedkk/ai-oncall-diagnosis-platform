@@ -3,13 +3,15 @@
 基于 LangGraph 官方教程实现
 """
 
-from typing import AsyncGenerator, Dict, Any
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+import asyncio
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from langgraph.graph import END, StateGraph
 from loguru import logger
 
-from app.agent.aiops import PlanExecuteState, planner, executor, replanner
-
+from app.agent.aiops import PlanExecuteState, executor, planner, replanner
+from app.core.checkpoint import checkpoint_manager
 
 # 节点名称常量
 NODE_PLANNER = "planner"
@@ -22,11 +24,22 @@ class AIOpsService:
 
     def __init__(self):
         """初始化服务"""
-        self.checkpointer = MemorySaver()
-        self.graph = self._build_graph()
+        self.checkpointer = None
+        self.graph = None
+        self._initialize_lock = asyncio.Lock()
         logger.info("Plan-Execute-Replan Service 初始化完成")
 
-    def _build_graph(self):
+    async def initialize(self) -> None:
+        """Initialize the durable checkpointer and compile the graph once."""
+        if self.graph is not None:
+            return
+        async with self._initialize_lock:
+            if self.graph is not None:
+                return
+            self.checkpointer = await checkpoint_manager.initialize()
+            self.graph = self._build_graph(self.checkpointer)
+
+    def _build_graph(self, checkpointer):
         """构建 Plan-Execute-Replan 工作流"""
         logger.info("构建工作流图...")
 
@@ -73,7 +86,7 @@ class AIOpsService:
         )
 
         # 编译工作流
-        compiled_graph = workflow.compile(checkpointer=self.checkpointer)
+        compiled_graph = workflow.compile(checkpointer=checkpointer)
 
         logger.info("工作流图构建完成")
         return compiled_graph
@@ -82,7 +95,7 @@ class AIOpsService:
         self,
         user_input: str,
         session_id: str = "default"
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
         执行 Plan-Execute-Replan 流程
 
@@ -96,11 +109,14 @@ class AIOpsService:
         logger.info(f"[会话 {session_id}] 开始执行任务: {user_input}")
 
         try:
+            await self.initialize()
+            assert self.graph is not None
             # 初始化状态
             initial_state: PlanExecuteState = {
                 "input": user_input,
                 "plan": [],
                 "past_steps": [],
+                "evidence": [],
                 "response": ""
             }
 
@@ -131,7 +147,7 @@ class AIOpsService:
                         yield self._format_replanner_event(node_output)
 
             # 获取最终状态
-            final_state = self.graph.get_state(config_dict)
+            final_state = await self.graph.aget_state(config_dict)
             final_response = ""
 
             # 安全地获取响应（处理 values 可能为 None 的情况）
@@ -159,7 +175,7 @@ class AIOpsService:
     async def diagnose(
         self,
         session_id: str = "default"
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
         AIOps 诊断接口（兼容旧接口）
 
@@ -261,7 +277,7 @@ class AIOpsService:
             else:
                 yield event
 
-    def _format_planner_event(self, state: Dict | None) -> Dict:
+    def _format_planner_event(self, state: dict | None) -> dict:
         """格式化 Planner 节点事件"""
         if not state:
             return {
@@ -279,7 +295,7 @@ class AIOpsService:
             "plan": plan
         }
 
-    def _format_executor_event(self, state: Dict | None) -> Dict:
+    def _format_executor_event(self, state: dict | None) -> dict:
         """格式化 Executor 节点事件"""
         if not state:
             return {
@@ -290,6 +306,7 @@ class AIOpsService:
 
         plan = state.get("plan", [])
         past_steps = state.get("past_steps", [])
+        tool_evidence = state.get("evidence", [])
 
         if past_steps:
             last_step, result = past_steps[-1]
@@ -301,7 +318,8 @@ class AIOpsService:
                 # 完整步骤输出会作为诊断证据持久化；前端可按需只展示摘要。
                 "result": result,
                 "result_preview": str(result)[:500],
-                "remaining_steps": len(plan)
+                "remaining_steps": len(plan),
+                "tool_evidence": tool_evidence,
             }
         else:
             return {
@@ -310,7 +328,7 @@ class AIOpsService:
                 "message": "开始执行步骤"
             }
 
-    def _format_replanner_event(self, state: Dict | None) -> Dict:
+    def _format_replanner_event(self, state: dict | None) -> dict:
         """格式化 Replanner 节点事件"""
         if not state:
             return {

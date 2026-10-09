@@ -29,6 +29,13 @@ celery_app.conf.update(
             durable=True,
             queue_arguments={"x-queue-type": "quorum"},
         ),
+        Queue(
+            config.celery_dead_letter_queue,
+            exchange=diagnosis_exchange,
+            routing_key="dead",
+            durable=True,
+            queue_arguments={"x-queue-type": "quorum"},
+        ),
     ),
     task_default_queue=config.celery_default_queue,
     task_default_exchange="diagnosis",

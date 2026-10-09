@@ -76,6 +76,8 @@ class DiagnosisRepository(Protocol):
 
     async def prepare_retry(self, diagnosis_id: str, error: str) -> None: ...
 
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None: ...
+
     async def update_job(self, diagnosis_id: str, **values: Any) -> None: ...
 
     async def record_event(self, diagnosis_id: str, event: dict[str, Any]) -> None: ...
@@ -95,6 +97,8 @@ class DiagnosisRepository(Protocol):
     async def get_job(self, diagnosis_id: str) -> dict[str, Any] | None: ...
 
     async def list_jobs(self) -> list[dict[str, Any]]: ...
+
+    async def get_operational_metrics(self) -> dict[str, Any]: ...
 
 
 class InMemoryDiagnosisRepository:
@@ -126,6 +130,7 @@ class InMemoryDiagnosisRepository:
             "updated_at": now,
             "started_at": None,
             "completed_at": None,
+            "dead_lettered_at": None,
             "resolved_at": None,
         }
 
@@ -238,6 +243,15 @@ class InMemoryDiagnosisRepository:
             lease_expires_at=None,
         )
 
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None:
+        await self.update_job(
+            diagnosis_id,
+            status="dead_lettered",
+            error=error,
+            dead_lettered_at=utc_now().isoformat(),
+            lease_expires_at=None,
+        )
+
     async def update_job(self, diagnosis_id: str, **values: Any) -> None:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
@@ -247,7 +261,7 @@ class InMemoryDiagnosisRepository:
             status = values.get("status")
             if status == "running" and not job.get("started_at"):
                 job["started_at"] = now
-            if status in {"completed", "failed", "interrupted"}:
+            if status in {"completed", "failed", "interrupted", "dead_lettered"}:
                 job["completed_at"] = now
                 job["lease_expires_at"] = None
             job.update(copy.deepcopy(values))
@@ -315,6 +329,19 @@ class InMemoryDiagnosisRepository:
                 "collected_at": utc_now().isoformat(),
             }
             job["evidence"].append(evidence)
+            for tool_item in event.get("tool_evidence", []):
+                self._evidence_id += 1
+                item = _json_safe(tool_item)
+                job["evidence"].append(
+                    {
+                        "id": self._evidence_id,
+                        "step_id": step_id,
+                        "evidence_type": str(item.get("evidence_type", "tool")),
+                        "source": str(item.get("source", "unknown_tool")),
+                        "payload": item,
+                        "collected_at": utc_now().isoformat(),
+                    }
+                )
             job["events"].append(safe_event)
             report = _event_report(event)
             if report:
@@ -398,6 +425,30 @@ class InMemoryDiagnosisRepository:
         async with self._lock:
             jobs = copy.deepcopy(list(self._jobs.values()))
         return sorted(jobs, key=lambda item: item["created_at"], reverse=True)
+
+    async def get_operational_metrics(self) -> dict[str, Any]:
+        async with self._lock:
+            job_counts: dict[str, int] = {}
+            for job in self._jobs.values():
+                status = str(job["status"])
+                job_counts[status] = job_counts.get(status, 0) + 1
+            outbox_counts: dict[str, int] = {}
+            pending_times: list[datetime] = []
+            for event in self._outbox.values():
+                status = str(event["status"])
+                outbox_counts[status] = outbox_counts.get(status, 0) + 1
+                if status in {"pending", "publishing"}:
+                    created_at = _parse_datetime(event["created_at"])
+                    if created_at:
+                        pending_times.append(created_at)
+        oldest_age = 0.0
+        if pending_times:
+            oldest_age = max(0.0, (utc_now() - min(pending_times)).total_seconds())
+        return {
+            "job_counts": job_counts,
+            "outbox_counts": outbox_counts,
+            "outbox_oldest_pending_seconds": oldest_age,
+        }
 
 
 class SQLAlchemyDiagnosisRepository:
@@ -533,6 +584,15 @@ class SQLAlchemyDiagnosisRepository:
             lease_expires_at=None,
         )
 
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None:
+        await self.update_job(
+            diagnosis_id,
+            status="dead_lettered",
+            error=error,
+            dead_lettered_at=utc_now(),
+            lease_expires_at=None,
+        )
+
     async def update_job(self, diagnosis_id: str, **values: Any) -> None:
         allowed = {
             "status",
@@ -541,6 +601,7 @@ class SQLAlchemyDiagnosisRepository:
             "started_at",
             "completed_at",
             "resolved_at",
+            "dead_lettered_at",
             "celery_task_id",
             "worker_name",
             "heartbeat_at",
@@ -551,13 +612,14 @@ class SQLAlchemyDiagnosisRepository:
         status = updates.get("status")
         if status == "running" and "started_at" not in updates:
             updates["started_at"] = now
-        if status in {"completed", "failed", "interrupted"}:
+        if status in {"completed", "failed", "interrupted", "dead_lettered"}:
             updates.setdefault("completed_at", now)
             updates.setdefault("lease_expires_at", None)
         for key in (
             "started_at",
             "completed_at",
             "resolved_at",
+            "dead_lettered_at",
             "heartbeat_at",
             "lease_expires_at",
         ):
@@ -653,6 +715,18 @@ class SQLAlchemyDiagnosisRepository:
                     collected_at=now,
                 )
             )
+            for tool_item in event.get("tool_evidence", []):
+                item = _json_safe(tool_item)
+                session.add(
+                    DiagnosisEvidence(
+                        diagnosis_id=diagnosis_id,
+                        step_id=step.id if step else None,
+                        evidence_type=str(item.get("evidence_type", "tool")),
+                        source=str(item.get("source", "unknown_tool")),
+                        payload=item,
+                        collected_at=now,
+                    )
+                )
             report_content = _event_report(event)
             if report_content:
                 report = await session.get(DiagnosisReport, diagnosis_id)
@@ -800,6 +874,32 @@ class SQLAlchemyDiagnosisRepository:
             )
             return [_job_to_dict(job) for job in jobs]
 
+    async def get_operational_metrics(self) -> dict[str, Any]:
+        async with self._sessions() as session:
+            job_rows = (
+                await session.execute(
+                    select(DiagnosisJob.status, func.count()).group_by(DiagnosisJob.status)
+                )
+            ).all()
+            outbox_rows = (
+                await session.execute(
+                    select(OutboxEvent.status, func.count()).group_by(OutboxEvent.status)
+                )
+            ).all()
+            oldest_pending = await session.scalar(
+                select(func.min(OutboxEvent.created_at)).where(
+                    OutboxEvent.status.in_(("pending", "publishing"))
+                )
+            )
+        oldest_age = 0.0
+        if oldest_pending:
+            oldest_age = max(0.0, (utc_now() - oldest_pending).total_seconds())
+        return {
+            "job_counts": {str(status): int(count) for status, count in job_rows},
+            "outbox_counts": {str(status): int(count) for status, count in outbox_rows},
+            "outbox_oldest_pending_seconds": oldest_age,
+        }
+
     async def _load_job(self, diagnosis_id: str) -> dict[str, Any] | None:
         async with self._sessions() as session:
             job = await session.scalar(
@@ -892,6 +992,7 @@ def _job_to_dict(job: DiagnosisJob) -> dict[str, Any]:
         "updated_at": _iso(job.updated_at),
         "started_at": _iso(job.started_at),
         "completed_at": _iso(job.completed_at),
+        "dead_lettered_at": _iso(job.dead_lettered_at),
         "resolved_at": _iso(job.resolved_at),
     }
 

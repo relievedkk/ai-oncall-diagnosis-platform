@@ -142,7 +142,7 @@ up:
 		sleep 3; \
 	fi
 	@echo "$(YELLOW)🚀 启动数据库、RabbitMQ 与诊断 Worker...$(NC)"
-	@docker compose -f vector-database.yml up -d --build
+	@docker compose -f vector-database.yml up -d --build --remove-orphans
 	@echo "$(YELLOW)⏳ 等待容器启动...$(NC)"
 	@sleep 5
 	@docker compose -f vector-database.yml ps

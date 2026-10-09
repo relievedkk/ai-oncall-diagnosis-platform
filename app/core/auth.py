@@ -11,8 +11,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import config
 
-
-_PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc", "/metrics"}
+_PUBLIC_PATHS = {
+    "/",
+    "/health",
+    "/live",
+    "/ready",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/metrics",
+}
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):

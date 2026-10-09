@@ -13,7 +13,9 @@
 - **AIOps 诊断**：通过 Planner、Executor、Replanner 自动规划排障步骤并生成诊断报告。
 - **真实可观测数据**：FastAPI 暴露请求量、错误率、延迟、CPU、内存及诊断任务指标。
 - **自动告警闭环**：Prometheus 触发规则后由 Alertmanager 回调应用，并自动创建诊断任务。
-- **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由 Celery Worker 独立执行，支持优先级队列、重试、心跳和执行租约。
+- **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由隔离的 critical/default Celery Worker 执行，支持重试、心跳、执行租约和死信队列。
+- **持久化工作流**：LangGraph 对话和诊断检查点写入 PostgreSQL，API 或 Worker 重启后仍可恢复状态。
+- **质量评测**：使用固定诊断案例对根因命中、证据完整性、报告完整性和无依据结论进行离线回归评分。
 - **MCP 工具接入**：Monitor MCP 查询真实 Prometheus 数据；CLS MCP 可连接腾讯云日志或使用本地示例数据。
 
 ## 系统架构
@@ -33,9 +35,13 @@ flowchart LR
     Alertmanager -->|Webhook| Web
     PostgreSQL --> Publisher[Outbox Publisher]
     Publisher --> RabbitMQ[(RabbitMQ)]
-    RabbitMQ --> Worker[Celery Worker]
-    Worker --> Agent
-    Worker --> PostgreSQL
+    RabbitMQ --> CriticalWorker[Critical Worker]
+    RabbitMQ --> DefaultWorker[Default Worker]
+    RabbitMQ --> DLQ[Dead-letter Queue]
+    CriticalWorker --> Agent
+    DefaultWorker --> Agent
+    CriticalWorker --> PostgreSQL
+    DefaultWorker --> PostgreSQL
     Monitor --> Prometheus
     CLS --> Logs[腾讯云 CLS / 本地示例日志]
 ```
@@ -47,9 +53,9 @@ flowchart LR
 3. 告警进入 `firing` 后，Alertmanager 调用 `/api/alerts/webhook`。
 4. FastAPI 在同一数据库事务内创建诊断任务和 Outbox 事件，然后立即响应。
 5. Outbox Publisher 将事件可靠发布到 RabbitMQ；严重告警进入高优先级队列。
-6. 独立 Celery Worker 领取任务，通过租约与心跳避免重复执行，再查询 Prometheus、CLS 和 Milvus。
+6. critical/default 独立 Celery Worker 领取任务，通过租约与心跳避免重复执行，再查询 Prometheus、CLS 和 Milvus。
 7. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
-8. 最终 Markdown 报告独立持久化；临时失败自动重试，告警恢复后任务状态同步更新为 `resolved`。
+8. 最终 Markdown 报告和 LangGraph 检查点持久化；临时失败自动重试，耗尽重试后任务标记为 `dead_lettered` 并进入死信队列。
 
 ## 快速开始
 
@@ -173,7 +179,13 @@ DATABASE_AUTO_CREATE=true
 CELERY_BROKER_URL=amqp://oncall:oncall@127.0.0.1:5672//
 CELERY_DEFAULT_QUEUE=diagnosis.default
 CELERY_CRITICAL_QUEUE=diagnosis.critical
+CELERY_DEAD_LETTER_QUEUE=diagnosis.dead-letter
 CELERY_TASK_MAX_RETRIES=5
+RABBITMQ_MANAGEMENT_URL=http://127.0.0.1:15672
+
+# LangGraph 检查点（留空时从 DATABASE_URL 推导）
+LANGGRAPH_CHECKPOINT_ENABLED=true
+LANGGRAPH_CHECKPOINT_DATABASE_URL=
 
 # 默认禁止故障注入
 FAULT_INJECTION_ENABLED=false
@@ -227,8 +239,8 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 # 终端 3：Monitor MCP
 .\.venv\Scripts\python.exe mcp_servers\monitor_server.py
 
-# 终端 4：FastAPI
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 9900
+# 终端 4：FastAPI（该入口会自动处理 Windows 事件循环兼容性）
+.\.venv\Scripts\python.exe -m app.server
 ```
 
 文档可以直接从 Web 页面上传。启用认证时，先在左侧填写 API Key。
@@ -238,7 +250,9 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 | 功能 | 方法 | 路径 | 认证 |
 |---|---|---|---|
 | 首页 | GET | `/` | 否 |
-| 健康检查 | GET | `/health` | 否 |
+| 存活检查 | GET | `/live` | 否 |
+| 就绪检查 | GET | `/ready` | 否 |
+| 兼容健康检查 | GET | `/health` | 否 |
 | 应用指标 | GET | `/metrics` | 否 |
 | 普通对话 | POST | `/api/chat` | 是 |
 | 流式对话 | POST | `/api/chat_stream` | 是 |
@@ -305,6 +319,7 @@ ai-oncall-diagnosis-platform/
 │   ├── api/                         # 对话、文件、告警、指标和调试接口
 │   ├── core/                        # 配置、认证、LLM、Milvus、指标
 │   ├── db/                          # PostgreSQL 会话与诊断数据模型
+│   ├── evaluation/                  # 诊断质量评分与命令行入口
 │   ├── models/                      # API 与告警数据模型
 │   ├── repositories/                # 诊断持久化 Repository
 │   ├── services/                    # RAG、向量库、诊断编排与服务目录
@@ -315,6 +330,7 @@ ai-oncall-diagnosis-platform/
 │   └── main.py                      # FastAPI 入口
 ├── aiops-docs/                      # 示例运维知识文档
 ├── config/service_catalog.json      # 服务、Prometheus 和 CLS 映射
+├── evals/diagnosis_cases.json        # 固定诊断质量评测案例
 ├── mcp_servers/                     # CLS MCP 与 Monitor MCP
 ├── monitoring/                      # Prometheus 与 Alertmanager 配置
 ├── migrations/                      # Alembic 数据库迁移
@@ -339,6 +355,15 @@ uv sync --extra dev
 # 运行测试
 uv run pytest -q
 
+# 校验迁移和 Compose 配置
+uv run alembic check
+docker compose -f vector-database.yml config --quiet
+
+# 对保存的真实诊断结果做质量门禁（结果文件为 case_id/report/evidence 数组）
+uv run python -m app.evaluation.cli \
+  --cases evals/diagnosis_cases.json \
+  --results path/to/diagnosis_results.json
+
 ```
 
 ## 安全与生产部署说明
@@ -351,6 +376,7 @@ uv run pytest -q
 - Prometheus、Alertmanager、Milvus 和 Attu 默认映射到宿主机端口。
 - cAdvisor 使用特权模式并读取 Docker/宿主机相关目录。
 - `/metrics`、`/health` 和 API 文档为公开端点。
+- Milvus collection 的向量维度不匹配时应用会拒绝启动，不会自动删除已有向量；请通过新 collection 重建并显式切换。
 - FastAPI 监听 `0.0.0.0`，以便 Docker 内的 Prometheus 通过 `host.docker.internal` 抓取指标；请使用主机防火墙限制外部访问。
 - 本地示例 CLS 返回演示数据，不代表真实生产日志。
 
@@ -373,10 +399,10 @@ docker compose -f vector-database.yml restart standalone
 
 ```bash
 docker compose -f vector-database.yml ps
-docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-worker outbox-publisher
+docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-critical-worker diagnosis-default-worker outbox-publisher
 ```
 
-在 RabbitMQ 管理界面检查 `diagnosis.critical` 和 `diagnosis.default` 是否存在消费者。数据库中的 Outbox 事件会在发布失败后退避重试；Worker 异常退出后，执行租约到期的任务可被再次领取。
+在 RabbitMQ 管理界面检查 `diagnosis.critical` 和 `diagnosis.default` 是否各有消费者。`diagnosis.dead-letter` 中出现消息表示任务已耗尽自动重试，需要结合数据库任务的 `error`、`evidence` 和 `dead_lettered_at` 人工处理。数据库中的 Outbox 事件会在发布失败后退避重试；Worker 异常退出后，执行租约到期的任务可被再次领取。
 
 ### Prometheus 没有数据
 

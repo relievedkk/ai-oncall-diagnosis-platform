@@ -7,11 +7,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN useradd --create-home --uid 10001 oncall \
-    && pip install --no-cache-dir uv
+    && pip install --no-cache-dir uv \
+    && chown oncall:oncall /app
+
+USER oncall
+COPY --chown=oncall:oncall pyproject.toml uv.lock README.md /app/
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY --chown=oncall:oncall . /app
-RUN chown oncall:oncall /app
-USER oncall
 RUN uv sync --frozen --no-dev
 
 CMD ["uv", "run", "--no-sync", "celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "--pool=solo"]

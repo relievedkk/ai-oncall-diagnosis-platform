@@ -1,0 +1,38 @@
+[
+  {
+    "id": "http-5xx-spike",
+    "alert_name": "HighHTTPErrorRate",
+    "root_cause_term_groups": [["5xx", "错误率"], ["上游", "异常"]],
+    "required_evidence_types": ["metric", "log"],
+    "required_report_terms": ["时间范围", "关键数值", "根因", "处理建议", "恢复验证"],
+    "forbidden_terms": ["已确认数据库宕机（无证据）"]
+  },
+  {
+    "id": "latency-regression",
+    "alert_name": "HighP95Latency",
+    "root_cause_term_groups": [["p95", "延迟"], ["慢查询"]],
+    "required_evidence_types": ["metric", "log"],
+    "required_report_terms": ["时间范围", "关键数值", "根因", "处理建议", "恢复验证"]
+  },
+  {
+    "id": "cpu-saturation",
+    "alert_name": "HighProcessCPU",
+    "root_cause_term_groups": [["cpu", "饱和"], ["cpu", "高"]],
+    "required_evidence_types": ["metric"],
+    "required_report_terms": ["时间范围", "根因", "处理建议", "恢复验证"]
+  },
+  {
+    "id": "memory-pressure",
+    "alert_name": "HighProcessMemory",
+    "root_cause_term_groups": [["内存", "增长"], ["内存", "压力"]],
+    "required_evidence_types": ["metric", "log"],
+    "required_report_terms": ["时间范围", "根因", "处理建议", "恢复验证"]
+  },
+  {
+    "id": "service-unavailable",
+    "alert_name": "AIOnCallAgentDown",
+    "root_cause_term_groups": [["不可用"], ["健康检查", "失败"]],
+    "required_evidence_types": ["metric", "alert"],
+    "required_report_terms": ["时间范围", "证据", "根因", "处理建议", "恢复验证"]
+  }
+]
