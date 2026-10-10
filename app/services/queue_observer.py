@@ -88,9 +88,7 @@ class QueueObserver:
             return self.last_snapshot
 
         for name, values in queues.items():
-            RABBITMQ_QUEUE_MESSAGES.labels(queue=name, state="ready").set(
-                values["messages_ready"]
-            )
+            RABBITMQ_QUEUE_MESSAGES.labels(queue=name, state="ready").set(values["messages_ready"])
             RABBITMQ_QUEUE_MESSAGES.labels(queue=name, state="unacknowledged").set(
                 values["messages_unacknowledged"]
             )

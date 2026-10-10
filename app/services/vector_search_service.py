@@ -1,6 +1,6 @@
 """向量检索服务模块"""
 
-from typing import Any, Dict, List
+from typing import Any
 
 from loguru import logger
 from pymilvus import Collection
@@ -17,14 +17,14 @@ class SearchResult:
         id: str,
         content: str,
         score: float,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
     ):
         self.id = id
         self.content = content
         self.score = score
         self.metadata = metadata
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "id": self.id,
@@ -41,7 +41,7 @@ class VectorSearchService:
         """初始化向量检索服务"""
         logger.info("向量检索服务初始化完成")
 
-    def search_similar_documents(self, query: str, top_k: int = 3) -> List[SearchResult]:
+    def search_similar_documents(self, query: str, top_k: int = 3) -> list[SearchResult]:
         """
         搜索相似文档
 
@@ -56,7 +56,7 @@ class VectorSearchService:
             RuntimeError: 搜索失败时抛出
         """
         try:
-            logger.info(f"开始搜索相似文档, 查询: {query}, topK: {top_k}")
+            logger.info("开始搜索相似文档, 查询长度={}, topK={}", len(query), top_k)
 
             # 1. 将查询文本向量化
             query_vector = vector_embedding_service.embed_query(query)

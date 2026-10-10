@@ -9,6 +9,8 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - prometheus_data:/prometheus
+    secrets:
+      - api_key
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=15d
@@ -28,6 +30,8 @@ services:
       - "127.0.0.1:9093:9093"
     volumes:
       - alertmanager_data:/alertmanager
+    secrets:
+      - alertmanager_webhook_token
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -56,3 +60,9 @@ services:
 volumes:
   prometheus_data:
   alertmanager_data:
+
+secrets:
+  api_key:
+    environment: API_KEY
+  alertmanager_webhook_token:
+    environment: ALERTMANAGER_WEBHOOK_TOKEN

@@ -1,6 +1,5 @@
 """向量存储管理器 - 封装 Milvus VectorStore 操作"""
 
-
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
 from loguru import logger
@@ -74,6 +73,7 @@ class VectorStoreManager:
         try:
             import time
             import uuid
+
             start_time = time.time()
 
             # 为每个文档生成唯一 id（因为 auto_id=False）
@@ -87,7 +87,7 @@ class VectorStoreManager:
             elapsed = time.time() - start_time
             logger.info(
                 f"批量添加 {len(documents)} 个文档到 VectorStore 完成, "
-                f"耗时: {elapsed:.2f}秒, 平均: {elapsed/len(documents):.2f}秒/个"
+                f"耗时: {elapsed:.2f}秒, 平均: {elapsed / len(documents):.2f}秒/个"
             )
             return result_ids
         except Exception as e:
@@ -145,7 +145,7 @@ class VectorStoreManager:
         try:
             vector_store = self._initialize_vector_store()
             docs = vector_store.similarity_search(query, k=k)
-            logger.debug(f"相似度搜索完成: query='{query}', 结果数={len(docs)}")
+            logger.debug("相似度搜索完成: 查询长度={}, 结果数={}", len(query), len(docs))
             return docs
         except Exception as e:
             logger.error(f"相似度搜索失败: {e}")

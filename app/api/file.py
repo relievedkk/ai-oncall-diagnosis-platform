@@ -1,12 +1,18 @@
 """文件上传接口模块"""
 
 import asyncio
+import hashlib
+import os
+import unicodedata
+import uuid
+import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from app.config import config
 from app.core.auth import is_path_allowed
 from app.services.vector_index_service import vector_index_service
 
@@ -15,9 +21,8 @@ router = APIRouter()
 # 文件上传后存储的路径
 UPLOAD_DIR = Path("./uploads")
 # 支持的文件类型
-ALLOWED_EXTENSIONS = ["txt", "md", "pdf", "docx"]
-# 单个文件支持最大大小
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = ("txt", "md", "pdf", "docx")
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 @router.post("/upload")
@@ -36,7 +41,10 @@ async def upload_file(file: UploadFile = File(...)):
         if not file.filename:
             raise HTTPException(status_code=400, detail="文件名不能为空")
 
-        # 2. 规范化文件名（去除空格，处理 Windows 上传的文件）
+        if len(file.filename) > 255:
+            raise HTTPException(status_code=400, detail="文件名过长")
+
+        # 2. 规范化文件名（仅用于显示；磁盘文件名由内容摘要生成）
         safe_filename = _sanitize_filename(file.filename)
 
         # 3. 验证文件扩展名
@@ -47,27 +55,43 @@ async def upload_file(file: UploadFile = File(...)):
                 detail=f"不支持的文件格式，仅支持: {', '.join(ALLOWED_EXTENSIONS)}",
             )
 
-        # 4. 创建上传目录
+        # 4. 创建上传目录和隔离的临时目录
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        temp_dir = UPLOAD_DIR / ".tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / f"{uuid.uuid4().hex}.upload"
 
-        # 5. 保存文件
-        file_path = UPLOAD_DIR / safe_filename
+        # 5. 分块写入并计算摘要，避免将整个文件一次性读入内存。
+        size = 0
+        digest = hashlib.sha256()
+        try:
+            with temp_path.open("xb") as output:
+                while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                    size += len(chunk)
+                    if size > config.max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"文件大小超过限制（最大 {config.max_upload_bytes} 字节）",
+                        )
+                    digest.update(chunk)
+                    output.write(chunk)
 
-        # 如果文件已存在，先删除旧文件（实现覆盖更新）
-        if file_path.exists():
-            logger.info(f"文件已存在，将覆盖: {file_path}")
-            file_path.unlink()
+            if size == 0:
+                raise HTTPException(status_code=400, detail="文件内容不能为空")
 
-        # 读取并保存文件内容
-        content = await file.read()
+            _validate_file_content(temp_path, file_extension)
+            storage_filename = f"{digest.hexdigest()[:32]}.{file_extension}"
+            file_path = UPLOAD_DIR / storage_filename
+            created_new = not file_path.exists()
+            if created_new:
+                os.replace(temp_path, file_path)
+            else:
+                temp_path.unlink(missing_ok=True)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
-        # 验证文件大小
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE} 字节）")
-
-        file_path.write_bytes(content)
-
-        logger.info(f"文件上传成功: {file_path}")
+        logger.info("文件上传并校验成功: {} ({} bytes)", storage_filename, size)
 
         # 6. 自动创建向量索引。该操作是同步且可能较慢，放入线程避免阻塞事件循环。
         try:
@@ -78,14 +102,15 @@ async def upload_file(file: UploadFile = File(...)):
             )
             logger.info(f"向量索引创建成功: {file_path}")
         except Exception as e:
-            logger.error(f"向量索引创建失败: {file_path}, 错误: {e}")
+            logger.error("向量索引创建失败: {}, 错误: {}", storage_filename, e)
+            if created_new:
+                file_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=500,
                 detail={
-                    "message": "文件已保存，但向量索引创建失败，可稍后重试索引",
+                    "message": "文件校验成功，但向量索引创建失败",
                     "filename": safe_filename,
                     "index_status": "failed",
-                    "error": str(e),
                 },
             ) from e
 
@@ -97,8 +122,8 @@ async def upload_file(file: UploadFile = File(...)):
                 "message": "success",
                 "data": {
                     "filename": safe_filename,
-                    "file_path": str(file_path),
-                    "size": len(content),
+                    "storage_id": storage_filename,
+                    "size": size,
                 },
             },
         )
@@ -107,11 +132,13 @@ async def upload_file(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}") from e
+        raise HTTPException(status_code=500, detail="文件上传失败") from e
 
 
 @router.post("/index_directory")
-async def index_directory(directory_path: str = None):
+async def index_directory(
+    directory_path: str | None = Query(default=None, min_length=1, max_length=512),
+):
     """
     索引指定目录下的所有文件
 
@@ -152,7 +179,7 @@ async def index_directory(directory_path: str = None):
         raise
     except Exception as e:
         logger.error(f"索引目录失败: {e}")
-        raise HTTPException(status_code=500, detail=f"索引目录失败: {e}") from e
+        raise HTTPException(status_code=500, detail="索引目录失败") from e
 
 
 def _get_file_extension(filename: str) -> str:
@@ -181,9 +208,46 @@ def _sanitize_filename(filename: str) -> str:
     Returns:
         str: 规范化后的文件名
     """
-    # 去除空格
-    sanitized = filename.replace(" ", "_")
+    sanitized = unicodedata.normalize("NFKC", Path(filename).name).strip().replace(" ", "_")
     # 去除其他可能导致问题的字符
-    for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+    for char in ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]:
         sanitized = sanitized.replace(char, "_")
-    return sanitized
+    sanitized = "".join(char for char in sanitized if char.isprintable())
+    if not sanitized or sanitized in {".", ".."}:
+        raise HTTPException(status_code=400, detail="文件名无效")
+    return sanitized[:255]
+
+
+def _validate_file_content(path: Path, extension: str) -> None:
+    """Validate content signatures and bound archive expansion before parsing."""
+    with path.open("rb") as source:
+        header = source.read(8)
+    if extension == "pdf":
+        if not header.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
+        return
+
+    if extension == "docx":
+        if not zipfile.is_zipfile(path):
+            raise HTTPException(status_code=400, detail="文件内容不是有效的 DOCX")
+        try:
+            with zipfile.ZipFile(path) as archive:
+                members = archive.infolist()
+                if len(members) > 1_000:
+                    raise HTTPException(status_code=400, detail="DOCX 文件条目过多")
+                total_size = sum(member.file_size for member in members)
+                if total_size > config.max_archive_uncompressed_bytes:
+                    raise HTTPException(status_code=413, detail="DOCX 解压后大小超过限制")
+                names = {member.filename for member in members}
+                if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+                    raise HTTPException(status_code=400, detail="DOCX 结构无效")
+                if any(name.startswith(("/", "\\")) or ".." in Path(name).parts for name in names):
+                    raise HTTPException(status_code=400, detail="DOCX 包含不安全路径")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="DOCX 压缩包损坏") from exc
+        return
+
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="文本文件必须使用 UTF-8 编码") from exc

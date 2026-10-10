@@ -46,7 +46,10 @@ services:
 
   rabbitmq:
     container_name: oncall-rabbitmq
-    image: rabbitmq:4.1-management-alpine
+    image: ai-oncall-rabbitmq:4.1-hardened
+    build:
+      context: .
+      dockerfile: Dockerfile.rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-oncall}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-oncall}
@@ -56,7 +59,7 @@ services:
     volumes:
       - oncall_rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 5s
       timeout: 5s
       retries: 20

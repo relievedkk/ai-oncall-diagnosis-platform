@@ -82,6 +82,8 @@ class DiagnosisRepository(Protocol):
 
     async def record_event(self, diagnosis_id: str, event: dict[str, Any]) -> None: ...
 
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None: ...
+
     async def mark_resolved(self, alert: AlertmanagerAlert) -> None: ...
 
     async def mark_incomplete_as_interrupted(self) -> int: ...
@@ -217,7 +219,9 @@ class InMemoryDiagnosisRepository:
                 started_at=job.get("started_at") or now.isoformat(),
                 completed_at=None,
                 heartbeat_at=now.isoformat(),
-                lease_expires_at=(now + timedelta(seconds=config.diagnosis_lease_seconds)).isoformat(),
+                lease_expires_at=(
+                    now + timedelta(seconds=config.diagnosis_lease_seconds)
+                ).isoformat(),
                 updated_at=now.isoformat(),
             )
             return "claimed"
@@ -318,6 +322,19 @@ class InMemoryDiagnosisRepository:
                 step["started_at"] = step["started_at"] or utc_now().isoformat()
                 step["completed_at"] = utc_now().isoformat()
                 step_id = step["id"]
+            elif event_type == "report" and event.get("skipped_steps"):
+                skipped_names = {str(name) for name in event["skipped_steps"]}
+                reason = (
+                    "未发现活跃告警，后续告警排查步骤不适用于当前场景"
+                    if event.get("termination_reason") == "no_active_alerts"
+                    else "工作流已有足够证据并提前结束"
+                )
+                now = utc_now().isoformat()
+                for item in job["steps"]:
+                    if item["status"] == "planned" and item["name"] in skipped_names:
+                        item["status"] = "skipped"
+                        item["result"] = reason
+                        item["completed_at"] = now
 
             self._evidence_id += 1
             evidence = {
@@ -347,6 +364,19 @@ class InMemoryDiagnosisRepository:
             if report:
                 job["report"] = report
             job["updated_at"] = utc_now().isoformat()
+
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None:
+        async with self._lock:
+            job = self._jobs.get(diagnosis_id)
+            if not job:
+                return
+            now = utc_now().isoformat()
+            for step in job["steps"]:
+                if step["status"] == "planned":
+                    step["status"] = "skipped"
+                    step["result"] = reason
+                    step["completed_at"] = now
+            job["updated_at"] = now
 
     async def mark_resolved(self, alert: AlertmanagerAlert) -> None:
         async with self._lock:
@@ -705,6 +735,22 @@ class SQLAlchemyDiagnosisRepository:
                 step.started_at = step.started_at or now
                 step.completed_at = now
                 await session.flush()
+            elif event_type == "report" and event.get("skipped_steps"):
+                skipped_names = [str(name) for name in event["skipped_steps"]]
+                reason = (
+                    "未发现活跃告警，后续告警排查步骤不适用于当前场景"
+                    if event.get("termination_reason") == "no_active_alerts"
+                    else "工作流已有足够证据并提前结束"
+                )
+                await session.execute(
+                    update(DiagnosisStep)
+                    .where(
+                        DiagnosisStep.diagnosis_id == diagnosis_id,
+                        DiagnosisStep.status == "planned",
+                        DiagnosisStep.name.in_(skipped_names),
+                    )
+                    .values(status="skipped", result=reason, completed_at=now)
+                )
             session.add(
                 DiagnosisEvidence(
                     diagnosis_id=diagnosis_id,
@@ -742,6 +788,18 @@ class SQLAlchemyDiagnosisRepository:
                     report.content = report_content
                     report.updated_at = now
             job.updated_at = now
+
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None:
+        now = utc_now()
+        async with self._sessions.begin() as session:
+            await session.execute(
+                update(DiagnosisStep)
+                .where(
+                    DiagnosisStep.diagnosis_id == diagnosis_id,
+                    DiagnosisStep.status == "planned",
+                )
+                .values(status="skipped", result=reason, completed_at=now)
+            )
 
     async def mark_resolved(self, alert: AlertmanagerAlert) -> None:
         async with self._sessions.begin() as session:

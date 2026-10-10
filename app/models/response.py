@@ -3,8 +3,9 @@
 定义 API 响应的 Pydantic 模型
 """
 
+from typing import Any
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
 
 
 class ChatResponse(BaseModel):
@@ -19,7 +20,7 @@ class SessionInfoResponse(BaseModel):
 
     session_id: str = Field(..., description="会话 ID")
     message_count: int = Field(..., description="消息数量")
-    history: List[Dict[str, str]] = Field(..., description="历史消息列表")
+    history: list[dict[str, str]] = Field(..., description="历史消息列表")
 
 
 class ApiResponse(BaseModel):
@@ -27,7 +28,7 @@ class ApiResponse(BaseModel):
 
     status: str = Field(..., description="状态")
     message: str = Field(..., description="消息")
-    data: Optional[Any] = Field(None, description="数据")
+    data: Any | None = Field(None, description="数据")
 
 
 class HealthResponse(BaseModel):

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -32,8 +32,8 @@ def _parse_active_at(active_at_str: str) -> datetime | None:
         s = active_at_str.replace("Z", "+00:00", 1)
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
     except ValueError:
         return None
 
@@ -48,7 +48,7 @@ def calculate_duration(active_at_str: str) -> str:
     active_at = _parse_active_at(active_at_str)
     if active_at is None:
         return "unknown"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     delta = now - active_at
     total_seconds = max(0, int(delta.total_seconds()))
     hours = total_seconds // 3600
@@ -182,7 +182,11 @@ async def query_prometheus_alerts() -> str:
         return json.dumps(out, ensure_ascii=False, indent=2)
 
     if result.get("status") != "success":
-        err_msg = result.get("error") or result.get("errorType") or "Prometheus returned non-success status"
+        err_msg = (
+            result.get("error")
+            or result.get("errorType")
+            or "Prometheus returned non-success status"
+        )
         out = {
             "success": False,
             "error": str(err_msg),
@@ -198,5 +202,7 @@ async def query_prometheus_alerts() -> str:
         "total": len(simplified),
         "message": f"已获取 {len(simplified)} 条告警（按 activeAt 从新到旧），状态分布: {state_counts}",
     }
-    logger.info("Prometheus alerts query completed: {} alerts, states={}", len(simplified), state_counts)
+    logger.info(
+        "Prometheus alerts query completed: {} alerts, states={}", len(simplified), state_counts
+    )
     return json.dumps(out, ensure_ascii=False, indent=2)

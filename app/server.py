@@ -17,6 +17,11 @@ def main() -> None:
             host=config.host,
             port=config.port,
             log_level="info",
+            server_header=False,
+            proxy_headers=False,
+            timeout_keep_alive=5,
+            limit_concurrency=100,
+            limit_max_requests=10_000,
         )
     )
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None

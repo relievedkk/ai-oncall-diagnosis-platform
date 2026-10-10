@@ -1,10 +1,10 @@
 """RAG Agent 服务 - 基于 LangGraph 的智能代理
 
-使用 langchain_qwq 的 ChatQwen 原生集成，
-支持真正的流式输出和更好的模型适配。
+通过 OpenAI 兼容协议调用 DashScope，支持流式输出和工具调用。
 """
 
 import asyncio
+import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -16,7 +16,7 @@ from langchain_core.messages import (
     SystemMessage,
     trim_messages,
 )
-from langchain_qwq import ChatQwen
+from langchain_openai import ChatOpenAI
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from loguru import logger
 
@@ -28,11 +28,32 @@ from app.agent.mcp_client import (
 )
 from app.config import config
 from app.core.checkpoint import checkpoint_manager
+from app.core.llm_factory import llm_factory
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
 # 阿里千问大模型和langchain集成参考： https://docs.langchain.com/oss/python/integrations/chat/qwen
 # 注意：需要配置环境变量 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1 否则默认访问的是新加坡站点
 # 同时也需要配置环境变量 DASHSCOPE_API_KEY=your_api_key
+
+ASSISTANT_IDENTITY = (
+    "我是智能 OnCall 助手，是本平台内置的 AI 运维助手。"
+    "我可以帮助你进行告警分析、故障排查、运行手册检索和日常技术问答。"
+)
+IDENTITY_QUESTIONS = {
+    "你是谁",
+    "你叫什么",
+    "你叫什么名字",
+    "介绍一下你自己",
+    "你是什么助手",
+    "你是哪个模型",
+    "你是什么模型",
+}
+
+
+def identity_response(question: str) -> str | None:
+    """Return the stable product identity for direct identity questions."""
+    normalized = re.sub(r"[\s?？!！,，.。:：]+", "", question).casefold()
+    return ASSISTANT_IDENTITY if normalized in IDENTITY_QUESTIONS else None
 
 
 class SummaryMiddleware(AgentMiddleware):
@@ -42,7 +63,7 @@ class SummaryMiddleware(AgentMiddleware):
     与 TokenTrimMiddleware 配合：本中间件做语义压缩，后者做 token 硬保底。
     """
 
-    def __init__(self, model: ChatQwen, max_messages: int = 12, keep_recent: int = 6):
+    def __init__(self, model: ChatOpenAI, max_messages: int = 12, keep_recent: int = 6):
         self.model = model
         self.max_messages = max_messages
         self.keep_recent = keep_recent
@@ -54,12 +75,10 @@ class SummaryMiddleware(AgentMiddleware):
         if len(messages) <= self.max_messages:
             return None
 
-        logger.info(
-            f"[Summary] 消息数 {len(messages)} 超过阈值 {self.max_messages}，触发总结"
-        )
+        logger.info(f"[Summary] 消息数 {len(messages)} 超过阈值 {self.max_messages}，触发总结")
 
-        recent = list(messages[-self.keep_recent:])
-        early = list(messages[:-self.keep_recent])
+        recent = list(messages[-self.keep_recent :])
+        early = list(messages[: -self.keep_recent])
 
         system_msgs = [m for m in early if isinstance(m, SystemMessage)]
         to_summarize = [m for m in early if not isinstance(m, SystemMessage)]
@@ -106,9 +125,7 @@ class SummaryMiddleware(AgentMiddleware):
             对话历史：
         """).strip()
 
-        summary_response = await self.model.ainvoke(
-            [SystemMessage(content=prompt), *messages]
-        )
+        summary_response = await self.model.ainvoke([SystemMessage(content=prompt), *messages])
         return (
             summary_response.content
             if hasattr(summary_response, "content")
@@ -159,7 +176,7 @@ class TokenTrimMiddleware(AgentMiddleware):
 
 
 class RagAgentService:
-    """RAG Agent 服务 - 使用 LangGraph + ChatQwen 原生集成"""
+    """RAG Agent 服务 - 使用 LangGraph 和 OpenAI 兼容模型接口。"""
 
     def __init__(self, streaming: bool = True):
         """初始化 RAG Agent 服务
@@ -170,9 +187,8 @@ class RagAgentService:
         self.model_name = config.rag_model
         self.streaming = streaming
         self.system_prompt = self._build_system_prompt()
-        self.model = ChatQwen(
+        self.model = llm_factory.create_chat_model(
             model=self.model_name,
-            api_key=config.dashscope_api_key,
             temperature=0.7,
             streaming=streaming,
         )
@@ -191,7 +207,9 @@ class RagAgentService:
         self._agent_initialized = False
         self._initialize_lock = asyncio.Lock()
 
-        logger.info(f"RAG Agent 服务初始化完成 (ChatQwen), model={self.model_name}, streaming={streaming}")
+        logger.info(
+            f"RAG Agent 服务初始化完成, model={self.model_name}, streaming={streaming}"
+        )
 
     async def _initialize_agent(self):
         """异步初始化 Agent（包括 MCP 工具）"""
@@ -218,9 +236,7 @@ class RagAgentService:
         mcp_client = await get_mcp_client_with_retry()
         mcp_tools, mcp_err = await load_mcp_tools_safe(mcp_client)
         if mcp_err:
-            logger.warning(
-                f"MCP 工具加载失败，将仅使用本地工具继续运行:\n{mcp_err}"
-            )
+            logger.warning(f"MCP 工具加载失败，将仅使用本地工具继续运行:\n{mcp_err}")
             self.mcp_tools = []
         else:
             self.mcp_tools = mcp_tools
@@ -257,7 +273,14 @@ class RagAgentService:
         from textwrap import dedent
 
         return dedent("""
-            你是一个专业的AI助手，能够使用多种工具来帮助用户解决问题。
+            你是“智能 OnCall 助手”，是 AI 智能运维与 OnCall 诊断平台内置的 AI 运维助手。
+
+            身份规则:
+            - 你的对外身份始终是“智能 OnCall 助手”，不是底层模型或模型供应商
+            - 不得自称通义千问、阿里云助手、ChatGPT、OpenAI 助手或其他厂商的助手
+            - 当用户询问“你是谁”或要求自我介绍时，应回答：
+              “我是智能 OnCall 助手，是本平台内置的 AI 运维助手。我可以帮助你进行告警分析、故障排查、运行手册检索和日常技术问答。”
+            - 如果用户专门询问技术实现，可以说明平台通过兼容接口调用已配置的语言模型，但不要把底层模型当作产品身份
 
             工作原则:
             1. 理解用户需求，选择合适的工具来完成任务
@@ -290,25 +313,25 @@ class RagAgentService:
             str: 完整答案
         """
         try:
+            fixed_identity = identity_response(question)
+            if fixed_identity:
+                logger.info("[会话 {}] 返回平台固定身份说明", session_id)
+                return fixed_identity
+
             await self._initialize_agent()
 
-            logger.info(f"[会话 {session_id}] RAG Agent 收到查询（非流式）: {question}")
+            logger.info(
+                "[会话 {}] RAG Agent 收到查询（非流式），长度={}", session_id, len(question)
+            )
 
             # 构建消息列表（系统提示 + 用户问题）
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=question)
-            ]
+            messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
 
             # 构建 Agent 输入
             agent_input = {"messages": messages}
 
             # 配置 thread_id（用于会话持久化）
-            config_dict = {
-                "configurable": {
-                    "thread_id": session_id
-                }
-            }
+            config_dict = {"configurable": {"thread_id": session_id}}
 
             result = await self.agent.ainvoke(
                 input=agent_input,
@@ -319,7 +342,9 @@ class RagAgentService:
             messages_result = result.get("messages", [])
             if messages_result:
                 last_message = messages_result[-1]
-                answer = last_message.content if hasattr(last_message, 'content') else str(last_message)
+                answer = (
+                    last_message.content if hasattr(last_message, "content") else str(last_message)
+                )
 
                 # 记录工具调用
                 if hasattr(last_message, "tool_calls") and last_message.tool_calls:
@@ -334,8 +359,7 @@ class RagAgentService:
 
         except Exception as e:
             logger.error(
-                f"[会话 {session_id}] RAG Agent 查询失败（非流式）: "
-                f"{format_exception_chain(e)}"
+                f"[会话 {session_id}] RAG Agent 查询失败（非流式）: {format_exception_chain(e)}"
             )
             raise
 
@@ -357,46 +381,50 @@ class RagAgentService:
                 - data: 具体内容
         """
         try:
+            fixed_identity = identity_response(question)
+            if fixed_identity:
+                logger.info("[会话 {}] 流式返回平台固定身份说明", session_id)
+                yield {"type": "content", "data": fixed_identity, "node": "identity"}
+                yield {"type": "complete"}
+                return
+
             await self._initialize_agent()
 
-            logger.info(f"[会话 {session_id}] RAG Agent 收到查询（流式）: {question}")
+            logger.info("[会话 {}] RAG Agent 收到查询（流式），长度={}", session_id, len(question))
 
             # 构建消息列表（系统提示 + 用户问题）
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=question)
-            ]
+            messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
 
             # 构建 Agent 输入
             agent_input = {"messages": messages}
 
             # 配置 thread_id（用于会话持久化）
-            config_dict = {
-                "configurable": {
-                    "thread_id": session_id
-                }
-            }
+            config_dict = {"configurable": {"thread_id": session_id}}
 
             async for token, metadata in self.agent.astream(
                 input=agent_input,
                 config=config_dict,
                 stream_mode="messages",
             ):
-                node_name = metadata.get('langgraph_node', 'unknown') if isinstance(metadata, dict) else 'unknown'
+                node_name = (
+                    metadata.get("langgraph_node", "unknown")
+                    if isinstance(metadata, dict)
+                    else "unknown"
+                )
                 message_type = type(token).__name__
 
                 if message_type in ("AIMessage", "AIMessageChunk"):
-                    content_blocks = getattr(token, 'content_blocks', None)
+                    content_blocks = getattr(token, "content_blocks", None)
 
                     if content_blocks and isinstance(content_blocks, list):
                         for block in content_blocks:
-                            if isinstance(block, dict) and block.get('type') == 'text':
-                                text_content = block.get('text', '')
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_content = block.get("text", "")
                                 if text_content:
                                     yield {
                                         "type": "content",
                                         "data": text_content,
-                                        "node": node_name
+                                        "node": node_name,
                                     }
 
             logger.info(f"[会话 {session_id}] RAG Agent 查询完成（流式）")
@@ -404,9 +432,7 @@ class RagAgentService:
 
         except Exception as e:
             detail = format_exception_chain(e)
-            logger.error(
-                f"[会话 {session_id}] RAG Agent 查询失败（流式）: {detail}"
-            )
+            logger.error(f"[会话 {session_id}] RAG Agent 查询失败（流式）: {detail}")
             yield {"type": "error", "data": detail}
 
     async def get_session_history(self, session_id: str) -> list:
@@ -433,7 +459,7 @@ class RagAgentService:
 
             # checkpoint_tuple 可能是命名元组或普通元组，安全地提取 checkpoint
             # 通常第一个元素是 checkpoint 数据
-            if hasattr(checkpoint_tuple, 'checkpoint'):
+            if hasattr(checkpoint_tuple, "checkpoint"):
                 checkpoint_data = checkpoint_tuple.checkpoint  # type: ignore
             else:
                 # 如果是普通元组，第一个元素是 checkpoint
@@ -450,23 +476,18 @@ class RagAgentService:
                     continue
 
                 role = "user" if isinstance(msg, HumanMessage) else "assistant"
-                content = msg.content if hasattr(msg, 'content') else str(msg)
+                content = msg.content if hasattr(msg, "content") else str(msg)
 
                 # 提取时间戳（如果有的话）
-                timestamp = getattr(msg, 'timestamp', None)
+                timestamp = getattr(msg, "timestamp", None)
                 if timestamp:
-                    history.append({
-                        "role": role,
-                        "content": content,
-                        "timestamp": timestamp
-                    })
+                    history.append({"role": role, "content": content, "timestamp": timestamp})
                 else:
                     from datetime import datetime
-                    history.append({
-                        "role": role,
-                        "content": content,
-                        "timestamp": datetime.now().isoformat()
-                    })
+
+                    history.append(
+                        {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+                    )
 
             logger.info(f"获取会话历史: {session_id}, 消息数量: {len(history)}")
             return history

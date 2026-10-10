@@ -1,8 +1,9 @@
 // AI 智能运维与 OnCall 诊断平台前端应用
 class AIOnCallApp {
-    constructor() {
+    constructor(currentUser) {
         this.apiBaseUrl = '/api';
-        this.apiKey = sessionStorage.getItem('aiOnCallApiKey') || '';
+        this.currentUser = currentUser;
+        this.historyStorageKey = `chatHistories:user:${currentUser.id}`;
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
@@ -59,19 +60,23 @@ class AIOnCallApp {
         checkMarked();
     }
 
-    // 安全地渲染 Markdown
+    // 安全地渲染 Markdown：Marked 只负责转换，DOMPurify 负责清除不可信 HTML。
     renderMarkdown(content) {
         if (!content) return '';
         
-        // 检查 marked 是否可用
-        if (typeof marked === 'undefined') {
-            console.warn('marked 库未加载，使用纯文本显示');
+        if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+            console.warn('Markdown 安全渲染依赖未加载，使用纯文本显示');
             return this.escapeHtml(content);
         }
         
         try {
             const html = marked.parse(content);
-            return html;
+            return DOMPurify.sanitize(html, {
+                USE_PROFILES: { html: true },
+                ALLOW_DATA_ATTR: false,
+                FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'option', 'meta', 'link'],
+                FORBID_ATTR: ['style']
+            });
         } catch (e) {
             console.error('Markdown 渲染失败:', e);
             return this.escapeHtml(content);
@@ -110,8 +115,10 @@ class AIOnCallApp {
         this.modeDropdown = document.getElementById('modeDropdown');
         this.currentModeText = document.getElementById('currentModeText');
         this.fileInput = document.getElementById('fileInput');
-        this.apiKeyInput = document.getElementById('apiKeyInput');
-        this.saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+        this.currentUserName = document.getElementById('currentUserName');
+        this.currentUserRole = document.getElementById('currentUserRole');
+        this.currentUserAvatar = document.getElementById('currentUserAvatar');
+        this.logoutBtn = document.getElementById('logoutBtn');
         
         // 聊天区域元素
         this.chatMessages = document.getElementById('chatMessages');
@@ -120,9 +127,7 @@ class AIOnCallApp {
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
 
-        if (this.apiKeyInput) {
-            this.apiKeyInput.value = this.apiKey;
-        }
+        this.renderCurrentUser();
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -211,27 +216,51 @@ class AIOnCallApp {
             this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
         }
 
-        if (this.saveApiKeyBtn) {
-            this.saveApiKeyBtn.addEventListener('click', () => this.saveApiKey());
+        if (this.logoutBtn) {
+            this.logoutBtn.addEventListener('click', () => this.logout());
         }
     }
 
-    saveApiKey() {
-        this.apiKey = this.apiKeyInput ? this.apiKeyInput.value.trim() : '';
-        if (this.apiKey) {
-            sessionStorage.setItem('aiOnCallApiKey', this.apiKey);
-            this.showNotification('API Key 已保存到当前浏览器会话', 'success');
-        } else {
-            sessionStorage.removeItem('aiOnCallApiKey');
-            this.showNotification('API Key 已清除', 'success');
-        }
+    renderCurrentUser() {
+        const roleNames = { admin: '系统管理员', operator: '运维人员', viewer: '只读用户' };
+        const displayName = this.currentUser.display_name || this.currentUser.username;
+        if (this.currentUserName) this.currentUserName.textContent = displayName;
+        if (this.currentUserRole) this.currentUserRole.textContent = roleNames[this.currentUser.role] || this.currentUser.role;
+        if (this.currentUserAvatar) this.currentUserAvatar.textContent = displayName.slice(0, 1).toUpperCase();
     }
 
     getRequestHeaders(headers = {}) {
-        if (!this.apiKey) {
-            return headers;
+        const csrfToken = this.getCookie('oncall_csrf');
+        if (csrfToken) {
+            return { ...headers, 'X-CSRF-Token': csrfToken };
         }
-        return { ...headers, 'X-API-Key': this.apiKey };
+        return headers;
+    }
+
+    getCookie(name) {
+        const prefix = `${encodeURIComponent(name)}=`;
+        const item = document.cookie.split('; ').find(cookie => cookie.startsWith(prefix));
+        return item ? decodeURIComponent(item.substring(prefix.length)) : '';
+    }
+
+    ensureAuthenticated(response) {
+        if (response.status === 401) {
+            window.location.replace('/login');
+            throw new Error('登录状态已失效，请重新登录');
+        }
+    }
+
+    async logout() {
+        if (this.logoutBtn) this.logoutBtn.disabled = true;
+        try {
+            await fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: this.getRequestHeaders()
+            });
+        } finally {
+            window.location.replace('/login');
+        }
     }
 
     // 切换工具菜单显示/隐藏
@@ -385,7 +414,7 @@ class AIOnCallApp {
     // 加载历史对话列表
     loadChatHistories() {
         try {
-            const stored = localStorage.getItem('chatHistories');
+            const stored = localStorage.getItem(this.historyStorageKey);
             return stored ? JSON.parse(stored) : [];
         } catch (e) {
             console.error('加载历史对话失败:', e);
@@ -396,7 +425,7 @@ class AIOnCallApp {
     // 保存历史对话列表到localStorage
     saveChatHistories() {
         try {
-            localStorage.setItem('chatHistories', JSON.stringify(this.chatHistories));
+            localStorage.setItem(this.historyStorageKey, JSON.stringify(this.chatHistories));
         } catch (e) {
             console.error('保存历史对话失败:', e);
         }
@@ -469,8 +498,10 @@ class AIOnCallApp {
         try {
             // 从后端获取会话历史
             const response = await fetch(`/api/chat/session/${historyId}`, {
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders()
             });
+            this.ensureAuthenticated(response);
             if (response.ok) {
                 const data = await response.json();
                 const backendHistory = data.history || [];
@@ -539,6 +570,7 @@ class AIOnCallApp {
             // 调用后端API清空会话
             const response = await fetch('/api/chat/clear', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
                 }),
@@ -546,6 +578,7 @@ class AIOnCallApp {
                     session_id: historyId
                 })
             });
+            this.ensureAuthenticated(response);
 
             if (!response.ok) {
                 throw new Error('清空会话失败');
@@ -653,7 +686,13 @@ class AIOnCallApp {
 
     // 生成随机会话ID
     generateSessionId() {
-        return 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        const userPrefix = `user_${this.currentUser.id}`;
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+            return `${userPrefix}_${globalThis.crypto.randomUUID()}`;
+        }
+        const randomBytes = new Uint8Array(16);
+        globalThis.crypto.getRandomValues(randomBytes);
+        return `${userPrefix}_${Array.from(randomBytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
     }
 
     // 发送消息
@@ -714,6 +753,7 @@ class AIOnCallApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/chat`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
                 }),
@@ -722,6 +762,7 @@ class AIOnCallApp {
                     Question: message
                 })
             });
+            this.ensureAuthenticated(response);
 
             if (!response.ok) {
                 throw new Error(`HTTP错误: ${response.status}`);
@@ -770,6 +811,7 @@ class AIOnCallApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/chat_stream`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
                 }),
@@ -778,6 +820,7 @@ class AIOnCallApp {
                     Question: message
                 })
             });
+            this.ensureAuthenticated(response);
 
             if (!response.ok) {
                 throw new Error(`HTTP错误: ${response.status}`);
@@ -1123,7 +1166,7 @@ class AIOnCallApp {
         if (file) {
             // 验证文件格式
             if (!this.validateFileType(file)) {
-                this.showNotification('只支持上传 TXT 或 Markdown (.md) 格式的文件', 'error');
+                this.showNotification('只支持上传 TXT、Markdown、PDF 或 DOCX 文件', 'error');
                 this.fileInput.value = '';
                 return;
             }
@@ -1134,7 +1177,7 @@ class AIOnCallApp {
     // 验证文件类型
     validateFileType(file) {
         const fileName = file.name.toLowerCase();
-        const allowedExtensions = ['.txt', '.md', '.markdown'];
+        const allowedExtensions = ['.txt', '.md', '.pdf', '.docx'];
         return allowedExtensions.some(ext => fileName.endsWith(ext));
     }
 
@@ -1142,14 +1185,14 @@ class AIOnCallApp {
     async uploadFile(file) {
         // 再次验证文件类型（双重保险）
         if (!this.validateFileType(file)) {
-            this.showNotification('只支持上传 TXT 或 Markdown (.md) 格式的文件', 'error');
+            this.showNotification('只支持上传 TXT、Markdown、PDF 或 DOCX 文件', 'error');
             return;
         }
 
-        // 验证文件大小（限制为50MB）
-        const maxSize = 50 * 1024 * 1024;
+        // 与后端保持一致，限制为 10MB。
+        const maxSize = 10 * 1024 * 1024;
         if (file.size > maxSize) {
-            this.showNotification('文件大小不能超过50MB', 'error');
+            this.showNotification('文件大小不能超过10MB', 'error');
             return;
         }
 
@@ -1166,9 +1209,11 @@ class AIOnCallApp {
             // 发送上传请求
             const response = await fetch(`${this.apiBaseUrl}/upload`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders(),
                 body: formData
             });
+            this.ensureAuthenticated(response);
 
             if (!response.ok) {
                 throw new Error(`HTTP错误: ${response.status}`);
@@ -1212,6 +1257,7 @@ class AIOnCallApp {
         try {
             const response = await fetch(`${this.apiBaseUrl}/aiops`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: this.getRequestHeaders({
                     'Content-Type': 'application/json',
                 }),
@@ -1219,6 +1265,7 @@ class AIOnCallApp {
                     session_id: this.sessionId
                 })
             });
+            this.ensureAuthenticated(response);
 
             if (!response.ok) {
                 throw new Error(`HTTP错误: ${response.status}`);
@@ -1289,6 +1336,9 @@ class AIOnCallApp {
                                                 // 处理步骤完成事件
                                                 const stepText = `\n✅ ${sseMessage.message}\n`;
                                                 fullResponse += stepText;
+                                            } else if (sseMessage.type === 'evidence') {
+                                                const evidenceText = `\n🔎 ${sseMessage.summary || sseMessage.message || '已采集诊断证据'}\n`;
+                                                fullResponse += evidenceText;
                                             } else if (sseMessage.type === 'status') {
                                                 // 处理状态更新事件
                                                 const statusText = `\n⏳ ${sseMessage.message}\n`;
@@ -1296,7 +1346,11 @@ class AIOnCallApp {
                                             } else if (sseMessage.type === 'report') {
                                                 // 处理最终报告事件 - 流式输出
                                                 console.log('AI Ops 最终报告生成');
-                                                const reportText = `\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
+                                                const skippedCount = Array.isArray(sseMessage.skipped_steps) ? sseMessage.skipped_steps.length : 0;
+                                                const skippedText = skippedCount > 0
+                                                    ? `\n⏭️ 当前场景无需执行其余 ${skippedCount} 个步骤，已标记为跳过。\n`
+                                                    : '';
+                                                const reportText = `${skippedText}\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
                                                 fullResponse += reportText;
                                             } else if (sseMessage.type === 'complete') {
                                                 // 处理完成事件
@@ -1353,6 +1407,12 @@ class AIOnCallApp {
                                             if (loadingMessageElement) {
                                                 this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
                                             }
+                                        } else if (sseMessage.type === 'evidence') {
+                                            const evidenceText = `\n🔎 ${sseMessage.summary || sseMessage.message || '已采集诊断证据'}\n`;
+                                            fullResponse += evidenceText;
+                                            if (loadingMessageElement) {
+                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
+                                            }
                                         } else if (sseMessage.type === 'status') {
                                             // 处理状态更新事件
                                             const statusText = `\n⏳ ${sseMessage.message}\n`;
@@ -1363,7 +1423,11 @@ class AIOnCallApp {
                                         } else if (sseMessage.type === 'report') {
                                             // 处理最终报告事件 - 这是关键！
                                             console.log('AI Ops 最终报告生成，流式输出中...');
-                                            const reportText = `\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
+                                            const skippedCount = Array.isArray(sseMessage.skipped_steps) ? sseMessage.skipped_steps.length : 0;
+                                            const skippedText = skippedCount > 0
+                                                ? `\n⏭️ 当前场景无需执行其余 ${skippedCount} 个步骤，已标记为跳过。\n`
+                                                : '';
+                                            const reportText = `${skippedText}\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
                                             fullResponse += reportText;
                                             if (loadingMessageElement) {
                                                 this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
@@ -1718,6 +1782,17 @@ style.textContent = `
 document.head.appendChild(style);
 
 // 初始化应用
-document.addEventListener('DOMContentLoaded', () => {
-    new AIOnCallApp();
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        if (!response.ok) {
+            window.location.replace('/login');
+            return;
+        }
+        const currentUser = await response.json();
+        new AIOnCallApp(currentUser);
+    } catch (error) {
+        console.error('读取登录状态失败:', error);
+        window.location.replace('/login');
+    }
 });

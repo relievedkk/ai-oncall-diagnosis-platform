@@ -16,10 +16,15 @@ router = APIRouter()
 def _verify_alertmanager_token(authorization: str | None) -> None:
     expected = config.alertmanager_webhook_token
     if not expected:
-        return
+        raise HTTPException(
+            status_code=503,
+            detail="Alertmanager webhook authentication is not configured",
+        )
     supplied = authorization or ""
     prefix = "Bearer "
-    if not supplied.startswith(prefix) or not secrets.compare_digest(supplied[len(prefix):], expected):
+    if not supplied.startswith(prefix) or not secrets.compare_digest(
+        supplied[len(prefix) :], expected
+    ):
         raise HTTPException(status_code=401, detail="Invalid Alertmanager webhook token")
 
 

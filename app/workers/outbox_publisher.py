@@ -27,9 +27,7 @@ async def publish_once(publisher_id: str) -> int:
                 task_id=payload["diagnosis_id"],
                 queue=event["queue_name"],
                 routing_key=(
-                    "critical"
-                    if event["queue_name"] == config.celery_critical_queue
-                    else "default"
+                    "critical" if event["queue_name"] == config.celery_critical_queue else "default"
                 ),
             )
             await diagnosis_repository.mark_outbox_published(event["id"])

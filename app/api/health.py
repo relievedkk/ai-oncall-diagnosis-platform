@@ -43,16 +43,14 @@ async def _readiness_response() -> JSONResponse:
 
     rabbitmq_healthy = False
     queues: dict[str, Any] = {}
-    rabbitmq_error: str | None = None
     try:
         queues = await queue_observer.rabbitmq_queues()
         rabbitmq_healthy = True
     except (httpx.HTTPError, ValueError, TypeError) as exc:
-        rabbitmq_error = str(exc)
+        logger.warning("RabbitMQ 健康检查失败: {}", exc)
     health_data["rabbitmq"] = {
         "status": "authenticated" if rabbitmq_healthy else "disconnected",
         "queues": queues,
-        **({"error": rabbitmq_error} if rabbitmq_error else {}),
     }
 
     ready = milvus_healthy and postgres_healthy and rabbitmq_healthy

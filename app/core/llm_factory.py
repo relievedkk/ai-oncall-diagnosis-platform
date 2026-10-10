@@ -11,8 +11,8 @@
 """
 
 from langchain_openai import ChatOpenAI
+
 from app.config import config
-from loguru import logger
 
 
 class LLMFactory:
@@ -33,20 +33,16 @@ class LLMFactory:
         base_url = base_url or LLMFactory.DASHSCOPE_BASE_URL
         api_key = api_key or config.dashscope_api_key
 
-        # 参考：https://help.aliyun.com/zh/model-studio/getting-started/models
-        extra_body = {}
-        extra_body["stream"] = streaming
-
-        llm = ChatOpenAI(
+        return ChatOpenAI(
             model=model,
             temperature=temperature,
             streaming=streaming,
             base_url=base_url,
             api_key=api_key,
-            extra_body=extra_body if extra_body else None,
+            timeout=config.llm_request_timeout,
+            max_retries=2,
         )
 
-        return llm
 
 # 全局 LLM 工厂实例
 llm_factory = LLMFactory()

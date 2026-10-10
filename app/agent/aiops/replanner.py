@@ -3,27 +3,32 @@ Replanner 节点：重新规划或生成最终响应
 基于 LangGraph 官方教程实现
 """
 
+import json
 from textwrap import dedent
-from typing import Dict, Any, List
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_qwq import ChatQwen
-from pydantic import BaseModel, Field
-from loguru import logger
+from typing import Any
 
-from app.config import config
-from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from loguru import logger
+from pydantic import BaseModel, Field
+
 from app.agent.mcp_client import get_mcp_client_with_retry
+from app.core.llm_factory import llm_factory
+from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
+
 from .state import PlanExecuteState
 from .utils import format_tools_description
 
 
 class Response(BaseModel):
     """最终响应的格式"""
+
     response: str = Field(description="对用户的最终响应")
 
 
 class Act(BaseModel):
     """重新规划的输出格式"""
+
     action: str = Field(
         description="""下一步的行动，必须是以下三种之一：
         - 'continue': 当前计划合理，继续执行下一个步骤
@@ -31,9 +36,9 @@ class Act(BaseModel):
         - 'respond': 计划已完成且信息充足，生成最终响应"""
     )
     # action 为 'replan' 时，新的步骤列表（会替换当前剩余计划）
-    new_steps: List[str] = Field(
+    new_steps: list[str] = Field(
         default_factory=list,
-        description="新的步骤列表（如果 action 是 'replan'，这些步骤会替换剩余计划）"
+        description="新的步骤列表（如果 action 是 'replan'，这些步骤会替换剩余计划）",
     )
 
 
@@ -79,7 +84,7 @@ replanner_prompt = ChatPromptTemplate.from_messages(
                 - 剩余步骤是否真的"必需"？
                 - 已执行步骤数是否过多（>= 5）？如果是，立即 respond
 
-                **决策优先级口诀：** 
+                **决策优先级口诀：**
                 "优先结束 > 保持不变 > 调整计划"
                 "信息足够就响应，不要追求完美"
             """).strip(),
@@ -108,7 +113,71 @@ response_prompt = ChatPromptTemplate.from_messages(
 )
 
 
-async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
+def _find_empty_alert_scan(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the latest successful Prometheus alert scan that found no alerts."""
+    for item in reversed(evidence):
+        if str(item.get("source", "")) != "query_prometheus_alerts":
+            continue
+        result = item.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, json.JSONDecodeError):
+                continue
+        if not isinstance(result, dict) or result.get("success") is not True:
+            continue
+        alerts = result.get("alerts")
+        total = result.get("total")
+        if alerts == [] and total == 0:
+            return result
+    return None
+
+
+def _build_no_alert_report(scan: dict[str, Any]) -> str:
+    """Build a deterministic report that does not overstate the available evidence."""
+    state_counts = scan.get("state_counts") or {}
+    state_summary = ", ".join(
+        f"{name}: {count}" for name, count in sorted(state_counts.items())
+    ) or "无"
+    return dedent(f"""
+        # 告警扫描报告
+
+        ## 查询结果
+
+        - **数据来源**：Prometheus 当前告警接口（`query_prometheus_alerts`）
+        - **当前活跃告警数**：0
+        - **告警状态分布**：{state_summary}
+
+        ## 结论
+
+        本次查询未发现 Prometheus 当前处于活跃状态的告警，因此没有进入针对具体告警的指标、日志和根因排查流程。
+
+        ## 证据边界
+
+        本次结果只说明“当前告警查询返回 0 条”。本次诊断**未检查**各服务的 CPU、内存、延迟、错误率、存活状态或日志内容，因此不能据此断言所有服务正常、所有监控指标正常，或系统不存在潜在故障。
+
+        ## 后续建议
+
+        - 若预期此时应有告警，请检查 Prometheus 抓取目标、告警规则和 Alertmanager 链路。
+        - 若需要主动健康检查，请单独发起包含关键指标、服务存活和日志查询的诊断任务。
+    """).strip()
+
+
+async def _generate_response_and_close_plan(
+    state: PlanExecuteState, llm: ChatOpenAI, reason: str
+) -> dict[str, Any]:
+    """Generate a final response and make every unexecuted step explicit."""
+    response = await _generate_response(state, llm)
+    remaining_steps = list(state.get("plan", []))
+    return {
+        **response,
+        "plan": [],
+        "skipped_steps": remaining_steps,
+        "termination_reason": reason,
+    }
+
+
+async def replanner(state: PlanExecuteState) -> dict[str, Any]:
     """
     重新规划节点：决定是继续、调整计划还是生成最终响应
 
@@ -122,20 +191,31 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
     input_text = state.get("input", "")
     plan = state.get("plan", [])
     past_steps = state.get("past_steps", [])
+    evidence = state.get("evidence", [])
 
     logger.info(f"剩余计划步骤: {len(plan)}")
     logger.info(f"已执行步骤: {len(past_steps)}")
 
+    # “没有活跃告警”是一个明确的终止条件，不交给 LLM 自由发挥。
+    # 这样既避免无意义地继续查询，也避免把“无告警”夸大为“系统健康”。
+    empty_alert_scan = _find_empty_alert_scan(evidence)
+    if empty_alert_scan is not None:
+        logger.info("Prometheus 未返回活跃告警，生成范围受限的确定性报告")
+        return {
+            "plan": [],
+            "skipped_steps": list(plan),
+            "termination_reason": "no_active_alerts",
+            "response": _build_no_alert_report(empty_alert_scan),
+        }
+
     # ⚠️ 强制限制：如果已执行步骤过多，直接生成响应
     MAX_STEPS = 8
     if len(past_steps) >= MAX_STEPS:
-        logger.warning(f"已执行 {len(past_steps)} 个步骤，超过最大限制 {MAX_STEPS}，强制生成最终响应")
-        llm = ChatQwen(
-            model=config.rag_model,
-            api_key=config.dashscope_api_key,
-            temperature=0
+        logger.warning(
+            f"已执行 {len(past_steps)} 个步骤，超过最大限制 {MAX_STEPS}，强制生成最终响应"
         )
-        return await _generate_response(state, llm)
+        llm = llm_factory.create_chat_model(temperature=0, streaming=False)
+        return await _generate_response_and_close_plan(state, llm, "max_steps_reached")
 
     # 获取可用工具列表
     try:
@@ -157,36 +237,35 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
         tools_description = "无法获取工具列表"
 
     # 创建 LLM
-    llm = ChatQwen(
-        model=config.rag_model,
-        api_key=config.dashscope_api_key,
-        temperature=0
-    )
+    llm = llm_factory.create_chat_model(temperature=0, streaming=False)
 
     # 格式化已执行的步骤
-    steps_summary = "\n".join([
-        f"步骤: {step}\n结果: {result[:300]}..."
-        for step, result in past_steps
-    ])
+    steps_summary = "\n".join(
+        [f"步骤: {step}\n结果: {result[:300]}..." for step, result in past_steps]
+    )
 
     # 如果还有剩余计划，进行决策
     if plan:
         logger.info("还有剩余计划，评估下一步行动")
 
-        replanner_chain = replanner_prompt | llm.with_structured_output(Act)
+        replanner_chain = replanner_prompt | llm.with_structured_output(
+            Act, method="function_calling"
+        )
 
         try:
             messages = [
                 ("user", f"原始任务: {input_text}"),
                 ("user", f"已执行的步骤:\n{steps_summary}"),
                 ("user", f"剩余计划: {', '.join(plan)}"),
-                ("user", f"⚠️ 重要提示：已执行 {len(past_steps)} 个步骤，请优先考虑是否信息已足够生成响应（respond）")
+                (
+                    "user",
+                    f"⚠️ 重要提示：已执行 {len(past_steps)} 个步骤，请优先考虑是否信息已足够生成响应（respond）",
+                ),
             ]
 
-            act = await replanner_chain.ainvoke({
-                "messages": messages,
-                "tools_description": tools_description
-            })
+            act = await replanner_chain.ainvoke(
+                {"messages": messages, "tools_description": tools_description}
+            )
 
             # 处理返回结果
             if isinstance(act, Act):
@@ -201,7 +280,9 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
 
             if action == "respond":
                 logger.info("决定生成最终响应")
-                return await _generate_response(state, llm)
+                return await _generate_response_and_close_plan(
+                    state, llm, "sufficient_evidence"
+                )
 
             elif action == "replan":
                 # ⚠️ 强制限制：新步骤数不能超过当前剩余步骤数
@@ -210,13 +291,15 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
                         f"新步骤数 {len(new_steps)} > 剩余步骤数 {len(plan)}，"
                         f"强制截断为 {len(plan)} 个步骤"
                     )
-                    new_steps = new_steps[:len(plan)]
-                
+                    new_steps = new_steps[: len(plan)]
+
                 # ⚠️ 二次检查：如果已执行步骤 >= 5，禁止 replan
                 if len(past_steps) >= 5:
                     logger.warning(f"已执行 {len(past_steps)} 个步骤，禁止重新规划，强制生成响应")
-                    return await _generate_response(state, llm)
-                
+                    return await _generate_response_and_close_plan(
+                        state, llm, "max_steps_reached"
+                    )
+
                 logger.info(f"决定调整计划，新步骤数量: {len(new_steps)}")
                 if new_steps:
                     # 替换剩余计划
@@ -239,7 +322,7 @@ async def replanner(state: PlanExecuteState) -> Dict[str, Any]:
         return await _generate_response(state, llm)
 
 
-async def _generate_response(state: PlanExecuteState, llm: ChatQwen) -> Dict[str, Any]:
+async def _generate_response(state: PlanExecuteState, llm: ChatOpenAI) -> dict[str, Any]:
     """生成最终响应"""
     logger.info("生成最终响应...")
 
@@ -247,18 +330,19 @@ async def _generate_response(state: PlanExecuteState, llm: ChatQwen) -> Dict[str
     past_steps = state.get("past_steps", [])
 
     # 格式化执行历史
-    execution_history = "\n\n".join([
-        f"### 步骤: {step}\n**结果:**\n{result}"
-        for step, result in past_steps
-    ])
+    execution_history = "\n\n".join(
+        [f"### 步骤: {step}\n**结果:**\n{result}" for step, result in past_steps]
+    )
 
-    response_gen = response_prompt | llm.with_structured_output(Response)
+    response_gen = response_prompt | llm.with_structured_output(
+        Response, method="function_calling"
+    )
 
     try:
         messages = [
             ("user", f"原始任务: {input_text}"),
             ("user", f"执行历史:\n{execution_history}"),
-            ("user", "请基于以上信息生成全面的最终响应")
+            ("user", "请基于以上信息生成全面的最终响应"),
         ]
 
         response_obj = await response_gen.ainvoke({"messages": messages})

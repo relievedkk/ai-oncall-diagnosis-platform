@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -19,10 +19,10 @@ class IndexingResult:
         self.total_files = 0
         self.success_count = 0
         self.fail_count = 0
-        self.start_time: Optional[datetime] = None
-        self.end_time: Optional[datetime] = None
+        self.start_time: datetime | None = None
+        self.end_time: datetime | None = None
         self.error_message = ""
-        self.failed_files: Dict[str, str] = {}
+        self.failed_files: dict[str, str] = {}
 
     def increment_success_count(self):
         """增加成功计数"""
@@ -42,7 +42,7 @@ class IndexingResult:
             return int((self.end_time - self.start_time).total_seconds() * 1000)
         return 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "success": self.success,
@@ -64,7 +64,7 @@ class VectorIndexService:
         self.upload_path = "./uploads"
         logger.info("向量索引服务初始化完成")
 
-    def index_directory(self, directory_path: Optional[str] = None) -> IndexingResult:
+    def index_directory(self, directory_path: str | None = None) -> IndexingResult:
         """
         索引指定目录下的所有文件
 

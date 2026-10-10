@@ -200,48 +200,80 @@ body {
     height: 16px;
 }
 
-.api-key-panel {
-    padding: 12px;
-    border-top: 1px solid #dadce0;
-    color: #5f6368;
-}
-
-.api-key-panel label {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 12px;
-    font-weight: 600;
-}
-
-.api-key-controls {
+.account-panel {
     display: flex;
-    gap: 6px;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 12px;
+    border-top: 1px solid #dadce0;
+    background: rgba(255, 255, 255, 0.72);
+    color: #5f6368;
+    font-size: 12px;
 }
 
-.api-key-controls input {
+.account-avatar {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    flex: 0 0 34px;
+    border-radius: 10px;
+    color: #ffffff;
+    background: linear-gradient(135deg, #368dff, #1665d8);
+    box-shadow: 0 5px 14px rgba(26, 115, 232, 0.25);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.account-meta {
+    display: flex;
     min-width: 0;
     flex: 1;
-    padding: 7px 8px;
-    border: 1px solid #bdc1c6;
-    border-radius: 6px;
-    background: #ffffff;
-    font-size: 12px;
+    flex-direction: column;
+    gap: 2px;
 }
 
-.api-key-controls button {
-    padding: 7px 10px;
+.account-meta strong {
+    overflow: hidden;
+    color: #202124;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.account-meta span {
+    color: #80868b;
+    font-size: 11px;
+}
+
+.logout-btn {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    place-items: center;
+    flex: 0 0 32px;
     border: 0;
-    border-radius: 6px;
-    background: #1a73e8;
-    color: #ffffff;
+    border-radius: 8px;
+    color: #6b7280;
+    background: transparent;
     cursor: pointer;
+    transition: color 0.2s, background 0.2s;
 }
 
-.api-key-panel small {
-    display: block;
-    margin-top: 6px;
-    font-size: 10px;
-    line-height: 1.4;
+.logout-btn:hover {
+    color: #d93025;
+    background: rgba(217, 48, 37, 0.09);
+}
+
+.logout-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+.logout-btn:focus-visible {
+    outline: 2px solid #1a73e8;
+    outline-offset: 2px;
 }
 
 /* 主内容区域 */

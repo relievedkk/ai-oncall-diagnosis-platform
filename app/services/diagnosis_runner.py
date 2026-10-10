@@ -24,9 +24,7 @@ class DiagnosisNotFoundError(RuntimeError):
     """The broker message references a missing diagnosis."""
 
 
-def build_alert_task(
-    alert: AlertmanagerAlert, service_name: str, service: dict[str, Any]
-) -> str:
+def build_alert_task(alert: AlertmanagerAlert, service_name: str, service: dict[str, Any]) -> str:
     payload = {
         "alertname": alert.labels.get("alertname", "unknown"),
         "severity": alert.labels.get("severity", "unknown"),
@@ -101,6 +99,11 @@ class DiagnosisRunner:
                     error_event_seen = True
                     raise RuntimeError(str(event.get("message", "diagnosis failed")))
 
+            # A completed job must never leave planned steps behind. The report event
+            # normally carries precise skip reasons; this is the final invariant guard.
+            await self.repository.skip_remaining_steps(
+                diagnosis_id, "诊断工作流已结束，该步骤未执行"
+            )
             await self.repository.update_job(diagnosis_id, status="completed", error=None)
             AIOPS_DIAGNOSES.labels(trigger=trigger, status="completed").inc()
             return "completed"

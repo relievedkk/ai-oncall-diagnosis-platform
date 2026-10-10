@@ -10,7 +10,6 @@
 """
 
 from pathlib import Path
-from typing import List
 
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -60,7 +59,7 @@ class DocumentSplitterService:
             f"supported={list(self.SUPPORTED_EXTENSIONS.keys())}"
         )
 
-    def split_document(self, file_path: str) -> List[Document]:
+    def split_document(self, file_path: str) -> list[Document]:
         """
         智能分割文档（根据文件类型自动路由到对应处理器）
 
@@ -77,13 +76,12 @@ class DocumentSplitterService:
         handler_name = self.SUPPORTED_EXTENSIONS.get(ext)
         if not handler_name:
             raise ValueError(
-                f"不支持的文件类型: {ext}，"
-                f"支持的类型: {list(self.SUPPORTED_EXTENSIONS.keys())}"
+                f"不支持的文件类型: {ext}，支持的类型: {list(self.SUPPORTED_EXTENSIONS.keys())}"
             )
         handler = getattr(self, handler_name)
         return handler(file_path)
 
-    def split_markdown(self, file_path: str) -> List[Document]:
+    def split_markdown(self, file_path: str) -> list[Document]:
         """
         分割 Markdown 文档（三阶段：按标题切 -> 按大小切 -> 合并小片段）
 
@@ -121,7 +119,7 @@ class DocumentSplitterService:
             logger.error(f"Markdown 分割失败: {file_path}, 错误: {e}")
             raise
 
-    def split_text(self, file_path: str) -> List[Document]:
+    def split_text(self, file_path: str) -> list[Document]:
         """
         分割普通文本文档（单阶段：按字符大小切）
 
@@ -155,7 +153,7 @@ class DocumentSplitterService:
             logger.error(f"文本分割失败: {file_path}, 错误: {e}")
             raise
 
-    def split_pdf(self, file_path: str) -> List[Document]:
+    def split_pdf(self, file_path: str) -> list[Document]:
         """
         分割 PDF 文档（两阶段：PyPDFLoader 按页提取 -> RecursiveCharacterTextSplitter 按大小切）
 
@@ -202,7 +200,7 @@ class DocumentSplitterService:
             logger.error(f"PDF 分割失败: {file_path}, 错误: {e}")
             raise
 
-    def split_docx(self, file_path: str) -> List[Document]:
+    def split_docx(self, file_path: str) -> list[Document]:
         """
         分割 Word 文档（两阶段：Docx2txtLoader 提取文本 -> RecursiveCharacterTextSplitter 按大小切）
 
@@ -229,8 +227,7 @@ class DocumentSplitterService:
                 return []
 
             logger.info(
-                f"Word 文档加载完成: {file_path}, "
-                f"文本长度: {len(documents[0].page_content)} 字符"
+                f"Word 文档加载完成: {file_path}, 文本长度: {len(documents[0].page_content)} 字符"
             )
 
             # 第二阶段: 按大小分割
@@ -249,9 +246,7 @@ class DocumentSplitterService:
             logger.error(f"Word 文档分割失败: {file_path}, 错误: {e}")
             raise
 
-    def _merge_small_chunks(
-        self, documents: List[Document], min_size: int = 300
-    ) -> List[Document]:
+    def _merge_small_chunks(self, documents: list[Document], min_size: int = 300) -> list[Document]:
         """
         合并太小的分片
 

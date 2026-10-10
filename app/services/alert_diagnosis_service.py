@@ -20,6 +20,51 @@ from app.services.diagnosis_runner import DiagnosisRunner, build_alert_task
 from app.services.service_catalog import service_catalog
 
 
+def _parse_tool_result(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _format_stream_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Expose persisted tool evidence as a readable SSE event, not raw JSON."""
+    payload = evidence.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+        public_event = dict(payload)
+        if public_event.get("type") == "step_complete":
+            # The durable record keeps full results and tool evidence. The browser
+            # receives only the documented preview plus a separate readable
+            # evidence event, so raw nested tool JSON is never rendered or exposed.
+            public_event.pop("result", None)
+            public_event.pop("tool_evidence", None)
+        return public_event
+
+    evidence_type = str(evidence.get("evidence_type", "tool"))
+    source = str(evidence.get("source", "unknown_tool"))
+    summary = f"已采集 {evidence_type} 证据，来源：{source}"
+    if isinstance(payload, dict) and source == "query_prometheus_alerts":
+        result = _parse_tool_result(payload.get("result"))
+        if result and result.get("success") is True:
+            total = result.get("total")
+            if isinstance(total, int):
+                summary = f"Prometheus 当前活跃告警：{total} 条"
+
+    return {
+        "type": "evidence",
+        "stage": "evidence_collected",
+        "message": summary,
+        "summary": summary,
+        "evidence_type": evidence_type,
+        "source": source,
+    }
+
+
 class AlertDiagnosisService:
     """Persist requests atomically and let Celery execute them independently."""
 
@@ -147,7 +192,7 @@ class AlertDiagnosisService:
                 if evidence_id in seen_evidence:
                     continue
                 seen_evidence.add(evidence_id)
-                yield evidence["payload"]
+                yield _format_stream_evidence(evidence)
             if job["status"] in {"completed", "failed", "interrupted", "dead_lettered"}:
                 return
             await asyncio.sleep(0.5)

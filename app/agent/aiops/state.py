@@ -4,7 +4,7 @@
 """
 
 import operator
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 
 class PlanExecuteState(TypedDict):
@@ -25,3 +25,9 @@ class PlanExecuteState(TypedDict):
 
     # 最终响应/报告
     response: str
+
+    # 工作流提前结束时，没有执行且被明确跳过的剩余步骤。
+    skipped_steps: NotRequired[list[str]]
+
+    # 工作流结束原因，用于持久化和前端解释诊断边界。
+    termination_reason: NotRequired[str]

@@ -120,8 +120,12 @@ class MilvusClientManager:
                         vector_field = field
                         break
 
-                if vector_field and hasattr(vector_field, 'params') and 'dim' in vector_field.params:
-                    existing_dim = vector_field.params['dim']
+                if (
+                    vector_field
+                    and hasattr(vector_field, "params")
+                    and "dim" in vector_field.params
+                ):
+                    existing_dim = vector_field.params["dim"]
                     validate_vector_dimension(existing_dim, self.VECTOR_DIM)
                     logger.info(f"向量维度匹配: {self.VECTOR_DIM}")
 
@@ -308,10 +312,7 @@ class MilvusClientManager:
         return self
 
     def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         """上下文管理器退出"""
         self.close()

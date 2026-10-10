@@ -13,3 +13,7 @@ receivers:
     webhook_configs:
       - url: http://host.docker.internal:9900/api/alerts/webhook
         send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alertmanager_webhook_token

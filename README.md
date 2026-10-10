@@ -15,6 +15,7 @@
 - **自动告警闭环**：Prometheus 触发规则后由 Alertmanager 回调应用，并自动创建诊断任务。
 - **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由隔离的 critical/default Celery Worker 执行，支持重试、心跳、执行租约和死信队列。
 - **持久化工作流**：LangGraph 对话和诊断检查点写入 PostgreSQL，API 或 Worker 重启后仍可恢复状态。
+- **B 端账号登录**：运维人员使用账号密码登录，密码以 Argon2id 哈希保存，会话可撤销，并带有登录限流、失败锁定与 CSRF 防护。
 - **质量评测**：使用固定诊断案例对根因命中、证据完整性、报告完整性和无依据结论进行离线回归评分。
 - **MCP 工具接入**：Monitor MCP 查询真实 Prometheus 数据；CLS MCP 可连接腾讯云日志或使用本地示例数据。
 
@@ -132,6 +133,7 @@ make status-mcp  # 查看 MCP 服务状态
 | 服务 | 地址 | 用途 |
 |---|---|---|
 | Web 应用 | http://localhost:9900 | 对话、上传知识文档、启动 AIOps 诊断 |
+| 登录页 | http://localhost:9900/login | 运维人员账号登录；首次启动默认账号为 `admin` |
 | API 文档 | http://localhost:9900/docs | 查看并调试 FastAPI 接口 |
 | 应用指标 | http://localhost:9900/metrics | 查看 Prometheus 格式的原始指标 |
 | Prometheus | http://localhost:9090 | 查询指标、目标状态和告警规则 |
@@ -148,18 +150,33 @@ make status-mcp  # 查看 MCP 服务状态
 cp .env.example .env
 ```
 
-最少需要填写：
+至少需要填写模型密钥；本地启动脚本会自动生成独立的机器 API Key、Webhook Token 和管理员初始密码：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的真实密钥
+AUTH_ENABLED=true
+API_KEY=一个独立的64位十六进制随机值
+ALERTMANAGER_WEBHOOK_TOKEN=另一个独立的64位十六进制随机值
+WEB_LOGIN_ENABLED=true
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=管理员初始强密码
 ```
+
+Windows 一键启动脚本和 Linux/macOS 的 `make start` 会执行 `python -m app.local_env`：如果本地 API Key、Webhook Token 或管理员密码仍为空、过短或是模板占位符，会自动生成随机值，但不会输出密钥内容。生成后可在本机 `.env` 中查看 `ADMIN_PASSWORD`；该文件不会提交到 Git。
 
 常用配置：
 
 ```dotenv
-# 本地演示默认关闭认证
-AUTH_ENABLED=false
-API_KEY=
+# 默认开启认证；完整 Compose 栈需要监听 Docker 可访问的宿主机接口
+HOST=0.0.0.0
+DEBUG=false
+AUTH_ENABLED=true
+API_KEY=请替换为强随机值
+ALERTMANAGER_WEBHOOK_TOKEN=请替换为另一个强随机值
+WEB_LOGIN_ENABLED=true
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请替换为管理员初始强密码
+SESSION_COOKIE_SECURE=false
 
 # MCP
 MCP_CLS_TRANSPORT=streamable-http
@@ -199,30 +216,38 @@ FAULT_INJECTION_ENABLED=false
 uv run alembic upgrade head
 ```
 
-### API 认证
+### 登录与 API 认证
 
-本地演示可保持：
+只有服务绑定到回环地址时，才允许临时关闭认证：
 
 ```dotenv
+HOST=127.0.0.1
 AUTH_ENABLED=false
 ```
 
-公网或共享环境必须启用认证：
+完整本地监控栈、局域网或公网环境必须启用认证：
 
 ```dotenv
 AUTH_ENABLED=true
 API_KEY=请替换为足够长的随机值
+WEB_LOGIN_ENABLED=true
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请替换为管理员初始强密码
 ```
 
 启用后：
 
-- Web 左侧边栏填写 API Key；它只保存在当前浏览器的 `sessionStorage` 中。
-- API 客户端通过 `X-API-Key` 请求头发送密钥。
+- 浏览器访问首页时会跳转到 `/login`，登录成功后使用 HttpOnly Cookie 会话，不再要求用户粘贴 API Key。
+- 密码使用 Argon2id 哈希存入 PostgreSQL；服务端仅保存会话令牌和 CSRF 令牌的 SHA-256 摘要。
+- 普通会话默认 8 小时；勾选“保持登录”后为 7 天。连续失败 5 次会锁定账号 15 分钟。
+- `ADMIN_PASSWORD` 只在数据库不存在该账号时用于创建初始管理员；以后修改 `.env` 不会覆盖数据库中的密码。
+- Prometheus、命令行和其他机器客户端继续通过 `X-API-Key` 请求头发送机器密钥。
 - Windows 启动脚本和 Makefile 上传命令会从 `.env` 读取 API Key。
+- HTTPS 部署必须设置 `SESSION_COOKIE_SECURE=true`。
 
 ### Alertmanager Webhook 认证
 
-本地 Compose 默认将 `ALERTMANAGER_WEBHOOK_TOKEN` 留空。生产环境如启用该变量，还必须在 Alertmanager 的 `webhook_configs.http_config.authorization` 中配置相同的 Bearer Token，并通过密钥文件或密钥管理系统注入；不要把真实 Token 写进仓库。
+`ALERTMANAGER_WEBHOOK_TOKEN` 是必填项。Compose 会把它作为 Docker Secret 挂载给 Alertmanager，再使用 Bearer Token 调用 Webhook；不要把真实 Token 写进仓库。Token 缺失或过短时应用会拒绝启动。
 
 ## 手动启动与排查
 
@@ -243,17 +268,21 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 .\.venv\Scripts\python.exe -m app.server
 ```
 
-文档可以直接从 Web 页面上传。启用认证时，先在左侧填写 API Key。
+文档可以在登录后的 Web 页面直接上传。
 
 ## API
 
 | 功能 | 方法 | 路径 | 认证 |
 |---|---|---|---|
-| 首页 | GET | `/` | 否 |
+| 登录页 | GET | `/login` | 否 |
+| 账号登录 | POST | `/api/auth/login` | 否（限流） |
+| 当前账户 | GET | `/api/auth/me` | 浏览器会话 |
+| 退出登录 | POST | `/api/auth/logout` | 浏览器会话 + CSRF |
+| 首页 | GET | `/` | 是 |
 | 存活检查 | GET | `/live` | 否 |
-| 就绪检查 | GET | `/ready` | 否 |
-| 兼容健康检查 | GET | `/health` | 否 |
-| 应用指标 | GET | `/metrics` | 否 |
+| 就绪检查 | GET | `/ready` | 是 |
+| 兼容健康检查 | GET | `/health` | 是 |
+| 应用指标 | GET | `/metrics` | 是（Prometheus 使用 Docker Secret） |
 | 普通对话 | POST | `/api/chat` | 是 |
 | 流式对话 | POST | `/api/chat_stream` | 是 |
 | 清空会话 | POST | `/api/chat/clear` | 是 |
@@ -263,18 +292,17 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 | 手动 AIOps 诊断 | POST | `/api/aiops` | 是 |
 | 自动诊断任务列表 | GET | `/api/aiops/jobs` | 是 |
 | 自动诊断任务详情 | GET | `/api/aiops/jobs/{diagnosis_id}` | 是 |
-| Alertmanager 回调 | POST | `/api/alerts/webhook` | API Key 或独立 Bearer Token |
+| Alertmanager 回调 | POST | `/api/alerts/webhook` | 独立 Bearer Token |
 | 本地故障注入 | POST | `/api/debug/fault/{state}` | 是，且默认关闭 |
 
-当 `AUTH_ENABLED=false` 时，表格中的认证接口也可在本地直接访问。
+API 文档默认关闭；如需本地调试，可临时设置 `EXPOSE_API_DOCS=true`。关闭认证时必须同时使用 `HOST=127.0.0.1`。
 
 任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会先可靠入队，再由独立 Worker 写入同一套表。浏览器断开或 FastAPI 重启不会中断已经入队的诊断。
 
 ### 请求示例
 
 ```bash
-# AUTH_ENABLED=false 时 API_KEY 可以留空
-API_KEY=""
+API_KEY="从 .env 读取，不要提交"
 
 curl -X POST "http://localhost:9900/api/chat" \
   -H "Content-Type: application/json" \
@@ -296,9 +324,7 @@ curl -N -X POST "http://localhost:9900/api/aiops" \
 3. 触发故障并等待 Prometheus 和 Alertmanager 完成一次规则计算与转发。
 
 ```powershell
-$headers = @{}
-# AUTH_ENABLED=true 时取消下一行注释并填入真实 API Key
-# $headers["X-API-Key"] = "your-api-key"
+$headers = @{"X-API-Key" = "your-api-key"}
 
 Invoke-RestMethod -Method Post -Headers $headers http://localhost:9900/api/debug/fault/active
 Start-Sleep -Seconds 30
@@ -375,7 +401,7 @@ uv run python -m app.evaluation.cli \
 - RabbitMQ 使用本地开发凭证，管理界面和 AMQP 端口仅绑定到回环地址；生产环境仍必须更换密码并启用 TLS。
 - Prometheus、Alertmanager、Milvus 和 Attu 默认映射到宿主机端口。
 - cAdvisor 使用特权模式并读取 Docker/宿主机相关目录。
-- `/metrics`、`/health` 和 API 文档为公开端点。
+- `/metrics`、`/health` 与业务 API 均受认证保护；API 文档默认关闭。
 - Milvus collection 的向量维度不匹配时应用会拒绝启动，不会自动删除已有向量；请通过新 collection 重建并显式切换。
 - FastAPI 监听 `0.0.0.0`，以便 Docker 内的 Prometheus 通过 `host.docker.internal` 抓取指标；请使用主机防火墙限制外部访问。
 - 本地示例 CLS 返回演示数据，不代表真实生产日志。
@@ -386,7 +412,7 @@ uv run python -m app.evaluation.cli \
 
 ### Web 可以打开，但聊天或上传返回 503
 
-通常是 `AUTH_ENABLED=true` 但没有设置 `API_KEY`。设置 API Key 后重启应用，并在 Web 左侧填写相同值；本地演示也可以明确设置 `AUTH_ENABLED=false`。
+机器调用出现 401/503 时，通常是 API Key 未配置或长度不足。浏览器用户无需填写 Key，应访问 `/login`，使用 `.env` 中的 `ADMIN_USERNAME` 和首次启动时生成的 `ADMIN_PASSWORD` 登录。只有 `HOST=127.0.0.1` 时才允许关闭认证。
 
 ### Milvus 连接失败
 
@@ -406,7 +432,7 @@ docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-critica
 
 ### Prometheus 没有数据
 
-1. 确认 http://localhost:9900/metrics 可以打开。
+1. 使用 `X-API-Key` 请求头确认 http://localhost:9900/metrics 可以访问。
 2. 在 Prometheus 的 `Status → Targets` 检查 `ai-oncall-agent` 是否为 `UP`。
 3. Docker Desktop 环境需支持通过 `host.docker.internal` 访问宿主机。
 

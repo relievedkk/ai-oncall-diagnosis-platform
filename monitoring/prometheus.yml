@@ -17,6 +17,9 @@ scrape_configs:
 
   - job_name: ai-oncall-agent
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/api_key
     static_configs:
       # Docker Desktop uses this hostname to reach the FastAPI process on Windows.
       - targets: ["host.docker.internal:9900"]

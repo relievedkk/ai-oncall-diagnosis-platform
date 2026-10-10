@@ -6,10 +6,19 @@
     <title>AI 智能运维与 OnCall 诊断平台</title>
     <link rel="stylesheet" href="/static/styles.css">
     <!-- Markdown 渲染库 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"
+            integrity="sha384-zbcZAIxlvJtNE3Dp5nxLXdXtXyxwOdnILY1TDPVmKFhl4r4nSUG1r8bcFXGVa4Te"
+            crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"
+            integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL"
+            crossorigin="anonymous"></script>
     <!-- 代码高亮库（可选） -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/es/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css"
+          integrity="sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L"
+          crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"
+            integrity="sha384-wQX/HE4cHEfyVNknht8z4V6Sv7BRsHKI3XXO26tXc0424Y+zxIOWqRxKjHAKRUdr"
+            crossorigin="anonymous"></script>
 </head>
 <body>
     <div class="app-layout">
@@ -36,13 +45,17 @@
                     </div>
                 </div>
 
-                <div class="api-key-panel">
-                    <label for="apiKeyInput">API Key（认证开启时填写）</label>
-                    <div class="api-key-controls">
-                        <input type="password" id="apiKeyInput" autocomplete="off" placeholder="仅保存在当前浏览器会话">
-                        <button type="button" id="saveApiKeyBtn">保存</button>
+                <div class="account-panel" aria-label="当前登录账户">
+                    <div class="account-avatar" id="currentUserAvatar" aria-hidden="true">管</div>
+                    <div class="account-meta">
+                        <strong id="currentUserName">正在加载</strong>
+                        <span id="currentUserRole">运维账户</span>
                     </div>
-                    <small>留空并保存可清除；不会写入服务器或本地文件。</small>
+                    <button type="button" class="logout-btn" id="logoutBtn" title="退出登录" aria-label="退出登录">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M9 5H5.8C4.81 5 4 5.81 4 6.8V17.2C4 18.19 4.81 19 5.8 19H9M15 8L19 12L15 16M19 12H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
         </aside>
@@ -120,7 +133,7 @@
                             </div>
                         </div>
                     </div>
-                    <input type="file" id="fileInput" accept=".txt,.md,.markdown" style="display: none;">
+                    <input type="file" id="fileInput" accept=".txt,.md,.pdf,.docx" style="display: none;">
                 </div>
             </div>
         </main>

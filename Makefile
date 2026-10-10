@@ -284,6 +284,9 @@ start:
 	@echo "$(GREEN)🚀 启动所有服务$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo ""
+	@if [ ! -f .env ]; then echo "$(RED)❌ .env 不存在，请先复制 .env.example$(NC)"; exit 1; fi
+	@.venv/bin/python -m app.local_env --env-file .env
+	@echo ""
 	@$(MAKE) up
 	@echo ""
 	@$(MAKE) monitoring-up
@@ -303,7 +306,8 @@ start:
 # 启动 FastAPI 服务
 start-api:
 	@echo "$(YELLOW)🚀 启动 FastAPI 服务...$(NC)"
-	@if curl -s -f $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
+	@api_key=$$(sed -n 's/^API_KEY=//p' .env | tail -n 1 | tr -d '\r'); \
+	if curl -s -f -H "X-API-Key: $$api_key" $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
 		echo "$(GREEN)✅ FastAPI 服务已经在运行中 ($(SERVER_URL))$(NC)"; \
 	else \
 		echo "$(YELLOW)📦 正在启动 FastAPI 服务（后台运行）...$(NC)"; \
@@ -387,10 +391,11 @@ restart:
 # 等待服务就绪（最多 60 秒）
 wait:
 	@echo "$(YELLOW)⏳ 等待服务器就绪...$(NC)"
-	@max_attempts=60; \
+	@api_key=$$(sed -n 's/^API_KEY=//p' .env | tail -n 1 | tr -d '\r'); \
+	max_attempts=60; \
 	attempt=0; \
 	while [ $$attempt -lt $$max_attempts ]; do \
-		if curl -s -f $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
+		if curl -s -f -H "X-API-Key: $$api_key" $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
 			echo ""; \
 			echo "$(GREEN)✅ 服务器已就绪！($(SERVER_URL))$(NC)"; \
 			exit 0; \
@@ -407,11 +412,12 @@ wait:
 # 检查服务状态
 check:
 	@echo "$(YELLOW)🔍 检查服务器状态...$(NC)"
-	@if curl -s -f $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
+	@api_key=$$(sed -n 's/^API_KEY=//p' .env | tail -n 1 | tr -d '\r'); \
+	if curl -s -f -H "X-API-Key: $$api_key" $(HEALTH_CHECK_API) > /dev/null 2>&1; then \
 		echo "$(GREEN)✅ 服务器运行正常 ($(SERVER_URL))$(NC)"; \
 		echo ""; \
 		echo "$(CYAN)健康检查响应:$(NC)"; \
-		curl -s $(HEALTH_CHECK_API) | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2, ensure_ascii=False))" 2>/dev/null || curl -s $(HEALTH_CHECK_API); \
+		curl -s -H "X-API-Key: $$api_key" $(HEALTH_CHECK_API) | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2, ensure_ascii=False))" 2>/dev/null || curl -s -H "X-API-Key: $$api_key" $(HEALTH_CHECK_API); \
 	else \
 		echo "$(RED)❌ 服务器未运行或无法连接！$(NC)"; \
 		echo "$(YELLOW)请先启动服务: make start$(NC)"; \

@@ -33,15 +33,23 @@ if not exist .env (
     )
 )
 
+python -m app.local_env --env-file .env
+if errorlevel 1 (
+    echo [ERROR] Failed to generate secure local API credentials.
+    exit /b 1
+)
+
 set DASH_SCOPE_KEY=
 set APP_API_KEY=
 set APP_AUTH_ENABLED=
+set ALERT_WEBHOOK_TOKEN=
 set CLS_SECRET_ID=
 set CLS_SECRET_KEY=
 for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
     if "%%a"=="DASHSCOPE_API_KEY" set DASH_SCOPE_KEY=%%b
     if "%%a"=="API_KEY" set APP_API_KEY=%%b
     if "%%a"=="AUTH_ENABLED" set APP_AUTH_ENABLED=%%b
+    if "%%a"=="ALERTMANAGER_WEBHOOK_TOKEN" set ALERT_WEBHOOK_TOKEN=%%b
     if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
     if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
 )
@@ -53,8 +61,24 @@ if "!DASH_SCOPE_KEY!"=="replace-with-your-dashscope-api-key" (
     echo [ERROR] DASHSCOPE_API_KEY still contains the placeholder value. Edit .env before starting.
     exit /b 1
 )
-if /I "!APP_AUTH_ENABLED!"=="true" if "!APP_API_KEY!"=="" (
+if /I not "!APP_AUTH_ENABLED!"=="true" (
+    echo [ERROR] AUTH_ENABLED must be true for the full local stack.
+    exit /b 1
+)
+if "!APP_API_KEY!"=="" (
     echo [ERROR] AUTH_ENABLED=true requires a non-empty API_KEY in .env.
+    exit /b 1
+)
+if "!APP_API_KEY!"=="replace-with-random-64-character-api-key" (
+    echo [ERROR] Replace the API_KEY placeholder with a strong random value.
+    exit /b 1
+)
+if "!ALERT_WEBHOOK_TOKEN!"=="" (
+    echo [ERROR] ALERTMANAGER_WEBHOOK_TOKEN is required in .env.
+    exit /b 1
+)
+if "!ALERT_WEBHOOK_TOKEN!"=="replace-with-random-64-character-token" (
+    echo [ERROR] Replace the ALERTMANAGER_WEBHOOK_TOKEN placeholder with a strong random value.
     exit /b 1
 )
 echo.
@@ -233,7 +257,7 @@ echo.
 REM Check service status and upload documents
 echo.
 echo [INFO] Checking service status...
-curl -s http://localhost:9900/health >nul 2>&1
+curl -s http://localhost:9900/health -H "X-API-Key: !APP_API_KEY!" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Service may not be fully started, please wait a moment
 ) else (
@@ -254,7 +278,7 @@ echo ====================================
 echo  All services started!
 echo ====================================
 echo Web UI:   http://localhost:9900
-echo API docs: http://localhost:9900/docs
+echo API docs: disabled by default ^(set EXPOSE_API_DOCS=true only for local debugging^)
 echo RabbitMQ: http://localhost:15672 ^(oncall/oncall for local development^)
 echo.
 echo View logs:

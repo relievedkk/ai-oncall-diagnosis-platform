@@ -26,8 +26,7 @@ class DiagnosisCase:
             id=str(value["id"]),
             alert_name=str(value["alert_name"]),
             root_cause_term_groups=[
-                [str(term) for term in group]
-                for group in value["root_cause_term_groups"]
+                [str(term) for term in group] for group in value["root_cause_term_groups"]
             ],
             required_evidence_types=[str(item) for item in value["required_evidence_types"]],
             required_report_terms=[str(item) for item in value["required_report_terms"]],
@@ -89,9 +88,7 @@ def evaluate_diagnosis(
         present_terms,
     )
 
-    forbidden_found = [
-        term for term in case.forbidden_terms if _normalize(term) in report_text
-    ]
+    forbidden_found = [term for term in case.forbidden_terms if _normalize(term) in report_text]
     groundedness_score = 0.0 if forbidden_found else 1.0
     score = round(
         root_cause_score * 0.4
