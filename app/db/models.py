@@ -192,6 +192,47 @@ class DiagnosisReport(Base):
     job: Mapped[DiagnosisJob] = relationship(back_populates="report")
 
 
+class RemediationAction(Base):
+    """Auditable state for one bounded remediation proposal."""
+
+    __tablename__ = "remediation_actions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    diagnosis_id: Mapped[str] = mapped_column(
+        ForeignKey("diagnosis_jobs.diagnosis_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_service: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    intent_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evidence_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    policy_decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    prepared_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    verification_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    worker_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approval_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+
 class OutboxEvent(Base):
     """Transactional hand-off from PostgreSQL to RabbitMQ."""
 
