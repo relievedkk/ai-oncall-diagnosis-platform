@@ -73,9 +73,7 @@ async def test_compare_and_set_rejects_illegal_state_transition():
     repository = InMemoryRemediationRepository()
     await repository.create(action_values(status="awaiting_approval"), enqueue=False)
 
-    changed = await repository.compare_and_set(
-        "action-1", {"executing"}, status="succeeded"
-    )
+    changed = await repository.compare_and_set("action-1", {"executing"}, status="succeeded")
 
     assert changed is False
     assert (await repository.get("action-1"))["status"] == "awaiting_approval"
@@ -141,10 +139,7 @@ async def test_decide_approval_enqueues_once_and_expiry_wins_when_due():
         ),
         enqueue=False,
     )
-    assert (
-        await expired_repository.decide("action-1", "approve", "operator-1", NOW)
-        == "expired"
-    )
+    assert await expired_repository.decide("action-1", "approve", "operator-1", NOW) == "expired"
     assert expired_repository.outbox_events == []
 
 
@@ -167,9 +162,7 @@ async def test_stale_prepared_execution_is_claimed_for_reconciliation(monkeypatc
     )
     monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: NOW)
 
-    claim = await repository.claim_execution(
-        "action-1", "recovery-worker", lease_seconds=300
-    )
+    claim = await repository.claim_execution("action-1", "recovery-worker", lease_seconds=300)
 
     assert claim == "reconcile"
     assert (await repository.get("action-1"))["status"] == "reconciling"
@@ -191,4 +184,3 @@ async def test_expire_due_approvals_releases_active_capacity():
     assert expired == 1
     assert await repository.count_active("orders") == 0
     assert (await repository.get("action-1"))["status"] == "expired"
-

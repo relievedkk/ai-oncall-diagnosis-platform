@@ -60,4 +60,3 @@ class RemediationActionResponse(BaseModel):
 
 class RemediationListResponse(BaseModel):
     items: list[RemediationActionResponse]
-

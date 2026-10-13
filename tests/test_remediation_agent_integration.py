@@ -96,9 +96,7 @@ async def test_invalid_structured_remediation_preserves_valid_model_report(monke
 
     monkeypatch.setattr(replanner, "response_prompt", FakePrompt())
 
-    result = await replanner._generate_response(
-        {"input": "diagnose", "past_steps": []}, FakeLLM()
-    )
+    result = await replanner._generate_response({"input": "diagnose", "past_steps": []}, FakeLLM())
 
     assert result == {
         "response": "# Valid diagnosis report",
@@ -199,9 +197,6 @@ async def test_runner_remediation_failure_does_not_change_completed_diagnosis(mo
     assert result == "completed"
     job = await repository.get_job(diagnosis_id)
     assert job["status"] == "completed"
-    harness_errors = [
-        event for event in job["events"] if event.get("type") == "harness_error"
-    ]
+    harness_errors = [event for event in job["events"] if event.get("type") == "harness_error"]
     assert harness_errors[0]["stage"] == "remediation_proposal"
     assert "policy store down" in harness_errors[0]["message"]
-

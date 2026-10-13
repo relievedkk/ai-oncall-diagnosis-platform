@@ -202,9 +202,7 @@ async def test_illegal_gateway_transition_is_rejected(tmp_path):
     action = await service.propose("diagnosis-1", restart_intent(), evidence())
 
     with pytest.raises(RemediationConflict):
-        await service.apply_gateway_event(
-            action["id"], GatewayEvent(status="succeeded")
-        )
+        await service.apply_gateway_event(action["id"], GatewayEvent(status="succeeded"))
 
 
 @pytest.mark.asyncio
@@ -249,9 +247,7 @@ async def test_expired_approval_is_swept_before_capacity_check(tmp_path):
     expired = await service.propose("diagnosis-old", restart_intent(), evidence())
     service._now = lambda: NOW + timedelta(minutes=16)
 
-    current = await service.propose(
-        "diagnosis-new", second_restart_intent(), evidence()
-    )
+    current = await service.propose("diagnosis-new", second_restart_intent(), evidence())
 
     assert (await repository.get(expired["id"]))["status"] == "expired"
     assert current["status"] == "awaiting_approval"
@@ -269,11 +265,8 @@ async def test_rollback_failure_opens_circuit_and_blocks_new_proposals(tmp_path)
     )
     service._now = lambda: NOW + timedelta(hours=1)
 
-    blocked = await service.propose(
-        "diagnosis-after-circuit", second_restart_intent(), evidence()
-    )
+    blocked = await service.propose("diagnosis-after-circuit", second_restart_intent(), evidence())
 
     assert await repository.is_circuit_open("orders") is True
     assert blocked["status"] == "denied"
     assert blocked["policy_reason"] == "circuit_breaker_open"
-

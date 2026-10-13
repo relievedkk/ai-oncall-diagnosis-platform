@@ -161,12 +161,8 @@ async def test_duplicate_task_delivery_claims_and_runs_adapter_once(tmp_path):
     repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
     await repository.create(action_values(), enqueue=False)
 
-    first = await execute_remediation(
-        "action-1", "worker-1", service=service, gateway=gateway
-    )
-    duplicate = await execute_remediation(
-        "action-1", "worker-2", service=service, gateway=gateway
-    )
+    first = await execute_remediation("action-1", "worker-1", service=service, gateway=gateway)
+    duplicate = await execute_remediation("action-1", "worker-2", service=service, gateway=gateway)
 
     assert first == "succeeded"
     assert duplicate == "ignored"
@@ -186,9 +182,7 @@ async def test_worker_applies_each_gateway_event_in_order(tmp_path):
 
     service.apply_gateway_event = recording_apply
 
-    result = await execute_remediation(
-        "action-1", "worker-1", service=service, gateway=gateway
-    )
+    result = await execute_remediation("action-1", "worker-1", service=service, gateway=gateway)
 
     assert result == "succeeded"
     assert observed == ["executing", "verifying", "succeeded"]
@@ -222,16 +216,12 @@ async def test_worker_reconciles_stale_prepared_action_without_second_execute(
 
 
 @pytest.mark.asyncio
-async def test_off_mode_denies_queued_action_before_adapter_execution(
-    tmp_path, monkeypatch
-):
+async def test_off_mode_denies_queued_action_before_adapter_execution(tmp_path, monkeypatch):
     repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
     await repository.create(action_values(), enqueue=False)
     monkeypatch.setattr(config, "remediation_mode", "off")
 
-    result = await execute_remediation(
-        "action-1", "worker-1", service=service, gateway=gateway
-    )
+    result = await execute_remediation("action-1", "worker-1", service=service, gateway=gateway)
 
     assert result == "disabled"
     assert adapter.execute_calls == 0
@@ -253,4 +243,3 @@ def test_remediation_worker_has_minimal_environment_and_runtime_controls():
     assert "DASHSCOPE_API_KEY" not in environment
     assert "TENCENTCLOUD_SECRET_ID" not in environment
     assert "TENCENTCLOUD_SECRET_KEY" not in environment
-

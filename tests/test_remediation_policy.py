@@ -184,9 +184,7 @@ def test_new_rollback_always_requires_approval():
         ),
     ],
 )
-def test_active_action_cooldown_and_diagnosis_budget_fail_closed(
-    overrides, reason_code
-):
+def test_active_action_cooldown_and_diagnosis_budget_fail_closed(overrides, reason_code):
     decision = PolicyEngine().evaluate(
         intent("restart_instance"),
         context(**overrides),
@@ -212,4 +210,3 @@ def test_open_service_circuit_fails_closed():
 
     assert decision.verdict is PolicyVerdict.DENY
     assert decision.reason_code == "circuit_breaker_open"
-

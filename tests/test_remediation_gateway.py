@@ -28,11 +28,7 @@ class FakeAdapter:
         prepare_error=None,
         execute_delay=0,
     ):
-        self.observation = (
-            {"known": True, "success": True}
-            if observation is None
-            else observation
-        )
+        self.observation = {"known": True, "success": True} if observation is None else observation
         self.rollback_success = rollback_success
         self.prepare_error = prepare_error
         self.execute_delay = execute_delay
@@ -202,4 +198,3 @@ async def test_reconcile_observes_prepared_action_without_reexecuting():
     assert statuses(events) == ["verifying", "succeeded"]
     assert adapter.execute_calls == 0
     assert adapter.observe_calls == 1
-

@@ -130,4 +130,3 @@ async def decide_remediation(
     except RemediationConflict as exc:
         raise HTTPException(status_code=409, detail="Remediation state conflict") from exc
     return _response(action)
-

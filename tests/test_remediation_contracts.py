@@ -97,4 +97,3 @@ def test_action_payload_rejects_oversized_target_and_reason():
     for payload in invalid_payloads:
         with pytest.raises(ValidationError):
             parse_action_intent(payload)
-

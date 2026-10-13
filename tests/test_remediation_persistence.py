@@ -53,9 +53,7 @@ async def postgres_repository():
                 delete(OutboxEvent).where(OutboxEvent.diagnosis_id == diagnosis_id)
             )
             await session.execute(
-                delete(RemediationAction).where(
-                    RemediationAction.diagnosis_id == diagnosis_id
-                )
+                delete(RemediationAction).where(RemediationAction.diagnosis_id == diagnosis_id)
             )
             await session.execute(
                 delete(DiagnosisJob).where(DiagnosisJob.diagnosis_id == diagnosis_id)
@@ -109,9 +107,7 @@ async def test_postgres_unique_idempotency_and_atomic_outbox(postgres_repository
         events = list(
             (
                 await session.scalars(
-                    select(OutboxEvent).where(
-                        OutboxEvent.diagnosis_id == diagnosis_id
-                    )
+                    select(OutboxEvent).where(OutboxEvent.diagnosis_id == diagnosis_id)
                 )
             ).all()
         )
@@ -204,11 +200,8 @@ async def test_postgres_expiry_sweep_competes_safely_with_approval(
         events = list(
             (
                 await session.scalars(
-                    select(OutboxEvent).where(
-                        OutboxEvent.diagnosis_id == diagnosis_id
-                    )
+                    select(OutboxEvent).where(OutboxEvent.diagnosis_id == diagnosis_id)
                 )
             ).all()
         )
     assert events == []
-
