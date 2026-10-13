@@ -16,6 +16,15 @@
         "topic_id": "",
         "query_hint": "service:ai-oncall-agent"
       },
+      "remediation": {
+        "enabled": true,
+        "allowed_modes": ["dry_run"],
+        "stateless": true,
+        "allowed_actions": ["restart_instance", "scale_out", "rollback_revision"],
+        "max_replicas": 10,
+        "cooldown_seconds": 900,
+        "last_known_good_revisions": ["dry-run-stable"]
+      },
       "owner": "oncall-team"
     }
   }

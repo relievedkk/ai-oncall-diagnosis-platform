@@ -10,6 +10,13 @@ from loguru import logger
 
 from app.config import config
 
+_KNOWN_REMEDIATION_ACTIONS = {
+    "restart_instance",
+    "scale_out",
+    "rollback_revision",
+}
+_DISABLED_REMEDIATION = {"enabled": False, "allowed_actions": []}
+
 
 class ServiceCatalog:
     def __init__(self, path: str | None = None):
@@ -57,6 +64,28 @@ class ServiceCatalog:
 
     def resolve_name(self, service_name: str) -> tuple[str, dict[str, Any]]:
         return self.resolve({"service": service_name, "job": service_name})
+
+    def remediation_policy(self, service_name: str) -> dict[str, Any]:
+        """Return a validated service policy, defaulting to deny on ambiguity."""
+        service = self._services.get(service_name)
+        if not isinstance(service, dict):
+            return dict(_DISABLED_REMEDIATION)
+
+        policy = service.get("remediation")
+        if not isinstance(policy, dict):
+            return dict(_DISABLED_REMEDIATION)
+
+        enabled = policy.get("enabled")
+        allowed_actions = policy.get("allowed_actions")
+        if not isinstance(enabled, bool) or not isinstance(allowed_actions, list):
+            return dict(_DISABLED_REMEDIATION)
+        if any(
+            not isinstance(action, str) or action not in _KNOWN_REMEDIATION_ACTIONS
+            for action in allowed_actions
+        ):
+            return dict(_DISABLED_REMEDIATION)
+
+        return dict(policy)
 
 
 service_catalog = ServiceCatalog()

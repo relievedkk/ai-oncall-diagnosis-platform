@@ -5,6 +5,7 @@
 
 from typing import Any
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,17 @@ class Settings(BaseSettings):
     rabbitmq_default_user: str = "oncall"
     rabbitmq_default_pass: str = "oncall"
     queue_observer_interval_seconds: float = 15.0
+
+    # Production remediation Harness. This release supports Dry Run only.
+    remediation_mode: str = "dry_run"
+    remediation_adapter: str = "dry_run"
+    celery_remediation_queue: str = "remediation.control"
+    remediation_approval_expiry_seconds: int = Field(default=900, ge=1, le=86400)
+    remediation_default_cooldown_seconds: int = Field(default=900, ge=0, le=86400)
+    remediation_max_actions_per_diagnosis: int = Field(default=2, ge=1, le=10)
+    remediation_global_active_limit: int = Field(default=5, ge=1, le=100)
+    remediation_execution_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
+    remediation_verification_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
 
     # LangGraph durable checkpoints. The explicit URL uses psycopg syntax;
     # when empty it is derived from DATABASE_URL.
