@@ -43,6 +43,11 @@ async def test_queue_observer_collects_database_and_broker_state(
                 "messages_unacknowledged": 0,
                 "consumers": 0,
             },
+            config.celery_remediation_queue: {
+                "messages_ready": 0,
+                "messages_unacknowledged": 1,
+                "consumers": 1,
+            },
         }
 
     monkeypatch.setattr(observer, "rabbitmq_queues", fake_queues)
@@ -51,6 +56,47 @@ async def test_queue_observer_collects_database_and_broker_state(
     assert snapshot["database"]["job_counts"] == {"queued": 1}
     assert snapshot["database"]["outbox_counts"] == {"pending": 1}
     assert snapshot["rabbitmq"][config.celery_default_queue]["consumers"] == 1
+
+
+async def test_queue_observer_includes_remediation_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "name": config.celery_remediation_queue,
+                    "messages_ready": 2,
+                    "messages_unacknowledged": 1,
+                    "consumers": 1,
+                }
+            ]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "app.services.queue_observer.httpx.AsyncClient",
+        lambda **kwargs: FakeClient(),
+    )
+
+    queues = await QueueObserver(InMemoryDiagnosisRepository()).rabbitmq_queues()
+
+    assert queues[config.celery_remediation_queue] == {
+        "messages_ready": 2,
+        "messages_unacknowledged": 1,
+        "consumers": 1,
+    }
 
 
 async def test_operational_metrics_track_dead_letters() -> None:

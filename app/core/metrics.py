@@ -62,6 +62,16 @@ QUEUE_OBSERVER_UP = Gauge(
     "oncall_queue_observer_up",
     "Whether the latest authenticated RabbitMQ management scrape succeeded.",
 )
+REMEDIATION_ACTION_EVENTS = Counter(
+    "oncall_remediation_action_events",
+    "Remediation gateway events by bounded action type and status.",
+    ("action_type", "status"),
+)
+REMEDIATION_IN_FLIGHT = Gauge(
+    "oncall_remediation_in_flight",
+    "Remediation actions currently owned by a worker.",
+    ("action_type",),
+)
 PROCESS_CPU_PERCENT = Gauge(
     "oncall_process_cpu_percent",
     "Current FastAPI process CPU usage as a percentage of one logical CPU.",

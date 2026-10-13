@@ -20,20 +20,31 @@ async def publish_once(publisher_id: str) -> int:
     for event in events:
         try:
             payload = event["payload"]
+            generic_args = payload.get("args")
+            if isinstance(generic_args, list) and payload.get("task_id"):
+                args = generic_args
+                task_id = str(payload["task_id"])
+            else:
+                args = [payload["diagnosis_id"]]
+                task_id = str(payload["diagnosis_id"])
+            if event["queue_name"] == config.celery_remediation_queue:
+                routing_key = "remediation"
+            elif event["queue_name"] == config.celery_critical_queue:
+                routing_key = "critical"
+            else:
+                routing_key = "default"
             await asyncio.to_thread(
                 celery_app.send_task,
                 event["task_name"],
-                args=[payload["diagnosis_id"]],
-                task_id=payload["diagnosis_id"],
+                args=args,
+                task_id=task_id,
                 queue=event["queue_name"],
-                routing_key=(
-                    "critical" if event["queue_name"] == config.celery_critical_queue else "default"
-                ),
+                routing_key=routing_key,
             )
             await diagnosis_repository.mark_outbox_published(event["id"])
             logger.info(
-                "Published diagnosis {} to {}",
-                payload["diagnosis_id"],
+                "Published task {} to {}",
+                task_id,
                 event["queue_name"],
             )
         except Exception as exc:

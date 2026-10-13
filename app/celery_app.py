@@ -8,7 +8,7 @@ from app.config import config
 celery_app = Celery(
     "ai_oncall_diagnosis",
     broker=config.celery_broker_url,
-    include=["app.tasks.diagnosis"],
+    include=["app.tasks.diagnosis", "app.tasks.remediation"],
 )
 
 diagnosis_exchange = Exchange("diagnosis", type="topic", durable=True)
@@ -33,6 +33,13 @@ celery_app.conf.update(
             config.celery_dead_letter_queue,
             exchange=diagnosis_exchange,
             routing_key="dead",
+            durable=True,
+            queue_arguments={"x-queue-type": "quorum"},
+        ),
+        Queue(
+            config.celery_remediation_queue,
+            exchange=diagnosis_exchange,
+            routing_key="remediation",
             durable=True,
             queue_arguments={"x-queue-type": "quorum"},
         ),

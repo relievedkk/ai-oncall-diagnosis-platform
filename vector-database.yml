@@ -5,6 +5,7 @@ x-diagnosis-environment: &diagnosis-environment
   CELERY_DEFAULT_QUEUE: ${CELERY_DEFAULT_QUEUE:-diagnosis.default}
   CELERY_CRITICAL_QUEUE: ${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
   CELERY_DEAD_LETTER_QUEUE: ${CELERY_DEAD_LETTER_QUEUE:-diagnosis.dead-letter}
+  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
   CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-5}
   DIAGNOSIS_LEASE_SECONDS: ${DIAGNOSIS_LEASE_SECONDS:-90}
   DIAGNOSIS_HEARTBEAT_SECONDS: ${DIAGNOSIS_HEARTBEAT_SECONDS:-30}
@@ -131,6 +132,29 @@ services:
         condition: service_completed_successfully
       standalone:
         condition: service_healthy
+    restart: unless-stopped
+
+  remediation-worker:
+    container_name: oncall-remediation-worker
+    image: ai-oncall-worker:local
+    command:
+      - uv
+      - run
+      - --no-sync
+      - celery
+      - -A
+      - app.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --pool=solo
+      - --hostname=remediation@%h
+      - --queues=${CELERY_REMEDIATION_QUEUE:-remediation.control}
+      - --concurrency=1
+      - --prefetch-multiplier=1
+    environment: *diagnosis-environment
+    depends_on:
+      queue-bootstrap:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   outbox-publisher:

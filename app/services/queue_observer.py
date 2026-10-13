@@ -41,6 +41,7 @@ class QueueObserver:
             config.celery_critical_queue,
             config.celery_default_queue,
             config.celery_dead_letter_queue,
+            config.celery_remediation_queue,
         }
         result: dict[str, dict[str, int]] = {}
         for item in response.json():
