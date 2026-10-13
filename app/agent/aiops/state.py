@@ -26,6 +26,12 @@ class PlanExecuteState(TypedDict):
     # 最终响应/报告
     response: str
 
+    # 模型可选的闭合处置提案；只供确定性 Harness 评估，不代表执行授权。
+    remediation: NotRequired[dict[str, Any]]
+
+    # 非致命的 Harness 校验错误，不改变诊断本身的完成状态。
+    harness_error: NotRequired[str]
+
     # 工作流提前结束时，没有执行且被明确跳过的剩余步骤。
     skipped_steps: NotRequired[list[str]]
 

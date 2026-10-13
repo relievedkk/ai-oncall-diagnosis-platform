@@ -10,9 +10,11 @@ from loguru import logger
 
 from app.config import config
 from app.core.metrics import AIOPS_ACTIVE, AIOPS_DIAGNOSES
+from app.harness.contracts import parse_action_intent
 from app.models.alerts import AlertmanagerAlert
 from app.repositories.diagnosis import ClaimResult, DiagnosisRepository
 from app.services.aiops_service import aiops_service
+from app.services.remediation_service import RemediationService, remediation_service
 from app.services.service_catalog import service_catalog
 
 
@@ -51,8 +53,13 @@ def build_alert_task(alert: AlertmanagerAlert, service_name: str, service: dict[
 
 
 class DiagnosisRunner:
-    def __init__(self, repository: DiagnosisRepository) -> None:
+    def __init__(
+        self,
+        repository: DiagnosisRepository,
+        remediation: RemediationService | None = None,
+    ) -> None:
         self.repository = repository
+        self.remediation = remediation or remediation_service
 
     async def run(self, diagnosis_id: str, celery_task_id: str, worker_name: str) -> str:
         claim: ClaimResult = await self.repository.claim_job(
@@ -95,6 +102,8 @@ class DiagnosisRunner:
                     "worker": worker_name,
                 }
                 await self.repository.record_event(diagnosis_id, durable_event)
+                if event.get("type") == "remediation_proposed":
+                    await self._submit_remediation(diagnosis_id, event)
                 if event.get("type") == "error":
                     error_event_seen = True
                     raise RuntimeError(str(event.get("message", "diagnosis failed")))
@@ -142,7 +151,64 @@ class DiagnosisRunner:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
             AIOPS_ACTIVE.labels(trigger=trigger).dec()
 
+    async def _submit_remediation(
+        self,
+        diagnosis_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        try:
+            intent = parse_action_intent(event.get("remediation"))
+            job = await self.repository.get_job(diagnosis_id)
+            evidence = _remediation_evidence(job or {})
+            await self.remediation.propose(
+                diagnosis_id,
+                intent,
+                evidence,
+                requested_by="agent",
+            )
+        except Exception as exc:
+            await self.repository.record_event(
+                diagnosis_id,
+                {
+                    "type": "harness_error",
+                    "stage": "remediation_proposal",
+                    "message": f"Remediation proposal was not accepted: {str(exc)[:256]}",
+                    "diagnosis_id": diagnosis_id,
+                },
+            )
+
     async def _heartbeat_loop(self, diagnosis_id: str, celery_task_id: str) -> None:
         while True:
             await asyncio.sleep(config.diagnosis_heartbeat_seconds)
             await self.repository.heartbeat(diagnosis_id, celery_task_id)
+
+
+def _remediation_evidence(job: dict[str, Any]) -> list[dict[str, Any]]:
+    normalized = []
+    for item in job.get("evidence", []):
+        payload = item.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        result = payload.get("result")
+        parsed_result = result
+        if isinstance(result, str):
+            try:
+                parsed_result = json.loads(result)
+            except (TypeError, json.JSONDecodeError):
+                parsed_result = result
+        if isinstance(parsed_result, dict) and isinstance(
+            parsed_result.get("success"), bool
+        ):
+            success = parsed_result["success"]
+        else:
+            success = result is not None
+        normalized.append(
+            {
+                "evidence_type": str(item.get("evidence_type", "unknown")),
+                "source": str(item.get("source", "unknown")),
+                "success": success,
+                "collected_at": item.get("collected_at"),
+                "summary": str(result or payload.get("message", ""))[:256],
+                "payload": parsed_result,
+            }
+        )
+    return normalized

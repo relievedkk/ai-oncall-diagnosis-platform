@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.agent.aiops import PlanExecuteState, executor, planner, replanner
 from app.core.checkpoint import checkpoint_manager
+from app.harness.contracts import parse_action_intent
 
 # 节点名称常量
 NODE_PLANNER = "planner"
@@ -134,7 +135,25 @@ class AIOpsService:
                         yield self._format_executor_event(node_output)
 
                     elif node_name == NODE_REPLANNER:
-                        yield self._format_replanner_event(node_output)
+                        replanner_event = self._format_replanner_event(node_output)
+                        yield replanner_event
+                        remediation = replanner_event.get("remediation")
+                        if replanner_event.get("type") == "report" and remediation:
+                            yield {
+                                "type": "remediation_proposed",
+                                "stage": "remediation_proposed",
+                                "message": (
+                                    "A bounded remediation was proposed for policy evaluation"
+                                ),
+                                "remediation": remediation,
+                            }
+                        if replanner_event.get("harness_error"):
+                            yield {
+                                "type": "harness_error",
+                                "stage": "remediation_validation",
+                                "message": "Invalid remediation proposal was discarded",
+                                "reason": replanner_event["harness_error"],
+                            }
 
             # 获取最终状态
             final_state = await self.graph.aget_state(config_dict)
@@ -309,7 +328,7 @@ class AIOpsService:
 
         if response:
             # 已生成最终响应
-            return {
+            event = {
                 "type": "report",
                 "stage": "final_report",
                 "message": (
@@ -321,6 +340,17 @@ class AIOpsService:
                 "skipped_steps": skipped_steps,
                 "termination_reason": termination_reason,
             }
+            raw_remediation = state.get("remediation")
+            if raw_remediation is not None:
+                try:
+                    intent = parse_action_intent(raw_remediation)
+                except (TypeError, ValueError):
+                    event["harness_error"] = "invalid_remediation_proposal"
+                else:
+                    event["remediation"] = intent.model_dump(mode="json")
+            elif state.get("harness_error"):
+                event["harness_error"] = str(state["harness_error"])[:128]
+            return event
         else:
             # 重新规划
             return {

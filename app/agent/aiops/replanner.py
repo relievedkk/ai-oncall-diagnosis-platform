@@ -10,10 +10,11 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.mcp_client import get_mcp_client_with_retry
 from app.core.llm_factory import llm_factory
+from app.harness.contracts import ActionIntent, parse_action_intent
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
 from .state import PlanExecuteState
@@ -24,6 +25,13 @@ class Response(BaseModel):
     """最终响应的格式"""
 
     response: str = Field(description="对用户的最终响应")
+    remediation: ActionIntent | None = Field(
+        default=None,
+        description=(
+            "可选的单个处置提案。只有证据充分且目标服务可解析时才填写；"
+            "只能是 restart_instance、scale_out 或 rollback_revision，绝不执行该提案。"
+        ),
+    )
 
 
 class Act(BaseModel):
@@ -106,6 +114,8 @@ response_prompt = ChatPromptTemplate.from_messages(
                 - 基于实际数据，不要编造
                 - 如果某些步骤失败，要诚实说明
                 - 使用 Markdown 格式
+                - remediation 默认省略；只有证据充分且服务目录可解析时，才提出一个闭合类型的处置意图
+                - 你只负责提案，不判断审批、风险、资格，也不执行任何生产写操作
             """).strip(),
         ),
         ("placeholder", "{messages}"),
@@ -348,15 +358,29 @@ async def _generate_response(state: PlanExecuteState, llm: ChatOpenAI) -> dict[s
         response_obj = await response_gen.ainvoke({"messages": messages})
 
         # 处理返回结果
+        remediation = None
+        harness_error = None
         if isinstance(response_obj, Response):
             final_response = response_obj.response
+            remediation = response_obj.remediation
         else:
             # 如果返回的是字典
             final_response = response_obj.get("response", "")  # type: ignore
+            raw_remediation = response_obj.get("remediation")  # type: ignore
+            if raw_remediation is not None:
+                try:
+                    remediation = parse_action_intent(raw_remediation)
+                except (ValidationError, TypeError):
+                    harness_error = "invalid_remediation_proposal"
 
         logger.info(f"最终响应生成完成，长度: {len(final_response)}")
 
-        return {"response": final_response}
+        result: dict[str, Any] = {"response": final_response}
+        if remediation is not None:
+            result["remediation"] = remediation.model_dump(mode="json")
+        if harness_error is not None:
+            result["harness_error"] = harness_error
+        return result
 
     except Exception as e:
         logger.error(f"生成响应失败: {e}")
@@ -372,7 +396,10 @@ async def _generate_response(state: PlanExecuteState, llm: ChatOpenAI) -> dict[s
 ## 说明
 由于系统异常，无法生成完整响应。以上是已收集的信息。
 """
-        return {"response": fallback_response}
+        result = {"response": fallback_response}
+        if isinstance(e, ValidationError):
+            result["harness_error"] = "invalid_remediation_proposal"
+        return result
 
 
 def _format_simple_steps(past_steps: list) -> str:

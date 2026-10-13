@@ -43,6 +43,32 @@ async def test_empty_alert_scan_ends_with_evidence_bounded_report():
     assert "不能据此断言所有服务正常" in result["response"]
     assert "所有监控指标均在正常范围" not in result["response"]
     assert "风险较低" not in result["response"]
+    assert "remediation" not in result
+
+
+@pytest.mark.asyncio
+async def test_no_alert_report_never_proposes_remediation():
+    result = await replanner(
+        {
+            "input": "诊断当前系统是否存在告警",
+            "plan": ["查询指标"],
+            "past_steps": [("查询当前告警", "Prometheus 返回 0 条告警")],
+            "evidence": [
+                {
+                    "evidence_type": "alert",
+                    "source": "query_prometheus_alerts",
+                    "result": json.dumps(
+                        {"success": True, "alerts": [], "total": 0},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            "response": "",
+        }
+    )
+
+    assert result["termination_reason"] == "no_active_alerts"
+    assert "remediation" not in result
 
 
 def test_no_alert_report_event_exposes_skipped_steps():
