@@ -125,6 +125,10 @@ def _is_strong_secret(value: str) -> bool:
 
 def validate_security_configuration() -> None:
     """Fail closed when the process would otherwise start in an unsafe state."""
+    if config.remediation_adapter != "dry_run":
+        raise RuntimeError(
+            "REMEDIATION_ADAPTER must be 'dry_run'; this release has no production adapter"
+        )
     loopback_hosts = {"127.0.0.1", "localhost", "::1"}
     if not config.auth_enabled and config.host not in loopback_hosts:
         raise RuntimeError("AUTH_ENABLED=false is only allowed when HOST is a loopback address")

@@ -128,3 +128,43 @@ groups:
         annotations:
           summary: AIOps 端到端测试故障
           description: 这是受控故障注入产生的测试告警，用于验证 Prometheus 到 AI Ops 的完整链路。
+
+  - name: ai-oncall-agent-remediation
+    rules:
+      - alert: RemediationExecutionFailed
+        expr: increase(oncall_remediation_action_events_total{status="failed"}[10m]) > 0
+        labels:
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 生产处置执行失败
+          description: 最近 10 分钟内至少有一个受控处置进入 failed；请停止放宽自动化范围并检查审计记录。
+
+      - alert: RemediationRollbackCircuitBreaker
+        expr: increase(oncall_remediation_action_events_total{status=~"rolling_back|rolled_back"}[10m]) > 0
+        labels:
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 生产处置触发回滚保护
+          description: 最近 10 分钟内处置验证失败并进入回滚路径；在人工确认前不得继续扩大自动处置范围。
+
+      - alert: RemediationApprovalStale
+        expr: oncall_remediation_oldest_awaiting_approval_seconds > 900
+        for: 2m
+        labels:
+          severity: warning
+          service: ai-oncall-agent
+        annotations:
+          summary: 生产处置审批已滞留
+          description: 最老的待审批处置已超过默认 15 分钟审批窗口，请检查审批状态与会话认证。
+
+      - alert: RemediationQueueHasNoConsumer
+        expr: oncall_rabbitmq_queue_consumers{queue="remediation.control"} < 1
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 生产处置队列没有可用 Worker
+          description: remediation.control 连续 2 分钟没有消费者；已批准的处置不会被执行。

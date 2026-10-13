@@ -63,6 +63,8 @@ class RemediationRepository(Protocol):
 
     async def last_completed_at(self, target_service: str) -> datetime | None: ...
 
+    async def get_operational_metrics(self) -> dict[str, Any]: ...
+
 
 class InMemoryRemediationRepository:
     """Behavioral in-memory repository used by service and worker tests."""
@@ -191,6 +193,24 @@ class InMemoryRemediationRepository:
             and isinstance(action.get("completed_at"), datetime)
         ]
         return max(timestamps, default=None)
+
+    async def get_operational_metrics(self) -> dict[str, Any]:
+        async with self._lock:
+            action_counts: dict[str, int] = {}
+            awaiting_times: list[datetime] = []
+            for action in self._actions.values():
+                status = str(action.get("status", "unknown"))
+                action_counts[status] = action_counts.get(status, 0) + 1
+                created_at = action.get("created_at")
+                if status == "awaiting_approval" and isinstance(created_at, datetime):
+                    awaiting_times.append(created_at)
+        oldest_age = 0.0
+        if awaiting_times:
+            oldest_age = max(0.0, (utc_now() - min(awaiting_times)).total_seconds())
+        return {
+            "action_counts": action_counts,
+            "oldest_awaiting_approval_seconds": oldest_age,
+        }
 
 
 class SQLAlchemyRemediationRepository:
@@ -335,6 +355,28 @@ class SQLAlchemyRemediationRepository:
         )
         async with self._sessions() as session:
             return await session.scalar(statement)
+
+    async def get_operational_metrics(self) -> dict[str, Any]:
+        async with self._sessions() as session:
+            count_rows = (
+                await session.execute(
+                    select(RemediationAction.status, func.count()).group_by(
+                        RemediationAction.status
+                    )
+                )
+            ).all()
+            oldest_awaiting = await session.scalar(
+                select(func.min(RemediationAction.created_at)).where(
+                    RemediationAction.status == "awaiting_approval"
+                )
+            )
+        oldest_age = 0.0
+        if oldest_awaiting:
+            oldest_age = max(0.0, (utc_now() - oldest_awaiting).total_seconds())
+        return {
+            "action_counts": {str(status): int(count) for status, count in count_rows},
+            "oldest_awaiting_approval_seconds": oldest_age,
+        }
 
 
 def _validate_limit(limit: int) -> None:

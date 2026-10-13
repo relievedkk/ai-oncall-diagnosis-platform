@@ -2,6 +2,8 @@
 
 一个面向研发与运维场景的 AI 故障诊断原型。系统将运维知识库、Prometheus 指标与告警、腾讯云 CLS 日志查询统一到自然语言入口，并通过 Plan-Execute-Replan 工作流生成可追踪的诊断过程和处置建议。
 
+> **处置安全边界：当前版本只有 `dry_run` 适配器。** 重启、扩容和回滚会经过确定性 Policy、人工审批、审计状态机与隔离队列，但只做模拟执行和模拟验证；仓库不包含 Kubernetes/云厂商生产适配器，也不向 Agent、API 或 Dry Run Worker 提供基础设施写凭证。任何其他 `REMEDIATION_ADAPTER` 值都会使应用拒绝启动。
+
 [![Python](https://img.shields.io/badge/Python-3.11--3.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688.svg)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -13,6 +15,7 @@
 - **AIOps 诊断**：通过 Planner、Executor、Replanner 自动规划排障步骤并生成诊断报告。
 - **真实可观测数据**：FastAPI 暴露请求量、错误率、延迟、CPU、内存及诊断任务指标。
 - **自动告警闭环**：Prometheus 触发规则后由 Alertmanager 回调应用，并自动创建诊断任务。
+- **确定性处置 Harness**：单 Agent 只可提出结构化的重启、扩容或回滚意图；Policy、审批、执行、验证和一次性回滚由非模型代码控制，默认仅 Dry Run。
 - **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由隔离的 critical/default Celery Worker 执行，支持重试、心跳、执行租约和死信队列。
 - **持久化工作流**：LangGraph 对话和诊断检查点写入 PostgreSQL，API 或 Worker 重启后仍可恢复状态。
 - **B 端账号登录**：运维人员使用账号密码登录，密码以 Argon2id 哈希保存，会话可撤销，并带有登录限流、失败锁定与 CSRF 防护。
@@ -38,11 +41,15 @@ flowchart LR
     Publisher --> RabbitMQ[(RabbitMQ)]
     RabbitMQ --> CriticalWorker[Critical Worker]
     RabbitMQ --> DefaultWorker[Default Worker]
+    RabbitMQ --> RemediationWorker[Remediation Worker / Dry Run]
     RabbitMQ --> DLQ[Dead-letter Queue]
     CriticalWorker --> Agent
     DefaultWorker --> Agent
     CriticalWorker --> PostgreSQL
     DefaultWorker --> PostgreSQL
+    Agent -->|仅提出 ActionIntent| Harness[Deterministic Policy Harness]
+    Harness -->|审批与审计| PostgreSQL
+    RemediationWorker --> Harness
     Monitor --> Prometheus
     CLS --> Logs[腾讯云 CLS / 本地示例日志]
 ```
@@ -57,6 +64,8 @@ flowchart LR
 6. critical/default 独立 Celery Worker 领取任务，通过租约与心跳避免重复执行，再查询 Prometheus、CLS 和 Milvus。
 7. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
 8. 最终 Markdown 报告和 LangGraph 检查点持久化；临时失败自动重试，耗尽重试后任务标记为 `dead_lettered` 并进入死信队列。
+
+若诊断报告同时给出合法处置意图，Harness 会冻结最小证据摘要并执行确定性策略。模型不能调用执行器，也不能创建任意命令。符合策略的 Dry Run 动作进入独立的 `remediation.control` quorum 队列；需要审批的动作只接受带 CSRF 的浏览器会话决定，机器 API Key 不能批准。执行器按 `prepare → execute → observe/verify → 最多一次 rollback` 推进持久化状态机。
 
 ## 快速开始
 
@@ -197,8 +206,17 @@ CELERY_BROKER_URL=amqp://oncall:oncall@127.0.0.1:5672//
 CELERY_DEFAULT_QUEUE=diagnosis.default
 CELERY_CRITICAL_QUEUE=diagnosis.critical
 CELERY_DEAD_LETTER_QUEUE=diagnosis.dead-letter
+CELERY_REMEDIATION_QUEUE=remediation.control
 CELERY_TASK_MAX_RETRIES=5
 RABBITMQ_MANAGEMENT_URL=http://127.0.0.1:15672
+
+# 生产处置 Harness：此版本只支持 dry_run
+REMEDIATION_MODE=dry_run
+REMEDIATION_ADAPTER=dry_run
+REMEDIATION_APPROVAL_EXPIRY_SECONDS=900
+REMEDIATION_DEFAULT_COOLDOWN_SECONDS=900
+REMEDIATION_MAX_ACTIONS_PER_DIAGNOSIS=2
+REMEDIATION_GLOBAL_ACTIVE_LIMIT=5
 
 # LangGraph 检查点（留空时从 DATABASE_URL 推导）
 LANGGRAPH_CHECKPOINT_ENABLED=true
@@ -207,6 +225,8 @@ LANGGRAPH_CHECKPOINT_DATABASE_URL=
 # 默认禁止故障注入
 FAULT_INJECTION_ENABLED=false
 ```
+
+`REMEDIATION_MODE` 的语义：`off` 禁止创建处置；`dry_run` 运行完整控制链但不写生产；`assisted` 要求允许的动作经过人工审批；`guarded_auto` 只允许 Policy 明确放行的低风险动作自动执行。后两种模式仍不会绕过 adapter 校验；当前构建只有 `dry_run` adapter，因此不存在真实生产写入能力。服务未在 `config/service_catalog.json` 中显式启用、动作不在 allowlist、证据不足、超过预算、处于冷却期或已有活动动作时一律拒绝。
 
 完整字段及安全说明见 [.env.example](.env.example)。`.env` 已加入 `.gitignore`，不要把真实密钥提交到仓库。
 
@@ -292,12 +312,17 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 | 手动 AIOps 诊断 | POST | `/api/aiops` | 是 |
 | 自动诊断任务列表 | GET | `/api/aiops/jobs` | 是 |
 | 自动诊断任务详情 | GET | `/api/aiops/jobs/{diagnosis_id}` | 是 |
+| 处置列表（可按 `status` 过滤，`limit` 1–100） | GET | `/api/remediations` | 浏览器会话或机器 API Key |
+| 处置详情（意图、策略、证据摘要、结果与验证） | GET | `/api/remediations/{action_id}` | 浏览器会话或机器 API Key |
+| 批准或拒绝处置 | POST | `/api/remediations/{action_id}/decision` | 仅浏览器会话 + CSRF |
 | Alertmanager 回调 | POST | `/api/alerts/webhook` | 独立 Bearer Token |
 | 本地故障注入 | POST | `/api/debug/fault/{state}` | 是，且默认关闭 |
 
 API 文档默认关闭；如需本地调试，可临时设置 `EXPOSE_API_DOCS=true`。关闭认证时必须同时使用 `HOST=127.0.0.1`。
 
 任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会先可靠入队，再由独立 Worker 写入同一套表。浏览器断开或 FastAPI 重启不会中断已经入队的诊断。
+
+处置 API 没有公开的创建、执行、重试或回滚入口。详情只返回冻结且有长度上限的证据摘要，并移除 prepared payload、rollback token、Worker 标识、幂等键及 credential/token/password 等执行器字段。审批请求体为 `{"decision":"approve"}` 或 `{"decision":"reject"}`；过期、缺失和状态冲突分别返回 410、404 和 409。
 
 ### 请求示例
 
@@ -342,14 +367,15 @@ Invoke-RestMethod -Method Post -Headers $headers http://localhost:9900/api/debug
 ai-oncall-diagnosis-platform/
 ├── app/
 │   ├── agent/aiops/                 # Planner、Executor、Replanner
-│   ├── api/                         # 对话、文件、告警、指标和调试接口
+│   ├── api/                         # 对话、文件、告警、处置、指标和调试接口
 │   ├── core/                        # 配置、认证、LLM、Milvus、指标
 │   ├── db/                          # PostgreSQL 会话与诊断数据模型
 │   ├── evaluation/                  # 诊断质量评分与命令行入口
 │   ├── models/                      # API 与告警数据模型
-│   ├── repositories/                # 诊断持久化 Repository
-│   ├── services/                    # RAG、向量库、诊断编排与服务目录
-│   ├── tasks/                       # Celery 诊断任务
+│   ├── harness/                     # 处置契约、确定性 Policy 与受控 Gateway
+│   ├── repositories/                # 诊断与处置持久化 Repository
+│   ├── services/                    # RAG、向量库、诊断/处置编排与服务目录
+│   ├── tasks/                       # Celery 诊断与处置任务
 │   ├── tools/                       # 知识库、时间和 Prometheus 工具
 │   ├── workers/                     # Transactional Outbox 发布进程
 │   ├── celery_app.py                # Celery、交换机和队列配置
@@ -384,6 +410,7 @@ uv run pytest -q
 # 校验迁移和 Compose 配置
 uv run alembic check
 docker compose -f vector-database.yml config --quiet
+docker compose -f monitoring.yml config --quiet
 
 # 对保存的真实诊断结果做质量门禁（结果文件为 case_id/report/evidence 数组）
 uv run python -m app.evaluation.cli \
@@ -405,6 +432,7 @@ uv run python -m app.evaluation.cli \
 - Milvus collection 的向量维度不匹配时应用会拒绝启动，不会自动删除已有向量；请通过新 collection 重建并显式切换。
 - FastAPI 监听 `0.0.0.0`，以便 Docker 内的 Prometheus 通过 `host.docker.internal` 抓取指标；请使用主机防火墙限制外部访问。
 - 本地示例 CLS 返回演示数据，不代表真实生产日志。
+- 当前 `remediation-worker` 只运行 Dry Run adapter，既没有 Kubernetes 客户端也没有生产凭证；在另行完成适配器威胁模型、最小权限和回滚演练前，不要把模拟成功解释为生产变更成功。
 
 生产环境至少应完成：网络隔离、TLS、强认证、密钥管理、最小权限、固定镜像版本、数据备份、审计日志和高可用部署。
 
@@ -429,6 +457,17 @@ docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-critica
 ```
 
 在 RabbitMQ 管理界面检查 `diagnosis.critical` 和 `diagnosis.default` 是否各有消费者。`diagnosis.dead-letter` 中出现消息表示任务已耗尽自动重试，需要结合数据库任务的 `error`、`evidence` 和 `dead_lettered_at` 人工处理。数据库中的 Outbox 事件会在发布失败后退避重试；Worker 异常退出后，执行租约到期的任务可被再次领取。
+
+### 处置一直等待审批或没有执行
+
+先确认动作是否为 `awaiting_approval`、审批窗口是否已过期，以及浏览器请求是否同时携带会话 Cookie 与 `X-CSRF-Token`；机器 API Key 按设计只能查询，不能审批。再检查 `remediation.control` 是否有消费者：
+
+```bash
+docker compose -f vector-database.yml ps remediation-worker
+docker compose -f vector-database.yml logs --tail=100 remediation-worker outbox-publisher rabbitmq
+```
+
+`RemediationApprovalStale` 表示待审批记录超过默认 15 分钟，`RemediationQueueHasNoConsumer` 表示隔离队列无 Worker，`RemediationExecutionFailed` 或 `RemediationRollbackCircuitBreaker` 要求人工检查审计记录。当前所有执行/验证结果都应明确来自 Dry Run；如果配置了其他 adapter，应用应在启动时失败，而不是降级运行。
 
 ### Prometheus 没有数据
 

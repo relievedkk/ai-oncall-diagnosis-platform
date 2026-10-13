@@ -17,15 +17,23 @@ from app.core.metrics import (
     QUEUE_OBSERVER_UP,
     RABBITMQ_QUEUE_CONSUMERS,
     RABBITMQ_QUEUE_MESSAGES,
+    REMEDIATION_ACTIONS,
+    REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS,
 )
 from app.repositories.diagnosis import DiagnosisRepository, diagnosis_repository
+from app.repositories.remediation import RemediationRepository, remediation_repository
 
 
 class QueueObserver:
     """Periodically export durable queue and authenticated broker state."""
 
-    def __init__(self, repository: DiagnosisRepository = diagnosis_repository) -> None:
+    def __init__(
+        self,
+        repository: DiagnosisRepository = diagnosis_repository,
+        remediation: RemediationRepository | None = None,
+    ) -> None:
         self.repository = repository
+        self.remediation = remediation
         self._task: asyncio.Task[None] | None = None
         self.last_snapshot: dict[str, Any] = {}
 
@@ -80,11 +88,41 @@ class QueueObserver:
             OUTBOX_EVENTS.labels(status=status).set(count)
         OUTBOX_OLDEST_PENDING_SECONDS.set(database["outbox_oldest_pending_seconds"])
 
+        remediation = None
+        if self.remediation is not None:
+            remediation = await self.remediation.get_operational_metrics()
+            for action_status in (
+                "proposed",
+                "awaiting_approval",
+                "approved",
+                "executing",
+                "reconciling",
+                "verifying",
+                "succeeded",
+                "rolling_back",
+                "rolled_back",
+                "failed",
+                "rejected",
+                "expired",
+                "denied",
+            ):
+                REMEDIATION_ACTIONS.labels(status=action_status).set(0)
+            for action_status, count in remediation["action_counts"].items():
+                REMEDIATION_ACTIONS.labels(status=action_status).set(count)
+            REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS.set(
+                remediation["oldest_awaiting_approval_seconds"]
+            )
+
         try:
             queues = await self.rabbitmq_queues()
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             QUEUE_OBSERVER_UP.set(0)
-            self.last_snapshot = {"database": database, "rabbitmq": {}, "error": str(exc)}
+            self.last_snapshot = {
+                "database": database,
+                "remediation": remediation,
+                "rabbitmq": {},
+                "error": str(exc),
+            }
             logger.warning("RabbitMQ management scrape failed: {}", exc)
             return self.last_snapshot
 
@@ -95,7 +133,11 @@ class QueueObserver:
             )
             RABBITMQ_QUEUE_CONSUMERS.labels(queue=name).set(values["consumers"])
         QUEUE_OBSERVER_UP.set(1)
-        self.last_snapshot = {"database": database, "rabbitmq": queues}
+        self.last_snapshot = {
+            "database": database,
+            "remediation": remediation,
+            "rabbitmq": queues,
+        }
         return self.last_snapshot
 
     async def start(self) -> None:
@@ -123,4 +165,4 @@ class QueueObserver:
             await task
 
 
-queue_observer = QueueObserver()
+queue_observer = QueueObserver(remediation=remediation_repository)

@@ -72,6 +72,15 @@ REMEDIATION_IN_FLIGHT = Gauge(
     "Remediation actions currently owned by a worker.",
     ("action_type",),
 )
+REMEDIATION_ACTIONS = Gauge(
+    "oncall_remediation_actions",
+    "Persisted remediation actions by bounded status.",
+    ("status",),
+)
+REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS = Gauge(
+    "oncall_remediation_oldest_awaiting_approval_seconds",
+    "Age in seconds of the oldest remediation awaiting human approval.",
+)
 PROCESS_CPU_PERCENT = Gauge(
     "oncall_process_cpu_percent",
     "Current FastAPI process CPU usage as a percentage of one logical CPU.",

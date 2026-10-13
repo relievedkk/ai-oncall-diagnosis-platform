@@ -33,9 +33,11 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --extra dev
       - run: uv run ruff check app tests --select E9,F63,F7,F82
-      - run: uv run bandit -r app -q
+      - run: uv run ruff check app/harness app/repositories/remediation.py app/services/remediation_service.py app/tasks/remediation.py app/api/remediation.py tests/test_remediation_*.py
+      - run: uv run bandit -q -r app mcp_servers
       - run: uv run pip-audit --local --progress-spinner off
       - run: uv run pytest -q
       - run: uv run alembic upgrade head
       - run: uv run alembic check
       - run: docker compose -f vector-database.yml config --quiet
+      - run: docker compose -f monitoring.yml config --quiet
