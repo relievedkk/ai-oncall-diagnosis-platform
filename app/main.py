@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api import aiops, alerts, auth, chat, debug, file, health, metrics
+from app.api import aiops, alerts, auth, chat, debug, file, health, metrics, remediation
 from app.config import config
 from app.core.auth import ApiKeyMiddleware, validate_security_configuration
 from app.core.checkpoint import checkpoint_manager
@@ -124,6 +124,7 @@ app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
 app.include_router(alerts.router, prefix="/api", tags=["Alertmanager"])
+app.include_router(remediation.router, prefix="/api", tags=["生产处置"])
 app.include_router(debug.router, prefix="/api", tags=["本地故障注入"])
 
 # 挂载静态文件
