@@ -93,7 +93,25 @@ class RemediationService:
         evidence: list[dict[str, Any]],
         requested_by: str = "agent",
     ) -> dict[str, Any]:
-        now = self._now()
+        async with self.repository.proposal_guard():
+            now = self._now()
+            await self.repository.expire_due_approvals(now)
+            return await self._propose_under_guard(
+                diagnosis_id,
+                intent,
+                evidence,
+                requested_by,
+                now,
+            )
+
+    async def _propose_under_guard(
+        self,
+        diagnosis_id: str,
+        intent: ActionIntent,
+        evidence: list[dict[str, Any]],
+        requested_by: str,
+        now: datetime,
+    ) -> dict[str, Any]:
         service_policy = self.catalog.remediation_policy(intent.service_name)
         snapshot = _freeze_evidence(evidence, now)
         service_active_count = await self.repository.count_active(intent.service_name)
@@ -121,6 +139,9 @@ class RemediationService:
             global_active_limit=config.remediation_global_active_limit,
             max_actions_per_diagnosis=config.remediation_max_actions_per_diagnosis,
             default_cooldown_seconds=config.remediation_default_cooldown_seconds,
+            service_circuit_open=await self.repository.is_circuit_open(
+                intent.service_name
+            ),
         )
         decision = self.policy_engine.evaluate(intent, context)
 
@@ -213,6 +234,9 @@ class RemediationService:
             updates["verification_payload"] = event.verification.model_dump(mode="json")
         if event.error is not None:
             updates["error"] = event.error
+        if current == ActionStatus.ROLLING_BACK and event.status is ActionStatus.FAILED:
+            updates["circuit_breaker_open"] = True
+            updates["circuit_opened_at"] = self._now()
         if event.status in TERMINAL_GATEWAY_STATUSES:
             updates["completed_at"] = self._now()
 
@@ -228,7 +252,19 @@ class RemediationService:
             raise RemediationNotFound(action_id)
         return updated
 
+    async def disable_before_execution(self, action_id: str) -> bool:
+        now = self._now()
+        return await self.repository.compare_and_set(
+            action_id,
+            {ActionStatus.PROPOSED.value, ActionStatus.APPROVED.value},
+            status=ActionStatus.DENIED.value,
+            completed_at=now,
+            updated_at=now,
+            error="remediation mode is off",
+        )
+
     async def get_action(self, action_id: str) -> dict[str, Any]:
+        await self.repository.expire_due_approvals(self._now())
         action = await self.repository.get(action_id)
         if action is None:
             raise RemediationNotFound(action_id)
@@ -239,6 +275,7 @@ class RemediationService:
         status: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        await self.repository.expire_due_approvals(self._now())
         return await self.repository.list(status=status, limit=limit)
 
 

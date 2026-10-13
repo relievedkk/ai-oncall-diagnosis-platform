@@ -81,6 +81,11 @@ REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS = Gauge(
     "oncall_remediation_oldest_awaiting_approval_seconds",
     "Age in seconds of the oldest remediation awaiting human approval.",
 )
+REMEDIATION_CIRCUIT_BREAKER_OPEN = Gauge(
+    "oncall_remediation_circuit_breaker_open",
+    "Whether automatic remediation is blocked for a target service.",
+    ("target_service",),
+)
 PROCESS_CPU_PERCENT = Gauge(
     "oncall_process_cpu_percent",
     "Current FastAPI process CPU usage as a percentage of one logical CPU.",

@@ -23,6 +23,7 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
+      TEST_DATABASE_URL: postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
       DATABASE_AUTO_CREATE: "false"
       AUTH_ENABLED: "false"
     steps:
@@ -36,8 +37,8 @@ jobs:
       - run: uv run ruff check app/harness app/repositories/remediation.py app/services/remediation_service.py app/tasks/remediation.py app/api/remediation.py tests/test_remediation_*.py
       - run: uv run bandit -q -r app mcp_servers
       - run: uv run pip-audit --local --progress-spinner off
-      - run: uv run pytest -q
       - run: uv run alembic upgrade head
+      - run: uv run pytest -q
       - run: uv run alembic check
       - run: docker compose -f vector-database.yml config --quiet
       - run: docker compose -f monitoring.yml config --quiet

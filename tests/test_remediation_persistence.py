@@ -17,6 +17,8 @@ pytestmark = pytest.mark.integration
 async def postgres_repository():
     database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
+        if os.getenv("CI", "").casefold() == "true":
+            pytest.fail("CI requires TEST_DATABASE_URL for PostgreSQL integration tests")
         pytest.skip("TEST_DATABASE_URL is not configured")
     engine = create_async_engine(database_url, pool_pre_ping=True)
     try:
@@ -24,6 +26,8 @@ async def postgres_repository():
             await connection.execute(text("SELECT 1"))
     except Exception as exc:
         await engine.dispose()
+        if os.getenv("CI", "").casefold() == "true":
+            pytest.fail(f"required CI PostgreSQL is unavailable: {exc}")
         pytest.skip(f"configured PostgreSQL is unavailable: {exc}")
 
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -134,4 +138,77 @@ async def test_postgres_concurrent_decisions_have_one_outcome(postgres_repositor
     )
 
     assert sorted(outcomes) in (["approved", "conflict"], ["conflict", "rejected"])
+
+
+@pytest.mark.asyncio
+async def test_postgres_proposal_guard_serializes_across_repository_instances(
+    postgres_repository,
+):
+    repository, sessions, _diagnosis_id = postgres_repository
+    second_repository = SQLAlchemyRemediationRepository(sessions)
+    active = 0
+    maximum_active = 0
+
+    async def guarded(repo):
+        nonlocal active, maximum_active
+        async with repo.proposal_guard():
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+
+    await asyncio.gather(guarded(repository), guarded(second_repository))
+
+    assert maximum_active == 1
+
+
+@pytest.mark.asyncio
+async def test_postgres_concurrent_execution_claim_has_one_owner(postgres_repository):
+    repository, _sessions, diagnosis_id = postgres_repository
+    action, _created = await repository.create(
+        values(diagnosis_id, status="approved"), enqueue=False
+    )
+
+    claims = await asyncio.gather(
+        repository.claim_execution(action["id"], "worker-a"),
+        repository.claim_execution(action["id"], "worker-b"),
+    )
+
+    assert sorted(claims) == ["busy", "execute"]
+
+
+@pytest.mark.asyncio
+async def test_postgres_expiry_sweep_competes_safely_with_approval(
+    postgres_repository,
+):
+    repository, sessions, diagnosis_id = postgres_repository
+    now = datetime.now(UTC)
+    action, _created = await repository.create(
+        values(
+            diagnosis_id,
+            status="awaiting_approval",
+            approval_expires_at=now,
+        ),
+        enqueue=False,
+    )
+
+    decision, expired_count = await asyncio.gather(
+        repository.decide(action["id"], "approve", "operator", now),
+        repository.expire_due_approvals(now),
+    )
+
+    assert decision in {"expired", "conflict"}
+    assert expired_count in {0, 1}
+    assert (await repository.get(action["id"]))["status"] == "expired"
+    async with sessions() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.diagnosis_id == diagnosis_id
+                    )
+                )
+            ).all()
+        )
+    assert events == []
 

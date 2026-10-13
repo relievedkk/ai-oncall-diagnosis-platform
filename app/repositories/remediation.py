@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +19,7 @@ from app.db.models import OutboxEvent, RemediationAction
 from app.db.session import database_manager
 
 DecisionResult = Literal["approved", "rejected", "expired", "missing", "conflict"]
+ExecutionClaim = Literal["execute", "reconcile", "busy", "ignored"]
 REMEDIATION_TASK_NAME = "app.tasks.remediation.run_remediation"
 REMEDIATION_EVENT_TYPE = "remediation.execute"
 ACTIVE_STATUSES = {
@@ -37,6 +40,8 @@ def utc_now() -> datetime:
 
 
 class RemediationRepository(Protocol):
+    def proposal_guard(self): ...
+
     async def create(
         self, values: dict[str, Any], enqueue: bool
     ) -> tuple[dict[str, Any], bool]: ...
@@ -55,7 +60,13 @@ class RemediationRepository(Protocol):
         self, action_id: str, decision: str, principal_id: str, now: datetime
     ) -> DecisionResult: ...
 
-    async def claim_execution(self, action_id: str, worker_name: str) -> bool: ...
+    async def claim_execution(
+        self, action_id: str, worker_name: str, lease_seconds: int = 300
+    ) -> ExecutionClaim: ...
+
+    async def expire_due_approvals(self, now: datetime) -> int: ...
+
+    async def is_circuit_open(self, target_service: str) -> bool: ...
 
     async def count_active(self, target_service: str | None = None) -> int: ...
 
@@ -74,6 +85,12 @@ class InMemoryRemediationRepository:
         self._idempotency_index: dict[str, str] = {}
         self.outbox_events: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
+        self._proposal_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def proposal_guard(self) -> AsyncIterator[None]:
+        async with self._proposal_lock:
+            yield
 
     async def create(
         self, values: dict[str, Any], enqueue: bool
@@ -156,19 +173,56 @@ class InMemoryRemediationRepository:
             self.outbox_events.append(_outbox_values(action))
             return "approved"
 
-    async def claim_execution(self, action_id: str, worker_name: str) -> bool:
+    async def claim_execution(
+        self, action_id: str, worker_name: str, lease_seconds: int = 300
+    ) -> ExecutionClaim:
         async with self._lock:
             action = self._actions.get(action_id)
-            if action is None or action.get("status") not in EXECUTABLE_STATUSES:
-                return False
+            if action is None:
+                return "ignored"
             now = utc_now()
+            current = str(action.get("status"))
+            if current not in EXECUTABLE_STATUSES:
+                if current not in {"executing", "reconciling"}:
+                    return "ignored"
+                updated_at = action.get("updated_at")
+                if not isinstance(updated_at, datetime):
+                    return "busy"
+                if updated_at > now - timedelta(seconds=lease_seconds):
+                    return "busy"
+                claim: ExecutionClaim = (
+                    "reconcile" if action.get("prepared_payload") else "execute"
+                )
+            else:
+                claim = "execute"
             action.update(
-                status="executing",
+                status="reconciling" if claim == "reconcile" else "executing",
                 worker_name=worker_name,
                 started_at=action.get("started_at") or now,
                 updated_at=now,
             )
-            return True
+            return claim
+
+    async def expire_due_approvals(self, now: datetime) -> int:
+        expired = 0
+        async with self._lock:
+            for action in self._actions.values():
+                expires_at = action.get("approval_expires_at")
+                if (
+                    action.get("status") == "awaiting_approval"
+                    and isinstance(expires_at, datetime)
+                    and expires_at <= now
+                ):
+                    action.update(status="expired", completed_at=now, updated_at=now)
+                    expired += 1
+        return expired
+
+    async def is_circuit_open(self, target_service: str) -> bool:
+        return any(
+            action.get("target_service") == target_service
+            and action.get("circuit_breaker_open") is True
+            for action in self._actions.values()
+        )
 
     async def count_active(self, target_service: str | None = None) -> int:
         return sum(
@@ -198,18 +252,22 @@ class InMemoryRemediationRepository:
         async with self._lock:
             action_counts: dict[str, int] = {}
             awaiting_times: list[datetime] = []
+            open_circuit_services: set[str] = set()
             for action in self._actions.values():
                 status = str(action.get("status", "unknown"))
                 action_counts[status] = action_counts.get(status, 0) + 1
                 created_at = action.get("created_at")
                 if status == "awaiting_approval" and isinstance(created_at, datetime):
                     awaiting_times.append(created_at)
+                if action.get("circuit_breaker_open") is True:
+                    open_circuit_services.add(str(action.get("target_service", "unknown")))
         oldest_age = 0.0
         if awaiting_times:
             oldest_age = max(0.0, (utc_now() - min(awaiting_times)).total_seconds())
         return {
             "action_counts": action_counts,
             "oldest_awaiting_approval_seconds": oldest_age,
+            "open_circuit_services": sorted(open_circuit_services),
         }
 
 
@@ -219,6 +277,15 @@ class SQLAlchemyRemediationRepository:
         sessions: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._sessions = sessions or database_manager.session_factory
+
+    @asynccontextmanager
+    async def proposal_guard(self) -> AsyncIterator[None]:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": 7_241_947_013},
+            )
+            yield
 
     async def create(
         self, values: dict[str, Any], enqueue: bool
@@ -314,23 +381,51 @@ class SQLAlchemyRemediationRepository:
             session.add(OutboxEvent(**_outbox_values(_action_to_dict(action))))
             return "approved"
 
-    async def claim_execution(self, action_id: str, worker_name: str) -> bool:
+    async def claim_execution(
+        self, action_id: str, worker_name: str, lease_seconds: int = 300
+    ) -> ExecutionClaim:
         now = utc_now()
+        async with self._sessions.begin() as session:
+            action = await session.scalar(
+                select(RemediationAction)
+                .where(RemediationAction.id == action_id)
+                .with_for_update()
+            )
+            if action is None:
+                return "ignored"
+            if action.status in EXECUTABLE_STATUSES:
+                claim: ExecutionClaim = "execute"
+            elif action.status in {"executing", "reconciling"}:
+                if action.updated_at > now - timedelta(seconds=lease_seconds):
+                    return "busy"
+                claim = "reconcile" if action.prepared_payload else "execute"
+            else:
+                return "ignored"
+            action.status = "reconciling" if claim == "reconcile" else "executing"
+            action.worker_name = worker_name
+            action.started_at = action.started_at or now
+            action.updated_at = now
+            return claim
+
+    async def expire_due_approvals(self, now: datetime) -> int:
         async with self._sessions.begin() as session:
             result = await session.execute(
                 update(RemediationAction)
                 .where(
-                    RemediationAction.id == action_id,
-                    RemediationAction.status.in_(EXECUTABLE_STATUSES),
+                    RemediationAction.status == "awaiting_approval",
+                    RemediationAction.approval_expires_at <= now,
                 )
-                .values(
-                    status="executing",
-                    worker_name=worker_name,
-                    started_at=func.coalesce(RemediationAction.started_at, now),
-                    updated_at=now,
-                )
+                .values(status="expired", completed_at=now, updated_at=now)
             )
-            return bool(result.rowcount)
+            return int(result.rowcount or 0)
+
+    async def is_circuit_open(self, target_service: str) -> bool:
+        statement = select(func.count()).select_from(RemediationAction).where(
+            RemediationAction.target_service == target_service,
+            RemediationAction.circuit_breaker_open.is_(True),
+        )
+        async with self._sessions() as session:
+            return bool(await session.scalar(statement) or 0)
 
     async def count_active(self, target_service: str | None = None) -> int:
         statement = select(func.count()).select_from(RemediationAction).where(
@@ -370,12 +465,22 @@ class SQLAlchemyRemediationRepository:
                     RemediationAction.status == "awaiting_approval"
                 )
             )
+            open_circuits = list(
+                (
+                    await session.scalars(
+                        select(RemediationAction.target_service)
+                        .where(RemediationAction.circuit_breaker_open.is_(True))
+                        .distinct()
+                    )
+                ).all()
+            )
         oldest_age = 0.0
         if oldest_awaiting:
             oldest_age = max(0.0, (utc_now() - oldest_awaiting).total_seconds())
         return {
             "action_counts": {str(status): int(count) for status, count in count_rows},
             "oldest_awaiting_approval_seconds": oldest_age,
+            "open_circuit_services": sorted(str(name) for name in open_circuits),
         }
 
 
@@ -403,6 +508,8 @@ def _update_values(values: dict[str, Any]) -> dict[str, Any]:
         "started_at",
         "completed_at",
         "error",
+        "circuit_breaker_open",
+        "circuit_opened_at",
         "updated_at",
     }
     return {key: copy.deepcopy(value) for key, value in values.items() if key in allowed}

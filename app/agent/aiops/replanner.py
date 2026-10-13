@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.mcp_client import get_mcp_client_with_retry
 from app.core.llm_factory import llm_factory
-from app.harness.contracts import ActionIntent, parse_action_intent
+from app.harness.contracts import parse_action_intent
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
 from .state import PlanExecuteState
@@ -25,7 +25,7 @@ class Response(BaseModel):
     """最终响应的格式"""
 
     response: str = Field(description="对用户的最终响应")
-    remediation: ActionIntent | None = Field(
+    remediation: dict[str, Any] | None = Field(
         default=None,
         description=(
             "可选的单个处置提案。只有证据充分且目标服务可解析时才填写；"
@@ -362,16 +362,16 @@ async def _generate_response(state: PlanExecuteState, llm: ChatOpenAI) -> dict[s
         harness_error = None
         if isinstance(response_obj, Response):
             final_response = response_obj.response
-            remediation = response_obj.remediation
+            raw_remediation = response_obj.remediation
         else:
             # 如果返回的是字典
             final_response = response_obj.get("response", "")  # type: ignore
             raw_remediation = response_obj.get("remediation")  # type: ignore
-            if raw_remediation is not None:
-                try:
-                    remediation = parse_action_intent(raw_remediation)
-                except (ValidationError, TypeError):
-                    harness_error = "invalid_remediation_proposal"
+        if raw_remediation is not None:
+            try:
+                remediation = parse_action_intent(raw_remediation)
+            except (ValidationError, TypeError):
+                harness_error = "invalid_remediation_proposal"
 
         logger.info(f"最终响应生成完成，长度: {len(final_response)}")
 

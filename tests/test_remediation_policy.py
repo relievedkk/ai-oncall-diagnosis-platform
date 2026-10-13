@@ -204,3 +204,12 @@ def test_model_confidence_cannot_lower_risk():
 
     assert decision.risk_level is RiskLevel.R3
 
+
+def test_open_service_circuit_fails_closed():
+    decision = PolicyEngine().evaluate(
+        intent("restart_instance"), context(service_circuit_open=True)
+    )
+
+    assert decision.verdict is PolicyVerdict.DENY
+    assert decision.reason_code == "circuit_breaker_open"
+

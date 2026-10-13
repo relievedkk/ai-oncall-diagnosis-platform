@@ -19,6 +19,13 @@ from app.harness.contracts import (
 )
 
 
+def validate_remediation_adapter() -> None:
+    if config.remediation_adapter != "dry_run":
+        raise RuntimeError(
+            "REMEDIATION_ADAPTER must be 'dry_run'; this release has no production adapter"
+        )
+
+
 class RemediationAdapter(Protocol):
     async def prepare(self, intent: ActionIntent) -> PreparedAction: ...
 
@@ -148,6 +155,46 @@ class RemediationGateway:
                 return
             observation = await self._observe(prepared)
 
+        if observation is None or observation.get("known") is not True:
+            yield GatewayEvent(
+                status=ActionStatus.RECONCILING,
+                prepared_action=prepared,
+                result=execution,
+            )
+            yield GatewayEvent(
+                status=ActionStatus.FAILED,
+                prepared_action=prepared,
+                result=execution,
+                error="execution outcome remains unknown",
+            )
+            return
+
+        async for event in self._verification_events(prepared, execution, observation):
+            yield event
+
+    async def reconcile(self, prepared: PreparedAction) -> AsyncIterator[GatewayEvent]:
+        """Observe an uncertain prior attempt without executing it a second time."""
+        observation = await self._observe(prepared)
+        if observation is None or observation.get("known") is not True:
+            yield GatewayEvent(
+                status=ActionStatus.FAILED,
+                prepared_action=prepared,
+                error="execution outcome remains unknown",
+            )
+            return
+        execution = ExecutionResult(
+            success=observation.get("success") is True,
+            details={"reconciled": True, "observation": observation},
+        )
+        async for event in self._verification_events(prepared, execution, observation):
+            yield event
+
+    async def _verification_events(
+        self,
+        prepared: PreparedAction,
+        execution: ExecutionResult,
+        observation: dict[str, Any],
+    ) -> AsyncIterator[GatewayEvent]:
         verification = _verify(prepared, observation)
         yield GatewayEvent(
             status=ActionStatus.VERIFYING,

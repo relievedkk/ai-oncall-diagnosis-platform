@@ -89,8 +89,8 @@ async def test_claim_execution_only_succeeds_once():
     first = await repository.claim_execution("action-1", "worker-1")
     duplicate = await repository.claim_execution("action-1", "worker-2")
 
-    assert first is True
-    assert duplicate is False
+    assert first == "execute"
+    assert duplicate == "busy"
     action = await repository.get("action-1")
     assert action["status"] == "executing"
     assert action["worker_name"] == "worker-1"
@@ -146,4 +146,49 @@ async def test_decide_approval_enqueues_once_and_expiry_wins_when_due():
         == "expired"
     )
     assert expired_repository.outbox_events == []
+
+
+@pytest.mark.asyncio
+async def test_stale_prepared_execution_is_claimed_for_reconciliation(monkeypatch):
+    repository = InMemoryRemediationRepository()
+    prepared = {
+        "intent": action_values()["intent_payload"],
+        "pre_change_snapshot": {"known": True},
+        "verification_spec": {"kind": "generic"},
+        "rollback_token": "opaque-token",
+    }
+    await repository.create(
+        action_values(
+            status="executing",
+            prepared_payload=prepared,
+            updated_at=NOW - timedelta(minutes=10),
+        ),
+        enqueue=False,
+    )
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: NOW)
+
+    claim = await repository.claim_execution(
+        "action-1", "recovery-worker", lease_seconds=300
+    )
+
+    assert claim == "reconcile"
+    assert (await repository.get("action-1"))["status"] == "reconciling"
+
+
+@pytest.mark.asyncio
+async def test_expire_due_approvals_releases_active_capacity():
+    repository = InMemoryRemediationRepository()
+    await repository.create(
+        action_values(
+            status="awaiting_approval",
+            approval_expires_at=NOW - timedelta(seconds=1),
+        ),
+        enqueue=False,
+    )
+
+    expired = await repository.expire_due_approvals(NOW)
+
+    assert expired == 1
+    assert await repository.count_active("orders") == 0
+    assert (await repository.get("action-1"))["status"] == "expired"
 

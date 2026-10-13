@@ -8,7 +8,7 @@ from app.config import config
 celery_app = Celery(
     "ai_oncall_diagnosis",
     broker=config.celery_broker_url,
-    include=["app.tasks.diagnosis", "app.tasks.remediation"],
+    include=["app.tasks.diagnosis"],
 )
 
 diagnosis_exchange = Exchange("diagnosis", type="topic", durable=True)

@@ -132,7 +132,7 @@ groups:
   - name: ai-oncall-agent-remediation
     rules:
       - alert: RemediationExecutionFailed
-        expr: increase(oncall_remediation_action_events_total{status="failed"}[10m]) > 0
+        expr: oncall_remediation_actions{status="failed"} > 0
         labels:
           severity: critical
           service: ai-oncall-agent
@@ -141,7 +141,7 @@ groups:
           description: 最近 10 分钟内至少有一个受控处置进入 failed；请停止放宽自动化范围并检查审计记录。
 
       - alert: RemediationRollbackCircuitBreaker
-        expr: increase(oncall_remediation_action_events_total{status=~"rolling_back|rolled_back"}[10m]) > 0
+        expr: oncall_remediation_circuit_breaker_open == 1
         labels:
           severity: critical
           service: ai-oncall-agent

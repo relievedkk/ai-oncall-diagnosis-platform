@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -61,6 +62,15 @@ def restart_intent():
         service_name="orders",
         instance_id="orders-1",
         reason="The instance is unhealthy.",
+    )
+
+
+def second_restart_intent():
+    return RestartInstanceIntent(
+        action_type="restart_instance",
+        service_name="orders",
+        instance_id="orders-2",
+        reason="A second instance is unhealthy.",
     )
 
 
@@ -195,4 +205,75 @@ async def test_illegal_gateway_transition_is_rejected(tmp_path):
         await service.apply_gateway_event(
             action["id"], GatewayEvent(status="succeeded")
         )
+
+
+@pytest.mark.asyncio
+async def test_proposal_checks_and_create_run_inside_repository_guard(tmp_path):
+    class GuardedRepository(InMemoryRemediationRepository):
+        def __init__(self):
+            super().__init__()
+            self.in_guard = False
+
+        @asynccontextmanager
+        async def proposal_guard(self):
+            assert not self.in_guard
+            self.in_guard = True
+            try:
+                yield
+            finally:
+                self.in_guard = False
+
+        async def count_active(self, target_service=None):
+            assert self.in_guard
+            return await super().count_active(target_service)
+
+        async def create(self, values, enqueue):
+            assert self.in_guard
+            return await super().create(values, enqueue)
+
+    repository = GuardedRepository()
+    service = RemediationService(
+        repository=repository,
+        catalog=build_catalog(tmp_path),
+        now_factory=lambda: NOW,
+    )
+
+    action = await service.propose("diagnosis-guard", restart_intent(), evidence())
+
+    assert action["status"] == "proposed"
+
+
+@pytest.mark.asyncio
+async def test_expired_approval_is_swept_before_capacity_check(tmp_path):
+    service, repository = build_service(tmp_path, RemediationMode.ASSISTED)
+    expired = await service.propose("diagnosis-old", restart_intent(), evidence())
+    service._now = lambda: NOW + timedelta(minutes=16)
+
+    current = await service.propose(
+        "diagnosis-new", second_restart_intent(), evidence()
+    )
+
+    assert (await repository.get(expired["id"]))["status"] == "expired"
+    assert current["status"] == "awaiting_approval"
+
+
+@pytest.mark.asyncio
+async def test_rollback_failure_opens_circuit_and_blocks_new_proposals(tmp_path):
+    service, repository = build_service(tmp_path)
+    action = await service.propose("diagnosis-circuit", restart_intent(), evidence())
+    await service.apply_gateway_event(action["id"], GatewayEvent(status="executing"))
+    await service.apply_gateway_event(action["id"], GatewayEvent(status="verifying"))
+    await service.apply_gateway_event(action["id"], GatewayEvent(status="rolling_back"))
+    await service.apply_gateway_event(
+        action["id"], GatewayEvent(status="failed", error="rollback failed")
+    )
+    service._now = lambda: NOW + timedelta(hours=1)
+
+    blocked = await service.propose(
+        "diagnosis-after-circuit", second_restart_intent(), evidence()
+    )
+
+    assert await repository.is_circuit_open("orders") is True
+    assert blocked["status"] == "denied"
+    assert blocked["policy_reason"] == "circuit_breaker_open"
 

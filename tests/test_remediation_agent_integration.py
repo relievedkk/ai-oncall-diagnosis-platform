@@ -1,3 +1,5 @@
+import importlib
+
 import pytest
 
 from app.repositories.diagnosis import InMemoryDiagnosisRepository
@@ -67,6 +69,41 @@ def test_invalid_model_remediation_is_dropped_and_recorded_as_harness_error():
     assert "remediation" not in event
     assert event["harness_error"] == "invalid_remediation_proposal"
     assert "command" not in str(event)
+
+
+@pytest.mark.asyncio
+async def test_invalid_structured_remediation_preserves_valid_model_report(monkeypatch):
+    replanner = importlib.import_module("app.agent.aiops.replanner")
+    payload = {
+        "response": "# Valid diagnosis report",
+        "remediation": {
+            **remediation_payload(),
+            "command": "kubectl delete pod orders-1",
+        },
+    }
+
+    class FakeResponseGenerator:
+        async def ainvoke(self, _inputs):
+            return replanner.Response.model_validate(payload)
+
+    class FakePrompt:
+        def __or__(self, _other):
+            return FakeResponseGenerator()
+
+    class FakeLLM:
+        def with_structured_output(self, *_args, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(replanner, "response_prompt", FakePrompt())
+
+    result = await replanner._generate_response(
+        {"input": "diagnose", "past_steps": []}, FakeLLM()
+    )
+
+    assert result == {
+        "response": "# Valid diagnosis report",
+        "harness_error": "invalid_remediation_proposal",
+    }
 
 
 class TrackingRepository(InMemoryDiagnosisRepository):

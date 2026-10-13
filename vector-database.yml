@@ -27,6 +27,23 @@ x-diagnosis-environment: &diagnosis-environment
   TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
   PYTHONUTF8: "1"
 
+x-remediation-environment: &remediation-environment
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
+  DATABASE_AUTO_CREATE: "false"
+  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
+  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
+  REMEDIATION_MODE: ${REMEDIATION_MODE:-dry_run}
+  REMEDIATION_ADAPTER: ${REMEDIATION_ADAPTER:-dry_run}
+  REMEDIATION_APPROVAL_EXPIRY_SECONDS: ${REMEDIATION_APPROVAL_EXPIRY_SECONDS:-900}
+  REMEDIATION_DEFAULT_COOLDOWN_SECONDS: ${REMEDIATION_DEFAULT_COOLDOWN_SECONDS:-900}
+  REMEDIATION_MAX_ACTIONS_PER_DIAGNOSIS: ${REMEDIATION_MAX_ACTIONS_PER_DIAGNOSIS:-2}
+  REMEDIATION_GLOBAL_ACTIVE_LIMIT: ${REMEDIATION_GLOBAL_ACTIVE_LIMIT:-5}
+  REMEDIATION_EXECUTION_TIMEOUT_SECONDS: ${REMEDIATION_EXECUTION_TIMEOUT_SECONDS:-120}
+  REMEDIATION_VERIFICATION_TIMEOUT_SECONDS: ${REMEDIATION_VERIFICATION_TIMEOUT_SECONDS:-120}
+  REMEDIATION_WORKER_LEASE_SECONDS: ${REMEDIATION_WORKER_LEASE_SECONDS:-300}
+  SERVICE_CATALOG_PATH: config/service_catalog.json
+  PYTHONUTF8: "1"
+
 services:
   postgres:
     container_name: oncall-postgres
@@ -143,7 +160,7 @@ services:
       - --no-sync
       - celery
       - -A
-      - app.celery_app:celery_app
+      - app.remediation_celery_app:celery_app
       - worker
       - --loglevel=INFO
       - --pool=solo
@@ -151,7 +168,7 @@ services:
       - --queues=${CELERY_REMEDIATION_QUEUE:-remediation.control}
       - --concurrency=1
       - --prefetch-multiplier=1
-    environment: *diagnosis-environment
+    environment: *remediation-environment
     depends_on:
       queue-bootstrap:
         condition: service_completed_successfully

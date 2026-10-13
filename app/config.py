@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     remediation_global_active_limit: int = Field(default=5, ge=1, le=100)
     remediation_execution_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
     remediation_verification_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
+    remediation_worker_lease_seconds: int = Field(default=300, ge=30, le=7200)
 
     # LangGraph durable checkpoints. The explicit URL uses psycopg syntax;
     # when empty it is derived from DATABASE_URL.

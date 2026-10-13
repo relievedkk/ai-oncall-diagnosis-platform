@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -18,6 +20,7 @@ from app.core.metrics import (
     RABBITMQ_QUEUE_CONSUMERS,
     RABBITMQ_QUEUE_MESSAGES,
     REMEDIATION_ACTIONS,
+    REMEDIATION_CIRCUIT_BREAKER_OPEN,
     REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS,
 )
 from app.repositories.diagnosis import DiagnosisRepository, diagnosis_repository
@@ -31,11 +34,14 @@ class QueueObserver:
         self,
         repository: DiagnosisRepository = diagnosis_repository,
         remediation: RemediationRepository | None = None,
+        now_factory: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.remediation = remediation
+        self._now = now_factory or (lambda: datetime.now(UTC))
         self._task: asyncio.Task[None] | None = None
         self.last_snapshot: dict[str, Any] = {}
+        self._circuit_services: set[str] = set()
 
     async def rabbitmq_queues(self) -> dict[str, dict[str, int]]:
         url = f"{config.rabbitmq_management_url.rstrip('/')}/api/queues/%2F"
@@ -90,6 +96,7 @@ class QueueObserver:
 
         remediation = None
         if self.remediation is not None:
+            await self.remediation.expire_due_approvals(self._now())
             remediation = await self.remediation.get_operational_metrics()
             for action_status in (
                 "proposed",
@@ -112,6 +119,12 @@ class QueueObserver:
             REMEDIATION_OLDEST_AWAITING_APPROVAL_SECONDS.set(
                 remediation["oldest_awaiting_approval_seconds"]
             )
+            open_services = set(remediation["open_circuit_services"])
+            for service_name in self._circuit_services | open_services:
+                REMEDIATION_CIRCUIT_BREAKER_OPEN.labels(
+                    target_service=service_name
+                ).set(1 if service_name in open_services else 0)
+            self._circuit_services = open_services
 
         try:
             queues = await self.rabbitmq_queues()

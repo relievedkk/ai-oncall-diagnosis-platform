@@ -37,6 +37,7 @@ class PolicyContext:
     service_action_active: bool
     global_active_count: int
     diagnosis_action_count: int
+    service_circuit_open: bool = False
     global_active_limit: int = 5
     max_actions_per_diagnosis: int = 2
     default_cooldown_seconds: int = 900
@@ -54,6 +55,9 @@ class PolicyEngine:
 
         if context.mode is RemediationMode.OFF:
             return _deny(risk, "mode_off")
+
+        if context.service_circuit_open:
+            return _deny(risk, "circuit_breaker_open")
 
         policy = context.service_policy
         if policy.get("enabled") is not True:

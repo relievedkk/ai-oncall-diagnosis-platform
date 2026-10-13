@@ -177,3 +177,29 @@ async def test_execution_timeout_missing_observation_fails_without_blind_retry()
     assert adapter.observe_calls == 1
     assert adapter.rollback_calls == 0
 
+
+@pytest.mark.asyncio
+async def test_successful_execution_with_missing_observation_reconciles_without_rollback():
+    adapter = FakeAdapter(observation={})
+
+    events = await collect(RemediationGateway(adapter))
+
+    assert statuses(events) == ["executing", "reconciling", "failed"]
+    assert events[-1].error == "execution outcome remains unknown"
+    assert adapter.execute_calls == 1
+    assert adapter.observe_calls == 1
+    assert adapter.rollback_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_observes_prepared_action_without_reexecuting():
+    adapter = FakeAdapter(observation={"known": True, "success": True})
+    prepared = await adapter.prepare(restart_intent())
+    gateway = RemediationGateway(adapter)
+
+    events = [event async for event in gateway.reconcile(prepared)]
+
+    assert statuses(events) == ["verifying", "succeeded"]
+    assert adapter.execute_calls == 0
+    assert adapter.observe_calls == 1
+

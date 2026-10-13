@@ -3,10 +3,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.celery_app import celery_app
 from app.config import config
 from app.harness.contracts import RestartInstanceIntent
 from app.harness.gateway import DryRunRemediationAdapter, RemediationGateway
+from app.remediation_celery_app import celery_app
 from app.repositories.remediation import InMemoryRemediationRepository
 from app.services.remediation_service import RemediationService
 from app.services.service_catalog import ServiceCatalog
@@ -111,10 +111,10 @@ def intent():
     )
 
 
-def action_values(action_id="action-1"):
+def action_values(action_id="action-1", **overrides):
     now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
     remediation_intent = intent()
-    return {
+    values = {
         "id": action_id,
         "diagnosis_id": "diagnosis-1",
         "idempotency_key": f"diagnosis-1:{action_id}",
@@ -130,15 +130,22 @@ def action_values(action_id="action-1"):
         "created_at": now,
         "updated_at": now,
     }
+    values.update(overrides)
+    return values
 
 
 class CountingAdapter(DryRunRemediationAdapter):
     def __init__(self):
         self.execute_calls = 0
+        self.observe_calls = 0
 
     async def execute(self, prepared):
         self.execute_calls += 1
         return await super().execute(prepared)
+
+    async def observe(self, prepared):
+        self.observe_calls += 1
+        return await super().observe(prepared)
 
 
 def build_worker_dependencies(tmp_path):
@@ -185,4 +192,65 @@ async def test_worker_applies_each_gateway_event_in_order(tmp_path):
 
     assert result == "succeeded"
     assert observed == ["executing", "verifying", "succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_stale_prepared_action_without_second_execute(
+    tmp_path, monkeypatch
+):
+    repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
+    now = datetime(2026, 10, 13, 12, 10, tzinfo=UTC)
+    prepared = await adapter.prepare(intent())
+    await repository.create(
+        action_values(
+            status="executing",
+            prepared_payload=prepared.model_dump(mode="json"),
+            updated_at=datetime(2026, 10, 13, 12, 0, tzinfo=UTC),
+        ),
+        enqueue=False,
+    )
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: now)
+    monkeypatch.setattr(config, "remediation_worker_lease_seconds", 300)
+
+    result = await execute_remediation(
+        "action-1", "recovery-worker", service=service, gateway=gateway
+    )
+
+    assert result == "succeeded"
+    assert adapter.execute_calls == 0
+    assert adapter.observe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_off_mode_denies_queued_action_before_adapter_execution(
+    tmp_path, monkeypatch
+):
+    repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
+    await repository.create(action_values(), enqueue=False)
+    monkeypatch.setattr(config, "remediation_mode", "off")
+
+    result = await execute_remediation(
+        "action-1", "worker-1", service=service, gateway=gateway
+    )
+
+    assert result == "disabled"
+    assert adapter.execute_calls == 0
+    assert (await repository.get("action-1"))["status"] == "denied"
+
+
+def test_remediation_worker_has_minimal_environment_and_runtime_controls():
+    compose = json.loads(
+        __import__("subprocess").check_output(  # nosec B404,B603 - test-only compose parser
+            ["docker", "compose", "-f", "vector-database.yml", "config", "--format", "json"],
+            text=True,
+        )
+    )
+    environment = compose["services"]["remediation-worker"]["environment"]
+
+    assert environment["REMEDIATION_MODE"] == "dry_run"
+    assert environment["REMEDIATION_ADAPTER"] == "dry_run"
+    assert "REMEDIATION_WORKER_LEASE_SECONDS" in environment
+    assert "DASHSCOPE_API_KEY" not in environment
+    assert "TENCENTCLOUD_SECRET_ID" not in environment
+    assert "TENCENTCLOUD_SECRET_KEY" not in environment
 
