@@ -174,7 +174,7 @@ There is no unrestricted `full_auto` mode.
 |---|---|---|
 | R0 | Metrics, logs, and knowledge reads | Existing automatic behavior |
 | R1 | Restart one instance of an explicitly stateless service | Auto only in `guarded_auto`; otherwise approval |
-| R2 | Scale out by `min(1, 25%)` without exceeding service maximum | Auto only in `guarded_auto`; otherwise approval |
+| R2 | Scale out by exactly one replica without exceeding service maximum | Auto only in `guarded_auto`, with a live current replica count of at least four; otherwise approval |
 | R3 | Roll back to a configured last-known-good revision | Always approval for a newly proposed rollback |
 | R4 | Scale-in, delete, database mutation, stateful restart, arbitrary command | Always deny |
 
@@ -252,7 +252,7 @@ Terminal states cannot transition. Approval uses a row lock and verifies current
 Add one `remediation_actions` table through Alembic. Required columns:
 
 - `id` primary key;
-- `diagnosis_id` indexed foreign key;
+- `diagnosis_id` indexed foreign key with restricted deletion so remediation audit records cannot be cascade-deleted;
 - `idempotency_key` unique;
 - `action_type`, `target_service`, `risk_level`, `status` indexed strings;
 - `intent_payload` JSON;
