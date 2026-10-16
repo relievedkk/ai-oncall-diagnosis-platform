@@ -39,6 +39,10 @@ DIAGNOSIS_JOBS = Gauge(
     "Persisted diagnosis jobs by current status.",
     ("status",),
 )
+DIAGNOSIS_RECENT_FAILURES = Gauge(
+    "oncall_diagnosis_recent_failures",
+    "Persisted diagnosis error events in the last ten minutes, across all workers.",
+)
 OUTBOX_EVENTS = Gauge(
     "oncall_outbox_events",
     "Transactional outbox events by current status.",

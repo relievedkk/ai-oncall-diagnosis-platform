@@ -1,5 +1,9 @@
 .git
+.worktrees
+.superpowers
+.coverage
 .venv
+tools/cls-uploader/.venv
 .env
 __pycache__
 *.pyc

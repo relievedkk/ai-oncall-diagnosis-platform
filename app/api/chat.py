@@ -5,7 +5,8 @@
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from loguru import logger
 from sse_starlette.sse import EventSourceResponse
 
@@ -17,8 +18,17 @@ from app.services.rag_agent_service import rag_agent_service
 router = APIRouter()
 
 
+def _session_thread_id(request: Request, session_id: str) -> str:
+    """Client session IDs identify a conversation only within its principal."""
+    principal = getattr(request.state, "principal", None)
+    if getattr(request.state, "auth_kind", None) == "session" and principal is not None:
+        return f"chat:user:{principal.user_id}:{session_id}"
+    scope = "machine" if getattr(request.state, "auth_kind", None) == "api_key" else "local"
+    return f"chat:{scope}:{session_id}"
+
+
 @router.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, http_request: Request):
     """快速对话接口
     {
         "code": 200,
@@ -38,7 +48,9 @@ async def chat(request: ChatRequest):
     """
     try:
         logger.info("[会话 {}] 收到快速对话请求，长度={}", request.id, len(request.question))
-        answer = await rag_agent_service.query(request.question, session_id=request.id)
+        answer = await rag_agent_service.query(
+            request.question, session_id=_session_thread_id(http_request, request.id)
+        )
 
         logger.info(f"[会话 {request.id}] 快速对话完成")
 
@@ -50,15 +62,15 @@ async def chat(request: ChatRequest):
 
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
-        return {
-            "code": 500,
+        return JSONResponse(status_code=503, content={
+            "code": 503,
             "message": "error",
             "data": {"success": False, "answer": None, "errorMessage": "对话服务暂时不可用"},
-        }
+        })
 
 
 @router.post("/chat_stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest, http_request: Request):
     """流式对话接口（基于 RAG Agent，SSE）
 
     返回 SSE 格式，data 字段为 JSON：
@@ -86,7 +98,7 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         try:
             async for chunk in rag_agent_service.query_stream(
-                request.question, session_id=request.id
+                request.question, session_id=_session_thread_id(http_request, request.id)
             ):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
@@ -142,7 +154,7 @@ async def chat_stream(request: ChatRequest):
                     yield {
                         "event": "message",
                         "data": json.dumps(
-                            {"type": "error", "data": str(chunk_data)}, ensure_ascii=False
+                            {"type": "error", "data": "对话服务暂时不可用"}, ensure_ascii=False
                         ),
                     }
 
@@ -161,7 +173,7 @@ async def chat_stream(request: ChatRequest):
 
 
 @router.post("/chat/clear", response_model=ApiResponse)
-async def clear_session(request: ClearRequest):
+async def clear_session(request: ClearRequest, http_request: Request):
     """清空会话历史
 
     Args:
@@ -171,7 +183,7 @@ async def clear_session(request: ClearRequest):
         操作结果
     """
     try:
-        success = await rag_agent_service.clear_session(request.session_id)
+        success = await rag_agent_service.clear_session(_session_thread_id(http_request, request.session_id))
         logger.info(f"清空会话: {request.session_id}, 结果: {success}")
 
         return ApiResponse(
@@ -186,7 +198,7 @@ async def clear_session(request: ClearRequest):
 
 
 @router.get("/chat/session/{session_id}", response_model=SessionInfoResponse)
-async def get_session_info(session_id: str) -> SessionInfoResponse:
+async def get_session_info(session_id: str, request: Request) -> SessionInfoResponse:
     """查询会话历史
 
     Args:
@@ -196,7 +208,7 @@ async def get_session_info(session_id: str) -> SessionInfoResponse:
         会话信息
     """
     try:
-        history = await rag_agent_service.get_session_history(session_id)
+        history = await rag_agent_service.get_session_history(_session_thread_id(request, session_id))
 
         return SessionInfoResponse(
             session_id=session_id, message_count=len(history), history=history

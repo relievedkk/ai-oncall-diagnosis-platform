@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,10 @@ class ServiceCatalog:
 
     def resolve_name(self, service_name: str) -> tuple[str, dict[str, Any]]:
         return self.resolve({"service": service_name, "job": service_name})
+
+    def list_services(self) -> dict[str, dict[str, Any]]:
+        """Return configured applications without exposing mutable catalog state."""
+        return deepcopy(self._services)
 
     def remediation_policy(self, service_name: str) -> dict[str, Any]:
         """Return a validated service policy, defaulting to deny on ambiguity."""

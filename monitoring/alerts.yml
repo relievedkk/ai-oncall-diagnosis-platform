@@ -67,7 +67,7 @@ groups:
           description: AI OnCall 常驻内存连续 5 分钟超过 1 GiB。
 
       - alert: AIOpsDiagnosisFailure
-        expr: increase(oncall_aiops_diagnoses_total{job="ai-oncall-agent",status="failed"}[10m]) > 0
+        expr: oncall_diagnosis_recent_failures{job="ai-oncall-agent"} > 0
         labels:
           severity: warning
           service: ai-oncall-agent
@@ -138,7 +138,7 @@ groups:
           service: ai-oncall-agent
         annotations:
           summary: 生产处置执行失败
-          description: 最近 10 分钟内至少有一个受控处置进入 failed；请停止放宽自动化范围并检查审计记录。
+          description: 持久化记录中存在 failed 处置；请检查审计记录并完成人工处理。
 
       - alert: RemediationRollbackCircuitBreaker
         expr: oncall_remediation_circuit_breaker_open == 1
@@ -147,17 +147,17 @@ groups:
           service: ai-oncall-agent
         annotations:
           summary: 生产处置触发回滚保护
-          description: 最近 10 分钟内处置验证失败并进入回滚路径；在人工确认前不得继续扩大自动处置范围。
+          description: 服务处置熔断已打开；在人工确认前不得继续扩大自动处置范围。
 
       - alert: RemediationApprovalStale
-        expr: oncall_remediation_oldest_awaiting_approval_seconds > 900
-        for: 2m
+        expr: oncall_remediation_oldest_awaiting_approval_seconds > 600
+        for: 1m
         labels:
           severity: warning
           service: ai-oncall-agent
         annotations:
-          summary: 生产处置审批已滞留
-          description: 最老的待审批处置已超过默认 15 分钟审批窗口，请检查审批状态与会话认证。
+          summary: 生产处置审批即将过期
+          description: 待审批处置已等待超过 10 分钟，接近默认 15 分钟审批窗口；请及时处理。
 
       - alert: RemediationQueueHasNoConsumer
         expr: oncall_rabbitmq_queue_consumers{queue="remediation.control"} < 1

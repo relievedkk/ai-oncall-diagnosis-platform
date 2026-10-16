@@ -10,7 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from app.agent.mcp_client import get_mcp_client_with_retry
+from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
 from app.core.llm_factory import llm_factory
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS, retrieve_knowledge
 
@@ -97,7 +97,9 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
 
         # 获取 MCP 工具
         mcp_client = await get_mcp_client_with_retry()
-        mcp_tools = await mcp_client.get_tools()
+        mcp_tools, mcp_warning = await load_mcp_tools_safe(mcp_client)
+        if mcp_warning:
+            logger.warning(f"部分 MCP 服务不可用，规划将使用其余工具继续:\n{mcp_warning}")
 
         # 合并所有工具
         all_tools = local_tools + mcp_tools
@@ -154,4 +156,7 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"生成计划失败: {e}", exc_info=True)
         # 返回一个默认计划
-        return {"plan": ["收集相关信息", "分析数据", "生成报告"]}
+        return {
+            "plan": ["收集相关信息", "分析数据", "生成报告"],
+            "execution_errors": [f"生成计划失败，使用后备计划: {str(e)}"],
+        }

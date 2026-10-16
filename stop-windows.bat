@@ -6,6 +6,11 @@ echo  Stop AI OnCall Diagnosis Platform
 echo ====================================
 echo.
 
+REM Ask the isolated uploader to stop gracefully after its current batch.
+if exist .venv\Scripts\python.exe (
+    .venv\Scripts\python.exe -m oncall_logging.uploader --stop
+)
+
 REM Stop FastAPI service
 echo [1/5] Stopping FastAPI service...
 taskkill /FI "WINDOWTITLE eq AI OnCall API*" /F >nul 2>&1

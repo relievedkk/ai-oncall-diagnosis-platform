@@ -1,0 +1,10 @@
+[project]
+name = "oncall-cls-uploader-runtime"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = ["tencentcloud-cls-sdk-python==1.0.9", "python-dotenv>=1.0,<2"]
+
+[tool.uv]
+# SDK 1.0.9 pins old compression wheels unavailable for modern Windows Python.
+# The SDK APIs used here are verified with these compatible compression releases.
+override-dependencies = ["lz4>=4.4,<5", "python-snappy>=0.7,<0.8"]

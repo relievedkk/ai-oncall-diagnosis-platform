@@ -7,13 +7,14 @@
       "metrics": {
         "cpu": "oncall_process_cpu_percent{job=\"ai-oncall-agent\"}",
         "memory": "oncall_process_resident_memory_bytes{job=\"ai-oncall-agent\"}",
-        "error_rate": "sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m])), 0.001)",
+        "error_rate": "((sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\",status=~\"5..\"}[5m])) or (0 * sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m])))) / sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m]))) and (sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m])) > 0)",
+        "request_rate": "sum(rate(oncall_http_requests_total{job=\"ai-oncall-agent\"}[5m]))",
         "latency_p95": "histogram_quantile(0.95, sum by (le) (rate(oncall_http_request_duration_seconds_bucket{job=\"ai-oncall-agent\"}[5m])))"
       },
       "cls": {
-        "region": "",
-        "logset_id": "",
-        "topic_id": "",
+        "region": "ap-guangzhou",
+        "logset_id": "c56a080f-4ef6-4a29-8e7d-d8281d33ea20",
+        "topic_id": "d7efb006-2c52-4cbd-b924-4d0fff59b5cf",
         "query_hint": "service:ai-oncall-agent"
       },
       "remediation": {

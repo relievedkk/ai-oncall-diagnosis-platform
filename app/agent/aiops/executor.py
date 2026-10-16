@@ -3,17 +3,37 @@ Executor 节点：执行单个步骤
 基于 LangGraph 官方教程实现
 """
 
+import json
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 from loguru import logger
 
-from app.agent.mcp_client import get_mcp_client_with_retry
+from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
 from app.core.llm_factory import llm_factory
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
 from .state import PlanExecuteState
+
+MAX_TOOL_ROUNDS = 8
+
+
+def _tool_result_failed(content: Any) -> bool:
+    """Recognize explicit failures in local JSON and MCP text content blocks."""
+    if isinstance(content, str):
+        try:
+            return _tool_result_failed(json.loads(content))
+        except (TypeError, json.JSONDecodeError):
+            return False
+    if isinstance(content, list):
+        return any(_tool_result_failed(block) for block in content)
+    if isinstance(content, dict):
+        if content.get("success") is False or content.get("isError") is True:
+            return True
+        if content.get("type") == "text":
+            return _tool_result_failed(content.get("text"))
+    return False
 
 
 def classify_tool_evidence(tool_name: str) -> str:
@@ -48,6 +68,8 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
     # 取出第一个步骤
     task = plan[0]
     logger.info("开始执行诊断步骤，描述长度={}", len(task))
+    tool_evidence: list[dict[str, Any]] = []
+    execution_errors: list[str] = []
 
     try:
         # 获取本地工具
@@ -55,7 +77,9 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
         # 获取 MCP 工具
         mcp_client = await get_mcp_client_with_retry()
-        mcp_tools = await mcp_client.get_tools()
+        mcp_tools, mcp_warning = await load_mcp_tools_safe(mcp_client)
+        if mcp_warning:
+            logger.warning(f"部分 MCP 服务不可用，执行将使用其余工具继续:\n{mcp_warning}")
         logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
 
         # 合并所有工具
@@ -66,9 +90,9 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
         llm_with_tools = llm.bind_tools(all_tools)
 
         # 创建工具节点（自动执行工具调用）
-        tool_node = ToolNode(all_tools)
+        tool_node = ToolNode(all_tools, handle_tool_errors=True)
 
-        # 构建消息（只包含当前步骤，避免原始任务干扰）
+        # 当前步骤可依赖前一步发现的服务、时间范围或查询参数。
         messages = [
             SystemMessage(
                 content="""你是一个能力强大的助手，负责执行具体的任务步骤。
@@ -82,19 +106,28 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 注意：
 - 如果工具调用失败，请说明失败原因
 - 不要编造数据，只返回实际获取的信息
+- 工具参数必须来自原始任务、服务目录或真实工具结果，不得填入示例 ID 或猜测值
 - 执行结果要清晰、准确
 - 专注于当前步骤，不要考虑其他任务"""
             ),
-            HumanMessage(content=f"请执行以下任务: {task}"),
         ]
+        if state.get("input"):
+            messages.append(HumanMessage(content=f"原始任务及服务映射（当前步骤必须遵守其范围和参数）:\n{state['input']}"))
+        history = "\n\n".join(
+            f"步骤: {step}\n结果: {result}" for step, result in state.get("past_steps", [])
+        )
+        if history:
+            messages.append(HumanMessage(content=f"已执行步骤的真实结果（供当前步骤参考）:\n{history}"))
+        messages.append(HumanMessage(content=f"请执行以下任务: {task}"))
 
-        # 第一步：LLM 决定是否调用工具
+        # 持续执行模型请求的工具，直到生成答案或达到有界调用限制。
         llm_response = await llm_with_tools.ainvoke(messages)
         logger.info(f"LLM 响应类型: {type(llm_response)}")
-
-        # 第二步：如果有工具调用，执行工具
-        tool_evidence: list[dict[str, Any]] = []
-        if hasattr(llm_response, "tool_calls") and llm_response.tool_calls:
+        tool_rounds = 0
+        while getattr(llm_response, "tool_calls", None):
+            if tool_rounds >= MAX_TOOL_ROUNDS:
+                raise RuntimeError(f"工具调用达到最大轮数 {MAX_TOOL_ROUNDS}，步骤未完成")
+            tool_rounds += 1
             logger.info(f"检测到 {len(llm_response.tool_calls)} 个工具调用")
 
             # 使用 ToolNode 自动执行工具
@@ -108,27 +141,30 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                 tool_name = str(
                     getattr(tool_message, "name", "") or call.get("name", "unknown_tool")
                 )
+                content = getattr(tool_message, "content", str(tool_message))
+                failed = getattr(tool_message, "status", "success") == "error"
+                failed = failed or _tool_result_failed(content)
+                if failed:
+                    execution_errors.append(f"{task}: 工具 {tool_name} 执行失败")
                 tool_evidence.append(
                     {
                         "evidence_type": classify_tool_evidence(tool_name),
                         "source": tool_name,
                         "query": call.get("args", {}),
-                        "result": getattr(tool_message, "content", str(tool_message)),
+                        "result": content,
+                        "success": not failed,
                     }
                 )
 
             # 第三步：将工具结果返回给 LLM 生成最终答案
             messages.extend(tool_messages["messages"])
-            final_response = await llm_with_tools.ainvoke(messages)
-            result = (
-                final_response.content
-                if hasattr(final_response, "content")
-                else str(final_response)
-            )
-        else:
-            # 没有工具调用，直接使用 LLM 的输出
-            logger.info("LLM 未调用工具，直接返回结果")
-            result = llm_response.content if hasattr(llm_response, "content") else str(llm_response)
+            llm_response = await llm_with_tools.ainvoke(messages)
+        content = getattr(llm_response, "content", str(llm_response))
+        result = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        if not result.strip():
+            raise RuntimeError("模型未返回步骤执行结果")
+        if execution_errors:
+            result += "\n\n执行失败记录:\n" + "\n".join(execution_errors)
 
         logger.info(f"步骤执行完成，结果长度: {len(result)}")
 
@@ -137,6 +173,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             "plan": plan[1:],  # 移除第一个步骤
             "past_steps": [(task, result)],  # 使用 operator.add 追加
             "evidence": tool_evidence,
+            "execution_errors": execution_errors,
         }
 
     except Exception as e:
@@ -144,4 +181,6 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
         return {
             "plan": plan[1:],
             "past_steps": [(task, f"执行失败: {str(e)}")],
+            "evidence": tool_evidence,
+            "execution_errors": [*execution_errors, f"{task}: {str(e)}"],
         }

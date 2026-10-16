@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from celery import Task
 from loguru import logger
 
 from app.celery_app import celery_app
 from app.config import config
-from app.repositories.diagnosis import diagnosis_repository
+from app.repositories.diagnosis import DiagnosisLeaseLostError, diagnosis_repository
 from app.services.diagnosis_runner import (
     DiagnosisBusyError,
     DiagnosisNotFoundError,
@@ -65,8 +66,13 @@ def run_diagnosis(self: Task, diagnosis_id: str) -> str:
     """Execute one idempotent diagnosis; PostgreSQL remains the source of truth."""
     task_id = str(self.request.id or diagnosis_id)
     worker_name = str(self.request.hostname or "celery-worker")
+    execution_token = uuid4().hex
     try:
-        return _run_async(_runner.run(diagnosis_id, task_id, worker_name))
+        return _run_async(_runner.run(
+            diagnosis_id, task_id, worker_name, execution_token=execution_token
+        ))
+    except DiagnosisLeaseLostError:
+        return "lease_lost"
     except DiagnosisNotFoundError:
         logger.error("Discarding task for missing diagnosis: {}", diagnosis_id)
         return "missing"
@@ -77,7 +83,12 @@ def run_diagnosis(self: Task, diagnosis_id: str) -> str:
         retries = int(self.request.retries or 0)
         if retries >= config.celery_task_max_retries:
             error = str(exc)
-            _run_async(diagnosis_repository.mark_dead_lettered(diagnosis_id, error))
+            try:
+                _run_async(diagnosis_repository.mark_dead_lettered(
+                    diagnosis_id, error, execution_token=execution_token
+                ))
+            except DiagnosisLeaseLostError:
+                return "lease_lost"
             try:
                 publish_dead_letter(diagnosis_id, error, retries)
             except Exception:
@@ -86,6 +97,11 @@ def run_diagnosis(self: Task, diagnosis_id: str) -> str:
                     diagnosis_id,
                 )
             raise
-        _run_async(diagnosis_repository.prepare_retry(diagnosis_id, str(exc)))
+        try:
+            _run_async(diagnosis_repository.prepare_retry(
+                diagnosis_id, str(exc), execution_token=execution_token
+            ))
+        except DiagnosisLeaseLostError:
+            return "lease_lost"
         countdown = min(300, 10 * (2**retries))
         raise self.retry(exc=exc, countdown=countdown) from exc

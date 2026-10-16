@@ -8,13 +8,17 @@ WORKDIR /app
 
 RUN useradd --create-home --uid 10001 oncall \
     && pip install --no-cache-dir uv \
-    && chown oncall:oncall /app
+    && mkdir -p /app/logs \
+    && chown oncall:oncall /app /app/logs
 
 USER oncall
 COPY --chown=oncall:oncall pyproject.toml uv.lock README.md /app/
 RUN uv sync --frozen --no-dev --no-install-project
 
+ENV PYTHONPATH=/app
+
 COPY --chown=oncall:oncall . /app
-RUN uv sync --frozen --no-dev
+# Runtime dependencies were synchronized above. Source modules are imported from
+# /app, so copying source must not trigger a second isolated package build.
 
 CMD ["uv", "run", "--no-sync", "celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=INFO", "--pool=solo"]

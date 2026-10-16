@@ -12,6 +12,10 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.config import config
+from app.core.checkpoint_fencing import (
+    FencedCheckpointSaver,
+    diagnosis_checkpoint_scope as diagnosis_checkpoint_scope,
+)
 
 
 class CheckpointManager:
@@ -31,7 +35,7 @@ class CheckpointManager:
                 return self._checkpointer
 
             if not config.langgraph_checkpoint_enabled:
-                self._checkpointer = MemorySaver()
+                self._checkpointer = FencedCheckpointSaver(MemorySaver())
                 logger.warning("LangGraph durable checkpoints are disabled")
                 return self._checkpointer
 
@@ -55,9 +59,9 @@ class CheckpointManager:
                 raise
 
             self._pool = pool
-            self._checkpointer = checkpointer
+            self._checkpointer = FencedCheckpointSaver(checkpointer)
             logger.info("LangGraph PostgreSQL checkpoints are ready")
-            return checkpointer
+            return self._checkpointer
 
     async def close(self) -> None:
         async with self._lock:

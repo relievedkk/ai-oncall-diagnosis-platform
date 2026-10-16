@@ -36,12 +36,32 @@ def format_exception_chain(exc: BaseException) -> str:
 async def load_mcp_tools_safe(
     client: MultiServerMCPClient,
 ) -> tuple[list[BaseTool | Any], str | None]:
-    """加载 MCP 工具；失败时返回空列表与可读错误信息，不向上抛出。"""
-    try:
-        tools = await client.get_tools()
-        return tools, None
-    except BaseException as e:
-        return [], format_exception_chain(e)
+    """逐个加载 MCP 服务；单个服务失败时保留其他服务的工具。"""
+    connections = getattr(client, "connections", None)
+    if not connections:
+        try:
+            tools = await client.get_tools()
+            return tools, None
+        except BaseException as e:
+            return [], format_exception_chain(e)
+
+    server_names = list(connections)
+    results = await asyncio.gather(
+        *(client.get_tools(server_name=name) for name in server_names),
+        return_exceptions=True,
+    )
+
+    tools: list[BaseTool | Any] = []
+    errors: list[str] = []
+    for server_name, result in zip(server_names, results, strict=True):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, BaseException):
+            errors.append(f"[{server_name}] {format_exception_chain(result)}")
+        else:
+            tools.extend(result)
+
+    return tools, "\n".join(errors) or None
 
 
 async def retry_interceptor(

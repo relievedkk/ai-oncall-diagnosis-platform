@@ -121,6 +121,31 @@ async def test_operational_metrics_track_dead_letters() -> None:
     assert metrics["job_counts"] == {"dead_lettered": 1}
 
 
+async def test_worker_failure_remains_observable_after_job_is_requeued(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.metrics import DIAGNOSIS_RECENT_FAILURES
+    from app.repositories import diagnosis
+
+    now = datetime(2026, 10, 15, tzinfo=UTC)
+    monkeypatch.setattr(diagnosis, "utc_now", lambda: now)
+    repository = InMemoryDiagnosisRepository()
+    await repository.create_or_get_job({"diagnosis_id": "failed-attempt", "event_key": "failed-attempt", "status": "queued"})
+    await repository.record_event("failed-attempt", {"type": "error", "stage": "executor", "message": "upstream failed"})
+    await repository.prepare_retry("failed-attempt", "retrying")
+    observer = QueueObserver(repository)
+
+    async def queues():
+        return {}
+
+    monkeypatch.setattr(observer, "rabbitmq_queues", queues)
+    await observer.collect_once()
+    assert DIAGNOSIS_RECENT_FAILURES._value.get() == 1
+    now += timedelta(minutes=11)
+    await observer.collect_once()
+    assert DIAGNOSIS_RECENT_FAILURES._value.get() == 0
+
+
 async def test_readiness_requires_authenticated_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

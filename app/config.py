@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     remediation_execution_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
     remediation_verification_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
     remediation_worker_lease_seconds: int = Field(default=300, ge=30, le=7200)
+    remediation_evidence_max_age_seconds: int = Field(default=600, ge=1, le=3600)
+    remediation_evidence_clock_skew_seconds: int = Field(default=30, ge=0, le=60)
 
     # LangGraph durable checkpoints. The explicit URL uses psycopg syntax;
     # when empty it is derived from DATABASE_URL.
@@ -101,6 +103,8 @@ class Settings(BaseSettings):
     # Alertmanager / service catalog
     alertmanager_webhook_token: str = ""
     service_catalog_path: str = "config/service_catalog.json"
+    cls_log_spool_enabled: bool = False
+    log_service_name: str = "ai-oncall-agent"
 
     # Local end-to-end diagnostics only. Keep disabled outside an isolated test environment.
     fault_injection_enabled: bool = False

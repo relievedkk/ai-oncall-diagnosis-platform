@@ -105,6 +105,8 @@ class RemediationGateway:
         try:
             async with asyncio.timeout(self.execution_timeout_seconds):
                 prepared = await self.adapter.prepare(intent)
+                if not isinstance(prepared, PreparedAction) or prepared.intent != intent:
+                    raise ValueError("prepared action does not match the authorized intent")
         except Exception as exc:
             yield GatewayEvent(
                 status=ActionStatus.FAILED,
@@ -131,6 +133,7 @@ class RemediationGateway:
                     status=ActionStatus.FAILED,
                     prepared_action=prepared,
                     error="execution outcome remains unknown",
+                    requires_manual_review=True,
                 )
                 return
             execution = ExecutionResult(
@@ -166,13 +169,27 @@ class RemediationGateway:
                 prepared_action=prepared,
                 result=execution,
                 error="execution outcome remains unknown",
+                requires_manual_review=True,
+            )
+            return
+
+        if not execution.success:
+            yield GatewayEvent(
+                status=ActionStatus.FAILED,
+                prepared_action=prepared,
+                result=execution,
+                error="adapter reported execution failure",
             )
             return
 
         async for event in self._verification_events(prepared, execution, observation):
             yield event
 
-    async def reconcile(self, prepared: PreparedAction) -> AsyncIterator[GatewayEvent]:
+    async def reconcile(
+        self,
+        prepared: PreparedAction,
+        execution: ExecutionResult | None = None,
+    ) -> AsyncIterator[GatewayEvent]:
         """Observe an uncertain prior attempt without executing it a second time."""
         observation = await self._observe(prepared)
         if observation is None or observation.get("known") is not True:
@@ -180,12 +197,21 @@ class RemediationGateway:
                 status=ActionStatus.FAILED,
                 prepared_action=prepared,
                 error="execution outcome remains unknown",
+                requires_manual_review=True,
             )
             return
-        execution = ExecutionResult(
+        execution = execution or ExecutionResult(
             success=observation.get("success") is True,
             details={"reconciled": True, "observation": observation},
         )
+        if not execution.success:
+            yield GatewayEvent(
+                status=ActionStatus.FAILED,
+                prepared_action=prepared,
+                result=execution,
+                error="adapter reported execution failure",
+            )
+            return
         async for event in self._verification_events(prepared, execution, observation):
             yield event
 
@@ -266,10 +292,7 @@ def _verify(
 
     spec = prepared.verification_spec
     if spec.get("dry_run") is True:
-        success = (
-            observation.get("dry_run") is True
-            and observation.get("success") is True
-        )
+        success = observation.get("dry_run") is True and observation.get("success") is True
     elif spec.get("kind") == "restart_instance":
         success = (
             observation.get("replacement_observed") is True

@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 setlocal enabledelayedexpansion
 set MONITORING_PROJECT=oncallagent-monitoring
 set PYTHONUTF8=1
@@ -33,7 +34,12 @@ if not exist .env (
     )
 )
 
-python -m app.local_env --env-file .env
+REM Run the stdlib-only bootstrap without importing app/__init__.py.
+if exist .venv\Scripts\python.exe (
+    .venv\Scripts\python.exe app\local_env.py --env-file .env
+) else (
+    python app\local_env.py --env-file .env
+)
 if errorlevel 1 (
     echo [ERROR] Failed to generate secure local API credentials.
     exit /b 1
@@ -45,6 +51,7 @@ set APP_AUTH_ENABLED=
 set ALERT_WEBHOOK_TOKEN=
 set CLS_SECRET_ID=
 set CLS_SECRET_KEY=
+set CLS_UPLOAD_ENABLED=false
 for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
     if "%%a"=="DASHSCOPE_API_KEY" set DASH_SCOPE_KEY=%%b
     if "%%a"=="API_KEY" set APP_API_KEY=%%b
@@ -52,6 +59,7 @@ for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
     if "%%a"=="ALERTMANAGER_WEBHOOK_TOKEN" set ALERT_WEBHOOK_TOKEN=%%b
     if "%%a"=="TENCENTCLOUD_SECRET_ID" set CLS_SECRET_ID=%%b
     if "%%a"=="TENCENTCLOUD_SECRET_KEY" set CLS_SECRET_KEY=%%b
+    if "%%a"=="CLS_UPLOAD_ENABLED" set CLS_UPLOAD_ENABLED=%%b
 )
 if "!DASH_SCOPE_KEY!"=="" (
     echo [ERROR] DASHSCOPE_API_KEY is empty. Edit .env before starting.
@@ -109,7 +117,7 @@ if exist .venv\Scripts\python.exe (
 
     REM If uv is available, use uv sync
     if "%USE_UV%"=="1" (
-        uv sync 2>nul
+        call uv sync 2>nul
         if errorlevel 1 (
             echo [WARN] uv sync failed, retrying with pip...
             .venv\Scripts\python.exe -m pip install -e . -q
@@ -126,7 +134,7 @@ if exist .venv\Scripts\python.exe (
     REM If uv is available, use uv sync
     if "%USE_UV%"=="1" (
         echo [INFO] Trying uv sync to create venv...
-        uv sync 2>nul
+        call uv sync 2>nul
         if not errorlevel 1 (
             echo [OK] Venv created with uv
             goto :venv_created
@@ -163,68 +171,70 @@ echo.
 REM Set Python command
 set PYTHON_CMD=.venv\Scripts\python.exe
 
+REM Resolve the CLS MCP endpoint before Docker workers are created.
+REM Host processes use 127.0.0.1; containers use host.docker.internal.
+set MCP_CLS_MODE=mock
+set MCP_CLS_URL=http://127.0.0.1:8003/mcp
+set MCP_CLS_DOCKER_URL=http://host.docker.internal:8003/mcp
+where npx >nul 2>&1
+if not errorlevel 1 (
+    if not "!CLS_SECRET_ID!"=="" (
+        if not "!CLS_SECRET_KEY!"=="" (
+            set MCP_CLS_MODE=official
+            set MCP_CLS_URL=http://127.0.0.1:3000/mcp
+            set MCP_CLS_DOCKER_URL=http://host.docker.internal:3000/mcp
+        )
+    )
+)
+
 REM Start Docker Compose (PostgreSQL + RabbitMQ + Milvus + diagnosis workers)
 echo [4/9] Starting databases, RabbitMQ and diagnosis workers...
-docker compose -f vector-database.yml up -d --build --remove-orphans
+call docker compose -f vector-database.yml up -d --build --remove-orphans
 if errorlevel 1 (
     echo [ERROR] Docker startup failed, make sure Docker Desktop is running
     pause
     exit /b 1
 )
 echo [INFO] Waiting for infrastructure and workers to be ready ^(10s^)...
-timeout /t 10 /nobreak >nul
-echo [OK] PostgreSQL, RabbitMQ, Milvus and diagnosis workers ready
+call powershell -NoProfile -Command "Start-Sleep -Seconds 10"
+echo [INFO] Infrastructure containers launched; Worker readiness requires separate verification.
 echo.
 
 REM Start Prometheus stack
 echo [5/9] Starting Prometheus stack...
-docker compose -p !MONITORING_PROJECT! -f monitoring.yml up -d --build
+call docker compose -p !MONITORING_PROJECT! -f monitoring.yml up -d --build
 if errorlevel 1 (
     echo [ERROR] Monitoring stack startup failed, make sure Docker Desktop is running
     pause
     exit /b 1
 )
 echo [INFO] Waiting for Prometheus and Alertmanager to be ready ^(10s^)...
-timeout /t 10 /nobreak >nul
-echo [OK] Monitoring stack ready ^(Prometheus: http://localhost:9090, Alertmanager: http://localhost:9093^)
+call powershell -NoProfile -Command "Start-Sleep -Seconds 10"
+echo [INFO] Monitoring containers launched ^(Prometheus: http://localhost:9090, Alertmanager: http://localhost:9093^)
 echo.
 
 REM Start CLS MCP service
 echo [6/9] Starting CLS MCP service...
-REM Check Node.js and start official CLS MCP Server (or fallback to local mock)
-where npx >nul 2>&1
-if errorlevel 1 (
-    echo [WARNING] Node.js/npx not found, falling back to local mock CLS on port 8003
-    set MCP_CLS_TRANSPORT=streamable-http
-    set MCP_CLS_URL=http://127.0.0.1:8003/mcp
-    netstat -ano | findstr /R /C:":8003 .*LISTENING" >nul 2>&1
-    if not errorlevel 1 (
-        echo [INFO] Local CLS mock is already running on port 8003
-    ) else (
-        start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
-        timeout /t 2 /nobreak >nul
-    )
-) else if "!CLS_SECRET_ID!"=="" (
-    echo [WARNING] TENCENTCLOUD_SECRET_ID not in .env, falling back to local mock CLS on port 8003
-    set MCP_CLS_TRANSPORT=streamable-http
-    set MCP_CLS_URL=http://127.0.0.1:8003/mcp
-    netstat -ano | findstr /R /C:":8003 .*LISTENING" >nul 2>&1
-    if not errorlevel 1 (
-        echo [INFO] Local CLS mock is already running on port 8003
-    ) else (
-        start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
-        timeout /t 2 /nobreak >nul
-    )
-) else (
-    set MCP_CLS_TRANSPORT=streamable-http
-    set MCP_CLS_URL=http://127.0.0.1:3000/mcp
+if /I "!MCP_CLS_MODE!"=="official" (
     netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
     if not errorlevel 1 (
         echo [INFO] Official CLS MCP Server is already running on port 3000
     ) else (
-        start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!&&set TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@latest"
+        REM Credentials are inherited through the environment, never command arguments.
+        set "TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!"
+        set "TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!"
+        start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@1.2.1"
         echo [INFO] Waiting for official CLS MCP Server ^(first run downloads package, ~15-20s^)...
-        timeout /t 15 /nobreak >nul
+        call powershell -NoProfile -Command "Start-Sleep -Seconds 15"
+    )
+) else (
+    echo [WARNING] Official CLS MCP prerequisites unavailable, falling back to local mock CLS on port 8003
+    netstat -ano | findstr /R /C:":8003 .*LISTENING" >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Local CLS mock is already running on port 8003
+    ) else (
+        start "CLS MCP Server" /min %PYTHON_CMD% mcp_servers/cls_server.py
+        call powershell -NoProfile -Command "Start-Sleep -Seconds 2"
     )
 )
 echo [OK] CLS MCP service started
@@ -237,7 +247,7 @@ if not errorlevel 1 (
     echo [INFO] Monitor MCP service is already running on port 8004
 ) else (
     start "Monitor MCP Server" /min %PYTHON_CMD% mcp_servers/monitor_server.py
-    timeout /t 2 /nobreak >nul
+    call powershell -NoProfile -Command "Start-Sleep -Seconds 2"
 )
 echo [OK] Monitor MCP service started
 echo.
@@ -249,17 +259,32 @@ if not errorlevel 1 (
     echo [INFO] FastAPI service is already running on port 9900
 ) else (
     start "AI OnCall API" /min %PYTHON_CMD% -m app.server
-    echo [INFO] Waiting for service to start (15s)...
-    timeout /t 15 /nobreak >nul
+    echo [INFO] Waiting for service to start ^(15s^)...
+    call powershell -NoProfile -Command "Start-Sleep -Seconds 15"
 )
 echo.
+
+if /I "!CLS_UPLOAD_ENABLED!"=="true" (
+    if "%USE_UV%"=="1" (
+        call uv sync --project tools/cls-uploader --python 3.11
+        if errorlevel 1 (
+            echo [WARNING] Isolated CLS upload runtime could not be prepared.
+        ) else (
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-cls-uploader.ps1
+        )
+    ) else (
+        echo [WARNING] CLS uploader requires uv to prepare its isolated runtime.
+    )
+)
 
 REM Check service status and upload documents
 echo.
 echo [INFO] Checking service status...
-curl -s http://localhost:9900/health -H "X-API-Key: !APP_API_KEY!" >nul 2>&1
+call :wait_for_api
 if errorlevel 1 (
-    echo [ERROR] Service may not be fully started, please wait a moment
+    echo [ERROR] FastAPI health check failed after bounded retries. Startup is incomplete.
+    echo [INFO] Already launched services are left running for diagnosis; inspect logs.
+    exit /b 1
 ) else (
     echo [OK] FastAPI service is running
     echo.
@@ -268,14 +293,19 @@ if errorlevel 1 (
     echo [9/9] Uploading documents to vector database...
     for %%f in (aiops-docs\*.md) do (
         echo   Uploading: %%~nxf
-        curl -s -X POST http://localhost:9900/api/upload -H "X-API-Key: !APP_API_KEY!" -F "file=@%%f" >nul 2>&1
+        call curl -fsS --max-time 60 -X POST http://localhost:9900/api/upload -H "X-API-Key: !APP_API_KEY!" -F "file=@%%f" >nul 2>&1
+        if errorlevel 1 (
+            echo [ERROR] Document upload failed: %%~nxf
+            exit /b 1
+        )
     )
     echo [OK] Document upload complete
 )
 
 echo.
 echo ====================================
-echo  All services started!
+echo  Startup completed; FastAPI health check passed.
+echo  CLS upload and per-service readiness require separate verification.
 echo ====================================
 echo Web UI:   http://localhost:9900
 echo API docs: disabled by default ^(set EXPOSE_API_DOCS=true only for local debugging^)
@@ -288,3 +318,13 @@ echo   - Monitor: type mcp_monitor.log
 echo Stop services: stop-windows.bat
 echo ====================================
 pause
+exit /b 0
+
+:wait_for_api
+for /l %%A in (1,1,12) do (
+    call curl -fsS --max-time 5 http://localhost:9900/health -H "X-API-Key: !APP_API_KEY!" >nul 2>&1
+    if not errorlevel 1 exit /b 0
+    REM timeout.exe does not wait when stdin is redirected by automation.
+    if %%A LSS 12 call powershell -NoProfile -Command "Start-Sleep -Seconds 5"
+)
+exit /b 1

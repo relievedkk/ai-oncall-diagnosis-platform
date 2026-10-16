@@ -101,6 +101,7 @@ class DiagnosisJob(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    execution_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worker_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -74,24 +74,16 @@ def second_restart_intent():
     )
 
 
-def evidence():
+def evidence(*, now=NOW, instance="orders-1"):
+    collected = (now - timedelta(seconds=30)).isoformat()
     return [
-        {
-            "evidence_type": "alert",
-            "source": "alertmanager",
-            "success": True,
-            "collected_at": "2026-10-13T11:59:00+00:00",
-            "payload": {"raw": "A" * 10_000},
-            "summary": "Instance health alert is firing.",
-        },
-        {
-            "evidence_type": "metric",
-            "source": "prometheus",
-            "success": True,
-            "collected_at": "2026-10-13T11:59:30+00:00",
-            "payload": {"availability": 0.5, "raw": "M" * 10_000},
-            "summary": "Availability is below the service guard.",
-        },
+        {"evidence_type": "alert", "source": "alertmanager", "success": True,
+         "collected_at": collected, "summary": "Instance health alert is firing.", "payload": {"success": True, "raw": "A" * 10000,
+         "alerts": [{"state": "firing", "labels": {"service": "orders", "instance": instance}}]}},
+        {"evidence_type": "metric", "source": "prometheus", "success": True,
+         "collected_at": collected, "summary": "Availability is below the guard.", "payload": {"success": True, "raw": "M" * 10000,
+         "service_name": "orders", "instance_id": instance,
+         "data_points": [{"timestamp": collected, "value": 0.5}]}},
     ]
 
 
@@ -111,7 +103,8 @@ async def test_dry_run_proposal_is_enqueued_with_bounded_evidence_snapshot(tmp_p
             "success",
             "collected_at",
             "sha256",
-            "summary",
+            "summary", "validation_reason", "validated_at", "valid_until",
+            "target_service", "target_instance",
         }
         assert len(item["sha256"]) == 64
         assert len(item["summary"]) <= 256
@@ -127,7 +120,7 @@ async def test_assisted_proposal_waits_for_approval_without_outbox(tmp_path):
     action = await service.propose("diagnosis-1", restart_intent(), evidence())
 
     assert action["status"] == "awaiting_approval"
-    assert action["approval_expires_at"] == NOW + timedelta(seconds=900)
+    assert action["approval_expires_at"] == NOW + timedelta(seconds=570)
     assert repository.outbox_events == []
 
 
@@ -192,7 +185,7 @@ async def test_expired_or_duplicate_decision_is_rejected(tmp_path):
             "operator-1",
             NOW + timedelta(minutes=16),
         )
-    with pytest.raises(RemediationConflict):
+    with pytest.raises(RemediationExpired):
         await service.decide(action["id"], "reject", "operator-1", NOW)
 
 
@@ -225,9 +218,9 @@ async def test_proposal_checks_and_create_run_inside_repository_guard(tmp_path):
             assert self.in_guard
             return await super().count_active(target_service)
 
-        async def create(self, values, enqueue):
+        async def create(self, values, enqueue, **kwargs):
             assert self.in_guard
-            return await super().create(values, enqueue)
+            return await super().create(values, enqueue, **kwargs)
 
     repository = GuardedRepository()
     service = RemediationService(
@@ -247,7 +240,7 @@ async def test_expired_approval_is_swept_before_capacity_check(tmp_path):
     expired = await service.propose("diagnosis-old", restart_intent(), evidence())
     service._now = lambda: NOW + timedelta(minutes=16)
 
-    current = await service.propose("diagnosis-new", second_restart_intent(), evidence())
+    current = await service.propose("diagnosis-new", second_restart_intent(), evidence(now=service._now(), instance="orders-2"))
 
     assert (await repository.get(expired["id"]))["status"] == "expired"
     assert current["status"] == "awaiting_approval"
@@ -265,7 +258,7 @@ async def test_rollback_failure_opens_circuit_and_blocks_new_proposals(tmp_path)
     )
     service._now = lambda: NOW + timedelta(hours=1)
 
-    blocked = await service.propose("diagnosis-after-circuit", second_restart_intent(), evidence())
+    blocked = await service.propose("diagnosis-after-circuit", second_restart_intent(), evidence(now=service._now(), instance="orders-2"))
 
     assert await repository.is_circuit_open("orders") is True
     assert blocked["status"] == "denied"

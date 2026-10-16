@@ -1,0 +1,99 @@
+........................................................................ [ 14%]
+........................................................................ [ 28%]
+........................................................................ [ 43%]
+........................................................................ [ 57%]
+........................................................................ [ 71%]
+........................................................................ [ 86%]
+.....................................................................    [100%]
+=============================== tests coverage ================================
+______________ coverage: platform win32, python 3.13.15-final-0 _______________
+
+Name                                        Stmts   Miss   Cover   Missing
+--------------------------------------------------------------------------
+app\__init__.py                                11      0 100.00%
+app\agent\__init__.py                           0      0 100.00%
+app\agent\aiops\__init__.py                     5      0 100.00%
+app\agent\aiops\executor.py                    97      5  94.85%   36, 65-66, 82, 165
+app\agent\aiops\planner.py                     52     13  75.00%   87-88, 91-92, 102, 113, 144-154
+app\agent\aiops\replanner.py                  155     63  59.35%   130, 144, 181-183, 223-335, 371-372, 383, 407, 414
+app\agent\aiops\state.py                       13      0 100.00%
+app\agent\aiops\utils.py                        6      0 100.00%
+app\agent\mcp_client.py                        86     51  40.70%   25-28, 32, 42-46, 58, 92-119, 150-163, 186-190, 210-216, 221-232
+app\api\__init__.py                             1      0 100.00%
+app\api\aiops.py                               22     22   0.00%   5-150
+app\api\alerts.py                              32     32   0.00%   3-60
+app\api\auth.py                                42      8  80.95%   44, 51-52, 67-70, 83
+app\api\chat.py                                68     31  54.41%   26-27, 96-172, 195-197, 217-219
+app\api\debug.py                               13     13   0.00%   3-20
+app\api\file.py                               128     39  69.53%   42, 45, 53, 80, 89, 103, 118, 133-135, 164-169, 180-182, 198, 217, 228, 231-248, 252-253
+app\api\health.py                              43      7  83.72%   21, 32-34, 49-50, 83
+app\api\metrics.py                             12     12   0.00%   3-23
+app\api\remediation.py                         54      5  90.74%   40, 51, 56, 100-101
+app\celery_app.py                               6      0 100.00%
+app\config.py                                 117      8  93.16%   152, 157, 162, 167, 172, 177-179
+app\core\__init__.py                            0      0 100.00%
+app\core\auth.py                               82     28  65.85%   41-47, 55, 58, 71, 101, 108-119, 134, 136-142, 146
+app\core\checkpoint.py                         46     16  65.22%   31, 35, 42-64, 72-73
+app\core\checkpoint_fencing.py                 82     11  86.59%   41, 50, 56, 59-60, 99, 106-107, 111, 114-115
+app\core\evidence.py                          107      9  91.59%   44, 74, 87, 89, 102-103, 110, 129, 137
+app\core\llm_factory.py                        11      0 100.00%
+app\core\metrics.py                            45      3  93.33%   106-107, 119
+app\core\milvus_client.py                     147    113  23.13%   39-53, 82-148, 153-154, 159-197, 201-215, 219-246, 258-260, 271, 275, 280-282, 286-307, 311-312, 318
+app\core\remediation_evidence.py               45      7  84.44%   23, 35, 38, 42, 44, 50, 53
+app\core\security.py                           99     13  86.87%   47, 61, 66-68, 78, 110, 116, 118, 125, 129, 137, 154
+app\db\__init__.py                              3      0 100.00%
+app\db\models.py                              141      0 100.00%
+app\db\session.py                              43     24  44.19%   29-53, 57-59, 62-68, 71
+app\evaluation\__init__.py                      2      0 100.00%
+app\evaluation\cli.py                          21     21   0.00%   3-28
+app\evaluation\diagnosis.py                    58      1  98.28%   27
+app\harness\__init__.py                         2      0 100.00%
+app\harness\contracts.py                       86      0 100.00%
+app\harness\gateway.py                        121     17  85.95%   143-149, 152-158, 208-214, 249-256, 277-278, 287, 297, 302-303, 311
+app\harness\policy.py                         108      8  92.59%   68-69, 73, 89, 93-94, 96, 117
+app\local_env.py                               57      9  84.21%   22, 46, 81-88
+app\main.py                                    84     84   0.00%   6-155
+app\models\__init__.py                          0      0 100.00%
+app\models\aiops.py                            17     17   0.00%   5-50
+app\models\alerts.py                           36      3  91.67%   29, 34, 52
+app\models\auth.py                             16      0 100.00%
+app\models\document.py                          9      9   0.00%   3-18
+app\models\remediation.py                      40      0 100.00%
+app\models\request.py                           9      0 100.00%
+app\models\response.py                         17      0 100.00%
+app\remediation_celery_app.py                   8      0 100.00%
+app\repositories\__init__.py                    2      0 100.00%
+app\repositories\diagnosis.py                 583    158  72.90%   66, 146, 151, 203, 223-235, 244, 246, 251, 274, 312, 316, 328, 336, 423, 427-429, 436, 442-452, 455, 465, 467, 481-484, 506-508, 580-586, 602, 657, 668-678, 687, 689, 694, 770, 803, 806-836, 838-867, 869-875, 895, 918, 928, 938-948, 951-964, 967-968, 985-1016, 1019-1021, 1035-1046, 1052-1066, 1069-1094, 1116, 1129, 1135-1136
+app\repositories\remediation.py               340     50  85.29%   133, 177, 181, 202, 218, 226, 327, 354-362, 370-377, 402, 408, 423-432, 443, 463, 495-503, 515-520, 523-548
+app\server.py                                  13     13   0.00%   3-32
+app\services\__init__.py                        0      0 100.00%
+app\services\aiops_service.py                 151     21  86.09%   42, 50, 82-89, 120, 170, 179, 204, 217, 219-220, 328, 342, 362, 367, 399, 403
+app\services\alert_diagnosis_service.py       123     17  86.18%   25, 29-30, 32, 86-91, 99, 105, 137, 183-189, 216, 219-223
+app\services\auth_service.py                   95     52  45.26%   58, 62-79, 82-136, 141-157, 167-168, 175-181
+app\services\diagnosis_runner.py              125     13  89.60%   79, 81, 83, 140-141, 156-171, 197, 221, 244-245
+app\services\document_splitter_service.py     106     75  29.25%   78, 94-120, 134-135, 152-154, 171-201, 218-247, 260-280
+app\services\health_inspection.py              89      9  89.89%   33, 39, 51, 91, 116-117, 122-123, 139
+app\services\queue_observer.py                 96     24  75.00%   65, 133-142, 159-162, 165-171, 174-180
+app\services\rag_agent_service.py             219    117  46.58%   79, 93, 105-107, 160-161, 165-184, 231-234, 238-274, 355-396, 429-474, 486-535, 547-557, 561-566
+app\services\remediation_service.py           233     20  91.42%   211, 218, 230, 265, 283, 291-292, 324, 346, 348-350, 355-356, 395, 406, 431, 433, 454, 466
+app\services\service_catalog.py                55      7  87.27%   33-38, 91
+app\services\vector_embedding_service.py       37     23  37.84%   33, 53-71, 83-100
+app\services\vector_index_service.py           89     55  38.20%   17-25, 29, 33, 37, 41-43, 47, 77-131, 147
+app\services\vector_search_service.py          35     35   0.00%   3-104
+app\services\vector_store_manager.py           93     48  48.39%   36-70, 82-106, 118, 141, 147-148, 165-181, 190, 203-211
+app\tasks\__init__.py                           0      0 100.00%
+app\tasks\diagnosis.py                         55     36  34.55%   42, 53-55, 67-107
+app\tasks\remediation.py                       63     13  79.37%   61, 83, 102-104, 114-124
+app\tools\__init__.py                           6      0 100.00%
+app\tools\knowledge_tool.py                    38     30  21.05%   23-44, 57-84
+app\tools\query_metrics_alerts.py             108     90  16.67%   29-38, 43, 48-61, 69-81, 86-93, 101-154, 175-208
+app\tools\service_observability.py             73      6  91.78%   17, 32, 34, 84, 86, 114
+app\tools\time_tool.py                         13      7  46.15%   22-32
+app\utils\__init__.py                           2      0 100.00%
+app\utils\logger.py                            21      0 100.00%
+app\workers\__init__.py                         0      0 100.00%
+app\workers\outbox_publisher.py                43     17  60.47%   28-29, 32-35, 50-52, 57-66
+app\workers\queue_bootstrap.py                 11     11   0.00%   3-24
+--------------------------------------------------------------------------
+TOTAL                                        5422   1649  69.59%
+501 passed in 48.12s

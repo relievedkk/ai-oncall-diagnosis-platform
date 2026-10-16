@@ -112,7 +112,11 @@ async def decide_remediation(
     request: Request,
 ) -> RemediationActionResponse:
     principal = getattr(request.state, "principal", None)
-    if getattr(request.state, "auth_kind", None) != "session" or principal is None:
+    if (
+        getattr(request.state, "auth_kind", None) != "session"
+        or principal is None
+        or principal.role not in {"admin", "operator"}
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="A browser operator session is required",

@@ -14,6 +14,7 @@ from loguru import logger
 from app.config import config
 from app.core.metrics import (
     DIAGNOSIS_JOBS,
+    DIAGNOSIS_RECENT_FAILURES,
     OUTBOX_EVENTS,
     OUTBOX_OLDEST_PENDING_SECONDS,
     QUEUE_OBSERVER_UP,
@@ -76,6 +77,7 @@ class QueueObserver:
 
     async def collect_once(self) -> dict[str, Any]:
         database = await self.repository.get_operational_metrics()
+        DIAGNOSIS_RECENT_FAILURES.set(database.get("recent_failure_count", 0))
         for status in (
             "queued",
             "running",

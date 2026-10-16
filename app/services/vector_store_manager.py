@@ -1,5 +1,9 @@
 """向量存储管理器 - 封装 Milvus VectorStore 操作"""
 
+import json
+import uuid
+from threading import RLock
+
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
 from loguru import logger
@@ -14,6 +18,11 @@ COLLECTION_NAME = "biz"
 
 class VectorStoreManager:
     """向量存储管理器"""
+
+    # All manager instances in this worker share the same mutation/read lock.
+    # Milvus does not provide a transaction across insert + delete; other workers
+    # must coordinate externally if they can index the same source concurrently.
+    _operation_lock = RLock()
 
     def __init__(self):
         """初始化向量存储管理器"""
@@ -70,6 +79,8 @@ class VectorStoreManager:
         Returns:
             List[str]: 文档 ID 列表
         """
+        if not documents:
+            return []
         try:
             import time
             import uuid
@@ -94,6 +105,53 @@ class VectorStoreManager:
             logger.error(f"添加文档失败: {e}")
             raise
 
+    def replace_documents(self, file_path: str, documents: list[Document]) -> list[str]:
+        """Persist a complete version before retiring captured old primary keys.
+
+        Failed embedding or a partial insert removes only the new version's IDs.
+        Parsing happens in the caller before this operation. A flush failure also
+        leaves the old version intact. This is recoverable replacement, not a
+        distributed Milvus transaction; readers outside this manager can briefly
+        observe both versions during a successful replacement.
+        """
+        if not documents or any(not doc.page_content.strip() for doc in documents):
+            raise ValueError("Cannot replace an index with empty document content")
+        with self._operation_lock:
+            store = self._initialize_vector_store()
+            collection = milvus_manager.get_collection()
+            source_expr = f'metadata["_source"] == {json.dumps(file_path, ensure_ascii=False)}'
+            old_ids = [
+                row["id"]
+                for row in collection.query(
+                    expr=source_expr, output_fields=["id"], consistency_level="Strong"
+                )
+            ]
+            version = str(uuid.uuid4())
+            ids = [str(uuid.uuid4()) for _ in documents]
+            staged = [
+                Document(
+                    page_content=doc.page_content,
+                    metadata={**doc.metadata, "_source": file_path, "_index_version": version},
+                )
+                for doc in documents
+            ]
+            try:
+                inserted = store.add_documents(staged, ids=ids)
+                if set(inserted) != set(ids):
+                    raise RuntimeError("Vector store did not acknowledge every new document")
+                collection.flush()
+            except Exception:
+                try:
+                    collection.delete(f"id in {json.dumps(ids)}")
+                    collection.flush()
+                except Exception:
+                    logger.exception("Failed to clean staged index version {}", version)
+                raise
+            # Never delete by source here: that would also delete the new version.
+            if old_ids:
+                collection.delete(f"id in {json.dumps(old_ids)}")
+            return ids
+
     def delete_by_source(self, file_path: str) -> int:
         """
         删除指定文件的所有文档
@@ -110,7 +168,7 @@ class VectorStoreManager:
 
             # metadata 是 JSON 字段，使用 JSON 路径查询语法
             # _source 是文档的来源文件路径
-            expr = f'metadata["_source"] == "{file_path}"'
+            expr = f'metadata["_source"] == {json.dumps(file_path, ensure_ascii=False)}'
 
             result = collection.delete(expr)
             deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
@@ -143,8 +201,9 @@ class VectorStoreManager:
             List[Document]: 相关文档列表
         """
         try:
-            vector_store = self._initialize_vector_store()
-            docs = vector_store.similarity_search(query, k=k)
+            with self._operation_lock:
+                vector_store = self._initialize_vector_store()
+                docs = vector_store.similarity_search(query, k=k)
             logger.debug("相似度搜索完成: 查询长度={}, 结果数={}", len(query), len(docs))
             return docs
         except Exception as e:

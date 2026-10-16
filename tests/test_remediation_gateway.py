@@ -169,6 +169,7 @@ async def test_execution_timeout_missing_observation_fails_without_blind_retry()
 
     assert statuses(events) == ["executing", "reconciling", "failed"]
     assert events[-1].error == "execution outcome remains unknown"
+    assert events[-1].requires_manual_review is True
     assert adapter.execute_calls == 1
     assert adapter.observe_calls == 1
     assert adapter.rollback_calls == 0
@@ -182,6 +183,7 @@ async def test_successful_execution_with_missing_observation_reconciles_without_
 
     assert statuses(events) == ["executing", "reconciling", "failed"]
     assert events[-1].error == "execution outcome remains unknown"
+    assert events[-1].requires_manual_review is True
     assert adapter.execute_calls == 1
     assert adapter.observe_calls == 1
     assert adapter.rollback_calls == 0
@@ -198,3 +200,53 @@ async def test_reconcile_observes_prepared_action_without_reexecuting():
     assert statuses(events) == ["verifying", "succeeded"]
     assert adapter.execute_calls == 0
     assert adapter.observe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_unknown_observation_requires_manual_review_without_reexecution():
+    adapter = FakeAdapter(observation={"known": False})
+    prepared = await adapter.prepare(restart_intent())
+
+    events = [event async for event in RemediationGateway(adapter).reconcile(prepared)]
+
+    assert statuses(events) == ["failed"]
+    assert events[-1].requires_manual_review is True
+    assert events[-1].error == "execution outcome remains unknown"
+    assert adapter.execute_calls == adapter.rollback_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_timeout_confirmed_failed_execution_cannot_succeed_via_passing_guards():
+    class FailedOperationAdapter(FakeAdapter):
+        async def prepare(self, intent):
+            prepared = await super().prepare(intent)
+            return prepared.model_copy(update={"verification_spec": {"kind": "restart_instance"}})
+
+    adapter = FailedOperationAdapter(
+        execute_delay=0.05,
+        observation={
+            "known": True,
+            "success": False,
+            "replacement_observed": True,
+            "guards_passed": True,
+        },
+    )
+
+    events = await collect(RemediationGateway(adapter, execution_timeout_seconds=0.01))
+
+    assert statuses(events) == ["executing", "reconciling", "failed"]
+    assert events[-1].result.success is False
+    assert adapter.rollback_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_for_another_target_is_rejected_before_execution():
+    class WrongTargetAdapter(FakeAdapter):
+        async def prepare(self, intent):
+            return await super().prepare(intent.model_copy(update={"service_name": "payments"}))
+
+    adapter = WrongTargetAdapter()
+    events = await collect(RemediationGateway(adapter))
+
+    assert statuses(events) == ["failed"]
+    assert adapter.execute_calls == 0

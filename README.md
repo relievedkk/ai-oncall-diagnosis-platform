@@ -237,6 +237,10 @@ FAULT_INJECTION_ENABLED=false
 uv run alembic upgrade head
 ```
 
+更新本轮修复时，需先升级到 `20261015_0007`，再重启 API、Monitor MCP 和 Worker。该迁移为每次任务领取增加独立的 `execution_token`；证据、报告、重试和处置提案都验证执行所有权。Worker 重试仅恢复尚有待执行节点的检查点；已终止的失败工作流重新开始。异步诊断使用现有 Celery soft/hard 时间限制中较小的正值作为执行期限。
+
+聊天检查点按账户隔离，诊断检查点按 `diagnosis_id` 隔离。原有未命名空间的聊天记录保留在数据库中，升级后不会自动显示到新账户会话中。页面渲染依赖随应用静态资源发布，无需浏览器访问外部 CDN。
+
 ### 登录与 API 认证
 
 只有服务绑定到回环地址时，才允许临时关闭认证：
@@ -468,7 +472,7 @@ docker compose -f vector-database.yml ps remediation-worker
 docker compose -f vector-database.yml logs --tail=100 remediation-worker outbox-publisher rabbitmq
 ```
 
-`RemediationApprovalStale` 表示待审批记录超过默认 15 分钟，`RemediationQueueHasNoConsumer` 表示隔离队列无 Worker，`RemediationExecutionFailed` 或 `RemediationRollbackCircuitBreaker` 要求人工检查审计记录。当前所有执行/验证结果都应明确来自 Dry Run；如果配置了其他 adapter，应用应在启动时失败，而不是降级运行。
+`RemediationApprovalStale` 在待审批超过 10 分钟且持续 1 分钟时告警，早于默认 15 分钟过期窗口。`RemediationQueueHasNoConsumer` 表示隔离队列无 Worker，`RemediationExecutionFailed` 或 `RemediationRollbackCircuitBreaker` 要求人工检查审计记录。当前所有执行/验证结果都应明确来自 Dry Run；如果配置了其他 adapter，应用应在启动时失败，而不是降级运行。
 
 ### Prometheus 没有数据
 
@@ -500,3 +504,12 @@ taskkill /F /PID <PID>
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。
+
+
+### Remediation evidence and checkpoint ownership
+
+Remediation requires successful, non-demo observations attributed to the requested service. Restart evidence must also identify the exact instance; service aggregates alone cannot authorize an instance restart. Collection and observation timestamps must be fresh and timezone-aware. `REMEDIATION_EVIDENCE_MAX_AGE_SECONDS` defaults to 600 and `REMEDIATION_EVIDENCE_CLOCK_SKEW_SECONDS` to 30. Apply the same settings to the API and all workers.
+
+Approval expires at the earlier of its configured deadline and the frozen evidence deadline. Approval and initial execution claims recheck frozen evidence under the action lock. Legacy snapshots without validation metadata cannot authorize execution; obtain fresh evidence and submit a new proposal. Recovery of an already-started action remains available after evidence expires. Replica counts come only from validated target metrics; conflicting counts deny scaling.
+
+Diagnosis checkpoint writes require a live execution token and lock the diagnosis job in the same PostgreSQL transaction as the checkpoint mutation. The checkpoint database and business database must be the same actual PostgreSQL database and resolve the same `diagnosis_jobs` table. Different databases or shadow ownership tables fail closed. Chat checkpoints may still use a separate database. This protection adds no new schema migration.

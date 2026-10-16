@@ -15,11 +15,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import config
-from app.db.models import OutboxEvent, RemediationAction
+from app.core.remediation_evidence import frozen_evidence_authorizes
+from app.db.models import DiagnosisJob, OutboxEvent, RemediationAction
 from app.db.session import database_manager
+from app.repositories.diagnosis import DiagnosisLeaseLostError, _assert_execution_owner
 
 DecisionResult = Literal["approved", "rejected", "expired", "missing", "conflict"]
-ExecutionClaim = Literal["execute", "reconcile", "busy", "ignored"]
+ExecutionClaim = Literal["execute", "reconcile", "busy", "ignored", "failed"]
 REMEDIATION_TASK_NAME = "app.tasks.remediation.run_remediation"
 REMEDIATION_EVENT_TYPE = "remediation.execute"
 ACTIVE_STATUSES = {
@@ -32,6 +34,7 @@ ACTIVE_STATUSES = {
     "rolling_back",
 }
 EXECUTABLE_STATUSES = {"proposed", "approved"}
+RECOVERABLE_STATUSES = {"executing", "reconciling", "verifying", "rolling_back"}
 COMPLETED_STATUSES = {"succeeded", "rolled_back", "failed"}
 
 
@@ -43,17 +46,20 @@ class RemediationRepository(Protocol):
     def proposal_guard(self): ...
 
     async def create(
-        self, values: dict[str, Any], enqueue: bool
+        self, values: dict[str, Any], enqueue: bool, *, execution_token: str | None = None
     ) -> tuple[dict[str, Any], bool]: ...
 
     async def get(self, action_id: str) -> dict[str, Any] | None: ...
 
-    async def list(
-        self, status: str | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]: ...
+    async def list(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]: ...
 
     async def compare_and_set(
-        self, action_id: str, expected: set[str], **updates: Any
+        self,
+        action_id: str,
+        expected: set[str],
+        *,
+        expected_worker_name: str | None = None,
+        **updates: Any,
     ) -> bool: ...
 
     async def decide(
@@ -80,7 +86,8 @@ class RemediationRepository(Protocol):
 class InMemoryRemediationRepository:
     """Behavioral in-memory repository used by service and worker tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, diagnosis_repository=None) -> None:
+        self._diagnosis_repository = diagnosis_repository
         self._actions: dict[str, dict[str, Any]] = {}
         self._idempotency_index: dict[str, str] = {}
         self.outbox_events: list[dict[str, Any]] = []
@@ -93,9 +100,9 @@ class InMemoryRemediationRepository:
             yield
 
     async def create(
-        self, values: dict[str, Any], enqueue: bool
+        self, values: dict[str, Any], enqueue: bool, *, execution_token: str | None = None
     ) -> tuple[dict[str, Any], bool]:
-        async with self._lock:
+        async with self._lock, self._diagnosis_guard(values["diagnosis_id"], execution_token):
             idempotency_key = str(values["idempotency_key"])
             existing_id = self._idempotency_index.get(idempotency_key)
             if existing_id is not None:
@@ -112,13 +119,25 @@ class InMemoryRemediationRepository:
                 self.outbox_events.append(_outbox_values(action))
             return copy.deepcopy(action), True
 
+    @asynccontextmanager
+    async def _diagnosis_guard(self, diagnosis_id, execution_token):
+        if execution_token is None:
+            yield
+            return
+        if self._diagnosis_repository is None:
+            raise DiagnosisLeaseLostError("diagnosis ownership repository is required")
+        async with self._diagnosis_repository._lock:
+            job = self._diagnosis_repository._jobs.get(diagnosis_id)
+            _assert_execution_owner(job, execution_token)
+            if job.get("status") != "running":
+                raise DiagnosisLeaseLostError("diagnosis is no longer running")
+            yield
+
     async def get(self, action_id: str) -> dict[str, Any] | None:
         action = self._actions.get(action_id)
         return copy.deepcopy(action) if action is not None else None
 
-    async def list(
-        self, status: str | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def list(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         _validate_limit(limit)
         actions = self._actions.values()
         if status is not None:
@@ -131,11 +150,21 @@ class InMemoryRemediationRepository:
         return copy.deepcopy(ordered[:limit])
 
     async def compare_and_set(
-        self, action_id: str, expected: set[str], **updates: Any
+        self,
+        action_id: str,
+        expected: set[str],
+        *,
+        expected_worker_name: str | None = None,
+        **updates: Any,
     ) -> bool:
         async with self._lock:
             action = self._actions.get(action_id)
             if action is None or action.get("status") not in expected:
+                return False
+            if (
+                expected_worker_name is not None
+                and action.get("worker_name") != expected_worker_name
+            ):
                 return False
             action.update(copy.deepcopy(updates))
             action["updated_at"] = updates.get("updated_at", utc_now())
@@ -150,10 +179,17 @@ class InMemoryRemediationRepository:
             action = self._actions.get(action_id)
             if action is None:
                 return "missing"
+            if action.get("status") == "expired":
+                return "expired"
             if action.get("status") != "awaiting_approval":
                 return "conflict"
             expires_at = action.get("approval_expires_at")
-            if not isinstance(expires_at, datetime) or expires_at <= now:
+            if (
+                not isinstance(expires_at, datetime) or expires_at <= now
+                or (decision == "approve" and not frozen_evidence_authorizes(
+                    action.get("intent_payload"), action.get("evidence_snapshot"), now
+                ))
+            ):
                 action.update(status="expired", completed_at=now, updated_at=now)
                 return "expired"
             if decision == "reject":
@@ -183,17 +219,23 @@ class InMemoryRemediationRepository:
             now = utc_now()
             current = str(action.get("status"))
             if current not in EXECUTABLE_STATUSES:
-                if current not in {"executing", "reconciling"}:
+                if current not in RECOVERABLE_STATUSES:
                     return "ignored"
                 updated_at = action.get("updated_at")
                 if not isinstance(updated_at, datetime):
                     return "busy"
                 if updated_at > now - timedelta(seconds=lease_seconds):
                     return "busy"
-                claim: ExecutionClaim = (
-                    "reconcile" if action.get("prepared_payload") else "execute"
-                )
+                if current == "rolling_back" or (
+                    current in {"verifying", "reconciling"} and not action.get("prepared_payload")
+                ):
+                    action.update(**_uncertain_recovery_failure(now, worker_name))
+                    return "failed"
+                claim: ExecutionClaim = "reconcile" if action.get("prepared_payload") else "execute"
             else:
+                if not frozen_evidence_authorizes(action.get("intent_payload"), action.get("evidence_snapshot"), now):
+                    action.update(status="denied", error="frozen_evidence_invalid_or_expired", completed_at=now, updated_at=now)
+                    return "ignored"
                 claim = "execute"
             action.update(
                 status="reconciling" if claim == "reconcile" else "executing",
@@ -233,10 +275,7 @@ class InMemoryRemediationRepository:
         )
 
     async def count_for_diagnosis(self, diagnosis_id: str) -> int:
-        return sum(
-            action.get("diagnosis_id") == diagnosis_id
-            for action in self._actions.values()
-        )
+        return sum(action.get("diagnosis_id") == diagnosis_id for action in self._actions.values())
 
     async def last_completed_at(self, target_service: str) -> datetime | None:
         timestamps = [
@@ -288,11 +327,16 @@ class SQLAlchemyRemediationRepository:
             yield
 
     async def create(
-        self, values: dict[str, Any], enqueue: bool
+        self, values: dict[str, Any], enqueue: bool, *, execution_token: str | None = None
     ) -> tuple[dict[str, Any], bool]:
         idempotency_key = str(values["idempotency_key"])
         try:
             async with self._sessions.begin() as session:
+                if execution_token is not None:
+                    job = await session.get(DiagnosisJob, values["diagnosis_id"], with_for_update=True)
+                    _assert_execution_owner(job, execution_token)
+                    if job.status != "running":
+                        raise DiagnosisLeaseLostError("diagnosis is no longer running")
                 existing = await session.scalar(
                     select(RemediationAction).where(
                         RemediationAction.idempotency_key == idempotency_key
@@ -322,9 +366,7 @@ class SQLAlchemyRemediationRepository:
             action = await session.get(RemediationAction, action_id)
             return _action_to_dict(action) if action is not None else None
 
-    async def list(
-        self, status: str | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def list(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         _validate_limit(limit)
         statement = select(RemediationAction)
         if status is not None:
@@ -335,18 +377,21 @@ class SQLAlchemyRemediationRepository:
         return [_action_to_dict(action) for action in actions]
 
     async def compare_and_set(
-        self, action_id: str, expected: set[str], **updates: Any
+        self,
+        action_id: str,
+        expected: set[str],
+        *,
+        expected_worker_name: str | None = None,
+        **updates: Any,
     ) -> bool:
         safe_updates = _update_values(updates)
         safe_updates["updated_at"] = updates.get("updated_at", utc_now())
+        conditions = [RemediationAction.id == action_id, RemediationAction.status.in_(expected)]
+        if expected_worker_name is not None:
+            conditions.append(RemediationAction.worker_name == expected_worker_name)
         async with self._sessions.begin() as session:
             result = await session.execute(
-                update(RemediationAction)
-                .where(
-                    RemediationAction.id == action_id,
-                    RemediationAction.status.in_(expected),
-                )
-                .values(**safe_updates)
+                update(RemediationAction).where(*conditions).values(**safe_updates)
             )
             return bool(result.rowcount)
 
@@ -357,15 +402,20 @@ class SQLAlchemyRemediationRepository:
             return "conflict"
         async with self._sessions.begin() as session:
             action = await session.scalar(
-                select(RemediationAction)
-                .where(RemediationAction.id == action_id)
-                .with_for_update()
+                select(RemediationAction).where(RemediationAction.id == action_id).with_for_update()
             )
             if action is None:
                 return "missing"
+            if action.status == "expired":
+                return "expired"
             if action.status != "awaiting_approval":
                 return "conflict"
-            if action.approval_expires_at is None or action.approval_expires_at <= now:
+            if (
+                action.approval_expires_at is None or action.approval_expires_at <= now
+                or (decision == "approve" and not frozen_evidence_authorizes(
+                    action.intent_payload, action.evidence_snapshot, now
+                ))
+            ):
                 action.status = "expired"
                 action.completed_at = now
                 action.updated_at = now
@@ -387,17 +437,27 @@ class SQLAlchemyRemediationRepository:
         now = utc_now()
         async with self._sessions.begin() as session:
             action = await session.scalar(
-                select(RemediationAction)
-                .where(RemediationAction.id == action_id)
-                .with_for_update()
+                select(RemediationAction).where(RemediationAction.id == action_id).with_for_update()
             )
             if action is None:
                 return "ignored"
             if action.status in EXECUTABLE_STATUSES:
+                if not frozen_evidence_authorizes(action.intent_payload, action.evidence_snapshot, now):
+                    action.status = "denied"
+                    action.error = "frozen_evidence_invalid_or_expired"
+                    action.completed_at = now
+                    action.updated_at = now
+                    return "ignored"
                 claim: ExecutionClaim = "execute"
-            elif action.status in {"executing", "reconciling"}:
+            elif action.status in RECOVERABLE_STATUSES:
                 if action.updated_at > now - timedelta(seconds=lease_seconds):
                     return "busy"
+                if action.status == "rolling_back" or (
+                    action.status in {"verifying", "reconciling"} and not action.prepared_payload
+                ):
+                    for key, value in _uncertain_recovery_failure(now, worker_name).items():
+                        setattr(action, key, value)
+                    return "failed"
                 claim = "reconcile" if action.prepared_payload else "execute"
             else:
                 return "ignored"
@@ -420,16 +480,22 @@ class SQLAlchemyRemediationRepository:
             return int(result.rowcount or 0)
 
     async def is_circuit_open(self, target_service: str) -> bool:
-        statement = select(func.count()).select_from(RemediationAction).where(
-            RemediationAction.target_service == target_service,
-            RemediationAction.circuit_breaker_open.is_(True),
+        statement = (
+            select(func.count())
+            .select_from(RemediationAction)
+            .where(
+                RemediationAction.target_service == target_service,
+                RemediationAction.circuit_breaker_open.is_(True),
+            )
         )
         async with self._sessions() as session:
             return bool(await session.scalar(statement) or 0)
 
     async def count_active(self, target_service: str | None = None) -> int:
-        statement = select(func.count()).select_from(RemediationAction).where(
-            RemediationAction.status.in_(ACTIVE_STATUSES)
+        statement = (
+            select(func.count())
+            .select_from(RemediationAction)
+            .where(RemediationAction.status.in_(ACTIVE_STATUSES))
         )
         if target_service is not None:
             statement = statement.where(RemediationAction.target_service == target_service)
@@ -437,8 +503,10 @@ class SQLAlchemyRemediationRepository:
             return int(await session.scalar(statement) or 0)
 
     async def count_for_diagnosis(self, diagnosis_id: str) -> int:
-        statement = select(func.count()).select_from(RemediationAction).where(
-            RemediationAction.diagnosis_id == diagnosis_id
+        statement = (
+            select(func.count())
+            .select_from(RemediationAction)
+            .where(RemediationAction.diagnosis_id == diagnosis_id)
         )
         async with self._sessions() as session:
             return int(await session.scalar(statement) or 0)
@@ -487,6 +555,18 @@ class SQLAlchemyRemediationRepository:
 def _validate_limit(limit: int) -> None:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
+
+
+def _uncertain_recovery_failure(now: datetime, worker_name: str) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "worker_name": worker_name,
+        "completed_at": now,
+        "updated_at": now,
+        "circuit_breaker_open": True,
+        "circuit_opened_at": now,
+        "error": "prior operation outcome is uncertain; manual review required",
+    }
 
 
 def _model_values(values: dict[str, Any]) -> dict[str, Any]:

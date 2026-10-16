@@ -142,3 +142,4 @@ class GatewayEvent(StrictContract):
     result: ExecutionResult | None = None
     verification: VerificationResult | None = None
     error: Reason | None = None
+    requires_manual_review: bool = False

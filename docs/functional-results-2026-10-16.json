@@ -1,0 +1,299 @@
+{
+  "http": [
+    {
+      "name": "liveness_public",
+      "passed": true
+    },
+    {
+      "name": "readiness_with_real_dependencies",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "anonymous_home_redirects",
+      "passed": true
+    },
+    {
+      "name": "api_docs_disabled",
+      "passed": true
+    },
+    {
+      "name": "invalid_api_key_rejected",
+      "passed": true
+    },
+    {
+      "name": "static_javascript_served",
+      "passed": true
+    },
+    {
+      "name": "login_wrong_password_rejected",
+      "passed": true
+    },
+    {
+      "name": "login_real_postgresql_argon2",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "session_cookie_httponly",
+      "passed": true
+    },
+    {
+      "name": "current_account",
+      "passed": true
+    },
+    {
+      "name": "csrf_required",
+      "passed": true
+    },
+    {
+      "name": "fixed_identity",
+      "passed": true
+    },
+    {
+      "name": "real_model_chat",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "real_model_sse",
+      "passed": true,
+      "event_types": [
+        "content",
+        "content",
+        "done"
+      ]
+    },
+    {
+      "name": "durable_chat_history",
+      "passed": true
+    },
+    {
+      "name": "clear_durable_history",
+      "passed": true
+    },
+    {
+      "name": "upload_real_embedding_and_milvus",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "real_rag_retrieval",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "fake_pdf_rejected",
+      "passed": true
+    },
+    {
+      "name": "empty_file_rejected",
+      "passed": true
+    },
+    {
+      "name": "forbidden_index_path",
+      "passed": true
+    },
+    {
+      "name": "remediation_list",
+      "passed": true
+    },
+    {
+      "name": "invalid_remediation_status",
+      "passed": true
+    },
+    {
+      "name": "api_key_cannot_approve",
+      "passed": true
+    },
+    {
+      "name": "webhook_wrong_token",
+      "passed": true
+    },
+    {
+      "name": "webhook_authenticated",
+      "passed": true
+    },
+    {
+      "name": "manual_diagnosis_real_queue_and_model",
+      "passed": true,
+      "event_types": [
+        "status",
+        "plan",
+        "step_complete",
+        "evidence",
+        "report",
+        "complete"
+      ]
+    },
+    {
+      "name": "diagnosis_id_returned",
+      "passed": true
+    },
+    {
+      "name": "diagnosis_report_and_evidence_persisted",
+      "passed": true,
+      "status": "completed"
+    },
+    {
+      "name": "logout_revokes_session",
+      "passed": true
+    },
+    {
+      "name": "revoked_session_rejected",
+      "passed": true
+    }
+  ],
+  "alert": [
+    {
+      "name": "new_runtime_ready",
+      "passed": true
+    },
+    {
+      "name": "fault_injection",
+      "passed": true
+    },
+    {
+      "name": "prometheus_alertmanager_webhook_outbox_delivery",
+      "passed": true,
+      "diagnosis_id": "diag-8e66a6ded888d8ad"
+    },
+    {
+      "name": "synthetic_fault_cleared",
+      "passed": true
+    },
+    {
+      "name": "automatic_diagnosis_worker_completed",
+      "passed": true,
+      "status": "completed",
+      "attempt_count": 1,
+      "diagnosis_id": "diag-8e66a6ded888d8ad"
+    },
+    {
+      "name": "automatic_report_and_evidence_persisted",
+      "passed": true,
+      "evidence_count": 18
+    },
+    {
+      "name": "resolved_webhook_updates_original_job",
+      "passed": true
+    }
+  ],
+  "remediation": [
+    {
+      "name": "operator_login",
+      "passed": true
+    },
+    {
+      "name": "decision_approve",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "decision_reject",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "decision_expire",
+      "passed": true,
+      "http_status": 410
+    },
+    {
+      "name": "expired_decision_repeated_is_410",
+      "passed": true
+    },
+    {
+      "name": "approved_outbox_broker_worker_succeeded",
+      "passed": true,
+      "status": "succeeded"
+    },
+    {
+      "name": "rejected_action_not_executed",
+      "passed": true
+    },
+    {
+      "name": "duplicate_decision_conflict",
+      "passed": true,
+      "http_status": 409
+    },
+    {
+      "name": "adapter_proof_dry_run_only",
+      "passed": true
+    }
+  ],
+  "files": [
+    {
+      "name": "upload_parse_embed_store_txt",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "repeat_upload_deduplicates_txt",
+      "passed": true,
+      "http_status": 200,
+      "error": null
+    },
+    {
+      "name": "upload_parse_embed_store_md",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "repeat_upload_deduplicates_md",
+      "passed": true,
+      "http_status": 200,
+      "error": null
+    },
+    {
+      "name": "upload_parse_embed_store_pdf",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "upload_rate_limit_enforced",
+      "passed": true,
+      "http_status": 429
+    },
+    {
+      "name": "repeat_upload_deduplicates_pdf",
+      "passed": true,
+      "http_status": 200,
+      "error": null
+    },
+    {
+      "name": "upload_parse_embed_store_docx",
+      "passed": true,
+      "http_status": 200
+    },
+    {
+      "name": "repeat_upload_deduplicates_docx",
+      "passed": true,
+      "http_status": 200,
+      "error": null
+    },
+    {
+      "name": "allowed_directory_four_formats",
+      "passed": true,
+      "http_status": 200,
+      "success_count": 4
+    },
+    {
+      "name": "unsupported_extension_rejected",
+      "passed": true
+    }
+  ],
+  "retry": [
+    {
+      "name": "real_broker_retry_exhaustion",
+      "passed": true,
+      "status": "dead_lettered",
+      "attempt_count": 2
+    },
+    {
+      "name": "real_dead_letter_envelope",
+      "passed": true,
+      "messages": 1
+    }
+  ]
+}

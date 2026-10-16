@@ -1,9 +1,11 @@
-"""Deterministic quality gates for generated diagnosis reports."""
+"""Keyword and evidence-presence gates, not semantic diagnosis verification."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from app.core.evidence import valid_evidence
 
 
 def _normalize(value: Any) -> str:
@@ -47,6 +49,8 @@ class DiagnosisEvaluation:
     missing_evidence_types: list[str]
     missing_report_terms: list[str]
     forbidden_terms_found: list[str]
+    evaluation_method: str = "keyword_and_evidence_gate"
+    semantic_accuracy_verified: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,12 +63,22 @@ def _coverage(required: list[str], observed: set[str]) -> tuple[float, list[str]
     return (len(required) - len(missing)) / len(required), missing
 
 
+def _valid_evidence(item: Any) -> bool:
+    """Check usable evidence; this does not establish causality or accuracy."""
+    return valid_evidence(item)
+
+
 def evaluate_diagnosis(
     case: DiagnosisCase,
     report: str,
     evidence: list[dict[str, Any]],
 ) -> DiagnosisEvaluation:
-    """Score root cause, evidence coverage, completeness, and unsupported claims."""
+    """Check root-cause keywords, usable evidence and report terms.
+
+    Historical score names are preserved for consumers. ``root_cause_score``
+    means keyword coverage and ``groundedness_score`` means the configured
+    forbidden-term check; neither establishes semantic correctness.
+    """
     report_text = _normalize(report)
     root_cause_score = float(
         any(
@@ -74,7 +88,9 @@ def evaluate_diagnosis(
     )
 
     evidence_types = {
-        _normalize(item.get("evidence_type", item.get("type", ""))) for item in evidence
+        _normalize(item.get("evidence_type", item.get("type", "")))
+        for item in evidence
+        if _valid_evidence(item)
     }
     evidence_score, missing_evidence = _coverage(
         case.required_evidence_types,
@@ -97,7 +113,12 @@ def evaluate_diagnosis(
         + groundedness_score * 0.1,
         4,
     )
-    passed = score >= case.minimum_score and root_cause_score == 1.0 and not forbidden_found
+    passed = (
+        score >= case.minimum_score
+        and root_cause_score == 1.0
+        and not missing_evidence
+        and not forbidden_found
+    )
     return DiagnosisEvaluation(
         case_id=case.id,
         score=score,

@@ -12,7 +12,7 @@ from langchain_openai import ChatOpenAI
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
-from app.agent.mcp_client import get_mcp_client_with_retry
+from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
 from app.core.llm_factory import llm_factory
 from app.harness.contracts import parse_action_intent
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
@@ -124,7 +124,7 @@ response_prompt = ChatPromptTemplate.from_messages(
 
 
 def _find_empty_alert_scan(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the latest successful Prometheus alert scan that found no alerts."""
+    """Only the most recent alert scan may establish that no alerts are active."""
     for item in reversed(evidence):
         if str(item.get("source", "")) != "query_prometheus_alerts":
             continue
@@ -133,13 +133,14 @@ def _find_empty_alert_scan(evidence: list[dict[str, Any]]) -> dict[str, Any] | N
             try:
                 result = json.loads(result)
             except (TypeError, json.JSONDecodeError):
-                continue
+                return None
         if not isinstance(result, dict) or result.get("success") is not True:
-            continue
+            return None
         alerts = result.get("alerts")
         total = result.get("total")
         if alerts == [] and total == 0:
             return result
+        return None
     return None
 
 
@@ -234,7 +235,9 @@ async def replanner(state: PlanExecuteState) -> dict[str, Any]:
 
         # 获取 MCP 工具
         mcp_client = await get_mcp_client_with_retry()
-        mcp_tools = await mcp_client.get_tools()
+        mcp_tools, mcp_warning = await load_mcp_tools_safe(mcp_client)
+        if mcp_warning:
+            logger.warning(f"部分 MCP 服务不可用，评估将使用其余工具继续:\n{mcp_warning}")
 
         # 合并所有工具
         all_tools = local_tools + mcp_tools
@@ -396,7 +399,10 @@ async def _generate_response(state: PlanExecuteState, llm: ChatOpenAI) -> dict[s
 ## 说明
 由于系统异常，无法生成完整响应。以上是已收集的信息。
 """
-        result = {"response": fallback_response}
+        result = {
+            "response": fallback_response,
+            "execution_errors": [f"生成最终响应失败: {str(e)}"],
+        }
         if isinstance(e, ValidationError):
             result["harness_error"] = "invalid_remediation_proposal"
         return result

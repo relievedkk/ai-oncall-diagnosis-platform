@@ -53,7 +53,12 @@ async def _readiness_response() -> JSONResponse:
         "queues": queues,
     }
 
-    ready = milvus_healthy and postgres_healthy and rabbitmq_healthy
+    workers_healthy = all(
+        queues.get(name, {}).get("consumers", 0) > 0
+        for name in (config.celery_critical_queue, config.celery_default_queue)
+    )
+    health_data["diagnosis_workers"] = {"status": "available" if workers_healthy else "unavailable"}
+    ready = milvus_healthy and postgres_healthy and rabbitmq_healthy and workers_healthy
     status_code = 200 if ready else 503
     health_data["status"] = "ready" if ready else "not_ready"
     return JSONResponse(

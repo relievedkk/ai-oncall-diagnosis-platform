@@ -270,8 +270,8 @@ class MilvusClientManager:
             if self._client is None:
                 return False
 
-            # 尝试列出 connections
-            _ = connections.list_connections()
+            # Local alias registration does not prove the remote server is alive.
+            self._client.list_collections(timeout=3.0)
             return True
 
         except (MilvusException, ConnectionError) as e:

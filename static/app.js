@@ -104,6 +104,7 @@ class AIOnCallApp {
         this.sidebar = document.querySelector('.sidebar');
         this.newChatBtn = document.getElementById('newChatBtn');
         this.aiOpsSidebarBtn = document.getElementById('aiOpsSidebarBtn');
+        this.healthInspectionBtn = document.getElementById('healthInspectionBtn');
         
         // 输入区域元素
         this.messageInput = document.getElementById('messageInput');
@@ -143,6 +144,13 @@ class AIOnCallApp {
         // AI Ops按钮
         if (this.aiOpsSidebarBtn) {
             this.aiOpsSidebarBtn.addEventListener('click', () => this.triggerAIOps());
+        }
+        if (this.healthInspectionBtn) {
+            this.healthInspectionBtn.addEventListener('click', () => {
+                if (this.isStreaming) return;
+                this.messageInput.value = '主动检查所有服务的存活状态、CPU、内存、延迟、错误率和近期异常日志';
+                this.sendMessage();
+            });
         }
         
         // 模式选择下拉菜单
@@ -516,10 +524,14 @@ class AIOnCallApp {
                     
                     // 如果后端有历史记录，使用后端的
                     if (backendHistory.length > 0) {
-                        this.currentChatHistory = [];
+                        this.currentChatHistory = backendHistory.map(msg => ({
+                            type: msg.role === 'user' ? 'user' : 'assistant',
+                            content: msg.content,
+                            timestamp: msg.timestamp
+                        }));
                         backendHistory.forEach(msg => {
                             // 后端返回格式: {role: "user|assistant", content: "...", timestamp: "..."}
-                            const messageType = msg.role === 'user' ? 'user' : 'bot';
+                            const messageType = msg.role === 'user' ? 'user' : 'assistant';
                             this.addMessage(messageType, msg.content, false, false);
                         });
                     } else {
@@ -953,6 +965,8 @@ class AIOnCallApp {
 
     // 添加消息到聊天界面
     addMessage(type, content, isStreaming = false, saveToHistory = true) {
+        // Older local caches used "bot" for assistant messages.
+        if (type === 'bot') type = 'assistant';
         // 检查是否是第一条消息，如果是则移除居中样式
         const isFirstMessage = this.chatMessages && this.chatMessages.querySelectorAll('.message').length === 0;
         

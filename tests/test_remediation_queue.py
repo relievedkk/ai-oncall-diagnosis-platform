@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -112,7 +112,7 @@ def intent():
 
 
 def action_values(action_id="action-1", **overrides):
-    now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
     remediation_intent = intent()
     values = {
         "id": action_id,
@@ -123,7 +123,16 @@ def action_values(action_id="action-1", **overrides):
         "risk_level": "r1",
         "status": "proposed",
         "intent_payload": remediation_intent.model_dump(mode="json"),
-        "evidence_snapshot": [],
+        "evidence_snapshot": [
+            {
+                "evidence_type": kind, "source": "trusted-observer", "success": True,
+                "validation_reason": "valid", "target_service": "orders",
+                "target_instance": "orders-1", "collected_at": now.isoformat(),
+                "validated_at": now.isoformat(),
+                "valid_until": (now + timedelta(minutes=10)).isoformat(),
+            }
+            for kind in ("alert", "metric")
+        ],
         "policy_decision": "allow",
         "policy_reason": "policy_allowed",
         "requested_by": "agent",
@@ -136,8 +145,13 @@ def action_values(action_id="action-1", **overrides):
 
 class CountingAdapter(DryRunRemediationAdapter):
     def __init__(self):
+        self.prepare_calls = 0
         self.execute_calls = 0
         self.observe_calls = 0
+
+    async def prepare(self, remediation_intent):
+        self.prepare_calls += 1
+        return await super().prepare(remediation_intent)
 
     async def execute(self, prepared):
         self.execute_calls += 1
@@ -176,9 +190,9 @@ async def test_worker_applies_each_gateway_event_in_order(tmp_path):
     observed = []
     original_apply = service.apply_gateway_event
 
-    async def recording_apply(action_id, event):
+    async def recording_apply(action_id, event, **kwargs):
         observed.append(event.status.value)
-        return await original_apply(action_id, event)
+        return await original_apply(action_id, event, **kwargs)
 
     service.apply_gateway_event = recording_apply
 
@@ -226,6 +240,47 @@ async def test_off_mode_denies_queued_action_before_adapter_execution(tmp_path, 
     assert result == "disabled"
     assert adapter.execute_calls == 0
     assert (await repository.get("action-1"))["status"] == "denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["proposed", "approved"])
+async def test_worker_never_prepares_or_executes_legacy_unvalidated_action(tmp_path, status):
+    repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
+    await repository.create(action_values(status=status, evidence_snapshot=[]), enqueue=True)
+
+    result = await execute_remediation("action-1", "worker", service=service, gateway=gateway)
+
+    assert result == "ignored"
+    assert (await repository.get("action-1"))["status"] == "denied"
+    assert await repository.count_active() == 0
+    assert adapter.prepare_calls == adapter.execute_calls == adapter.observe_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["proposed", "approved"])
+@pytest.mark.parametrize("invalidity", ["expired", "wrong_service", "wrong_instance"])
+async def test_worker_rejects_frozen_evidence_before_any_adapter_call(tmp_path, monkeypatch, status, invalidity):
+    repository, service, adapter, gateway = build_worker_dependencies(tmp_path)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: now)
+    values = action_values(status=status)
+    for item in values["evidence_snapshot"]:
+        if invalidity == "expired":
+            item["valid_until"] = now.isoformat()
+        elif invalidity == "wrong_service":
+            item["target_service"] = "payments"
+        else:
+            item["target_instance"] = "orders-2"
+    await repository.create(values, enqueue=True)
+
+    result = await execute_remediation("action-1", "worker", service=service, gateway=gateway)
+
+    assert result == "ignored"
+    action = await repository.get("action-1")
+    assert action["status"] == "denied"
+    assert action["error"].startswith("frozen_evidence_invalid_or_expired")
+    assert await repository.count_active() == 0
+    assert adapter.prepare_calls == adapter.execute_calls == adapter.observe_calls == 0
 
 
 def test_remediation_worker_has_minimal_environment_and_runtime_controls():

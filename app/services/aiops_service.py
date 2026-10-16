@@ -5,14 +5,17 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Overwrite
 from loguru import logger
 
 from app.agent.aiops import PlanExecuteState, executor, planner, replanner
 from app.core.checkpoint import checkpoint_manager
 from app.harness.contracts import parse_action_intent
+from app.repositories.diagnosis import DiagnosisLeaseLostError
 
 # 节点名称常量
 NODE_PLANNER = "planner"
@@ -39,6 +42,14 @@ class AIOpsService:
                 return
             self.checkpointer = await checkpoint_manager.initialize()
             self.graph = self._build_graph(self.checkpointer)
+
+    async def has_pending_execution(self, session_id: str) -> bool:
+        """Resume worker retries only when a checkpoint still has runnable nodes."""
+        await self.initialize()
+        if self.graph is None:
+            raise RuntimeError("AIOps graph initialization failed")
+        checkpoint = await self.graph.aget_state({"configurable": {"thread_id": session_id}})
+        return bool(checkpoint and checkpoint.next)
 
     def _build_graph(self, checkpointer):
         """构建 Plan-Execute-Replan 工作流"""
@@ -88,7 +99,7 @@ class AIOpsService:
         return compiled_graph
 
     async def execute(
-        self, user_input: str, session_id: str = "default"
+        self, user_input: str, session_id: str = "default", *, resume: bool = False
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         执行 Plan-Execute-Replan 流程
@@ -96,6 +107,7 @@ class AIOpsService:
         Args:
             user_input: 用户的任务描述
             session_id: 会话ID
+            resume: 恢复同一任务的检查点；默认启动一次独立诊断
 
         Yields:
             Dict[str, Any]: 流式事件
@@ -107,53 +119,69 @@ class AIOpsService:
             if self.graph is None:
                 raise RuntimeError("AIOps graph initialization failed")
             # 初始化状态
-            initial_state: PlanExecuteState = {
+            initial_state: dict[str, Any] | None = {
                 "input": user_input,
                 "plan": [],
-                "past_steps": [],
-                "evidence": [],
+                "past_steps": Overwrite([]),
+                "evidence": Overwrite([]),
                 "response": "",
                 "skipped_steps": [],
                 "termination_reason": "",
+                "remediation": None,
+                "harness_error": "",
+                "execution_errors": Overwrite([]),
             }
 
             # 流式执行工作流
             config_dict = {"configurable": {"thread_id": session_id}}
+            execution_errors: list[str] = []
+            if resume:
+                checkpoint = await self.graph.aget_state(config_dict)
+                if checkpoint and checkpoint.values:
+                    initial_state = None
+                    execution_errors = list(checkpoint.values.get("execution_errors", []))
 
-            async for event in self.graph.astream(
+            async with aclosing(self.graph.astream(
                 input=initial_state, config=config_dict, stream_mode="updates"
-            ):
-                # 解析事件
-                for node_name, node_output in event.items():
-                    logger.info(f"节点 '{node_name}' 输出事件")
+            )) as stream:
+                async for event in stream:
+                    # 解析事件
+                    for node_name, node_output in event.items():
+                        logger.info(f"节点 '{node_name}' 输出事件")
+                        if node_output:
+                            execution_errors.extend(node_output.get("execution_errors", []))
 
-                    # 根据节点类型生成不同的事件
-                    if node_name == NODE_PLANNER:
-                        yield self._format_planner_event(node_output)
+                        # 根据节点类型生成不同的事件
+                        if node_name == NODE_PLANNER:
+                            yield self._format_planner_event(node_output)
 
-                    elif node_name == NODE_EXECUTOR:
-                        yield self._format_executor_event(node_output)
+                        elif node_name == NODE_EXECUTOR:
+                            yield self._format_executor_event(node_output)
 
-                    elif node_name == NODE_REPLANNER:
-                        replanner_event = self._format_replanner_event(node_output)
-                        yield replanner_event
-                        remediation = replanner_event.get("remediation")
-                        if replanner_event.get("type") == "report" and remediation:
-                            yield {
-                                "type": "remediation_proposed",
-                                "stage": "remediation_proposed",
-                                "message": (
-                                    "A bounded remediation was proposed for policy evaluation"
-                                ),
-                                "remediation": remediation,
-                            }
-                        if replanner_event.get("harness_error"):
-                            yield {
-                                "type": "harness_error",
-                                "stage": "remediation_validation",
-                                "message": "Invalid remediation proposal was discarded",
-                                "reason": replanner_event["harness_error"],
-                            }
+                        elif node_name == NODE_REPLANNER:
+                            report_state = (
+                                {**node_output, "execution_errors": execution_errors}
+                                if node_output else node_output
+                            )
+                            replanner_event = self._format_replanner_event(report_state)
+                            yield replanner_event
+                            remediation = replanner_event.get("remediation")
+                            if replanner_event.get("type") == "report" and remediation:
+                                yield {
+                                    "type": "remediation_proposed",
+                                    "stage": "remediation_proposed",
+                                    "message": (
+                                        "A bounded remediation was proposed for policy evaluation"
+                                    ),
+                                    "remediation": remediation,
+                                }
+                            if replanner_event.get("harness_error"):
+                                yield {
+                                    "type": "harness_error",
+                                    "stage": "remediation_validation",
+                                    "message": "Invalid remediation proposal was discarded",
+                                    "reason": replanner_event["harness_error"],
+                                }
 
             # 获取最终状态
             final_state = await self.graph.aget_state(config_dict)
@@ -162,6 +190,18 @@ class AIOpsService:
             # 安全地获取响应（处理 values 可能为 None 的情况）
             if final_state and final_state.values:
                 final_response = final_state.values.get("response", "")
+                errors = final_state.values.get("execution_errors", [])
+                if errors:
+                    yield {
+                        "type": "error",
+                        "stage": "error",
+                        "message": "任务部分步骤执行失败，已保留收集到的证据和报告",
+                        "errors": errors,
+                        "response": final_response,
+                    }
+                    return
+            if not final_response:
+                raise RuntimeError("任务未生成最终报告")
 
             # 发送完成事件
             yield {
@@ -173,11 +213,15 @@ class AIOpsService:
 
             logger.info(f"[会话 {session_id}] 任务执行完成")
 
+        except DiagnosisLeaseLostError:
+            raise
         except Exception as e:
             logger.error(f"[会话 {session_id}] 任务执行失败: {e}", exc_info=True)
             yield {"type": "error", "stage": "error", "message": f"任务执行出错: {str(e)}"}
 
-    async def diagnose(self, session_id: str = "default") -> AsyncGenerator[dict[str, Any], None]:
+    async def diagnose(
+        self, session_id: str = "default", *, resume: bool = False
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
         AIOps 诊断接口（兼容旧接口）
 
@@ -264,18 +308,19 @@ class AIOpsService:
                 - 所有内容必须基于工具查询的真实数据，严禁编造
                 - 如果某个步骤失败，在结论中如实说明，不要跳过""")
 
-        async for event in self.execute(aiops_task, session_id):
-            # 转换事件格式以兼容旧的 API
-            if event.get("type") == "complete":
-                # 将 response 包装为 diagnosis 格式
-                yield {
-                    "type": "complete",
-                    "stage": "diagnosis_complete",
-                    "message": "诊断流程完成",
-                    "diagnosis": {"status": "completed", "report": event.get("response", "")},
-                }
-            else:
-                yield event
+        async with aclosing(self.execute(aiops_task, session_id, resume=resume)) as events:
+            async for event in events:
+                # 转换事件格式以兼容旧的 API
+                if event.get("type") == "complete":
+                    # 将 response 包装为 diagnosis 格式
+                    yield {
+                        "type": "complete",
+                        "stage": "diagnosis_complete",
+                        "message": "诊断流程完成",
+                        "diagnosis": {"status": "completed", "report": event.get("response", "")},
+                    }
+                else:
+                    yield event
 
     def _format_planner_event(self, state: dict | None) -> dict:
         """格式化 Planner 节点事件"""
@@ -340,7 +385,9 @@ class AIOpsService:
                 "skipped_steps": skipped_steps,
                 "termination_reason": termination_reason,
             }
-            raw_remediation = state.get("remediation")
+            raw_remediation = (
+                state.get("remediation") if not state.get("execution_errors") else None
+            )
             if raw_remediation is not None:
                 try:
                     intent = parse_action_intent(raw_remediation)

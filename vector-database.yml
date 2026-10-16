@@ -1,37 +1,4 @@
-x-diagnosis-environment: &diagnosis-environment
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
-  DATABASE_AUTO_CREATE: "false"
-  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
-  CELERY_DEFAULT_QUEUE: ${CELERY_DEFAULT_QUEUE:-diagnosis.default}
-  CELERY_CRITICAL_QUEUE: ${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
-  CELERY_DEAD_LETTER_QUEUE: ${CELERY_DEAD_LETTER_QUEUE:-diagnosis.dead-letter}
-  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
-  CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-5}
-  DIAGNOSIS_LEASE_SECONDS: ${DIAGNOSIS_LEASE_SECONDS:-90}
-  DIAGNOSIS_HEARTBEAT_SECONDS: ${DIAGNOSIS_HEARTBEAT_SECONDS:-30}
-  OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-1.0}
-  DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
-  DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-  DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-max}
-  DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
-  RAG_MODEL: ${RAG_MODEL:-qwen-max}
-  MILVUS_HOST: standalone
-  MILVUS_PORT: "19530"
-  PROMETHEUS_BASE_URL: http://host.docker.internal:9090
-  MCP_CLS_TRANSPORT: streamable-http
-  MCP_CLS_URL: http://host.docker.internal:8003/mcp
-  MCP_MONITOR_TRANSPORT: streamable-http
-  MCP_MONITOR_URL: http://host.docker.internal:8004/mcp
-  SERVICE_CATALOG_PATH: config/service_catalog.json
-  TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
-  TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
-  PYTHONUTF8: "1"
-
-x-remediation-environment: &remediation-environment
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
-  DATABASE_AUTO_CREATE: "false"
-  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
-  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
+x-remediation-policy: &remediation-policy
   REMEDIATION_MODE: ${REMEDIATION_MODE:-dry_run}
   REMEDIATION_ADAPTER: ${REMEDIATION_ADAPTER:-dry_run}
   REMEDIATION_APPROVAL_EXPIRY_SECONDS: ${REMEDIATION_APPROVAL_EXPIRY_SECONDS:-900}
@@ -41,6 +8,50 @@ x-remediation-environment: &remediation-environment
   REMEDIATION_EXECUTION_TIMEOUT_SECONDS: ${REMEDIATION_EXECUTION_TIMEOUT_SECONDS:-120}
   REMEDIATION_VERIFICATION_TIMEOUT_SECONDS: ${REMEDIATION_VERIFICATION_TIMEOUT_SECONDS:-120}
   REMEDIATION_WORKER_LEASE_SECONDS: ${REMEDIATION_WORKER_LEASE_SECONDS:-300}
+  REMEDIATION_EVIDENCE_MAX_AGE_SECONDS: ${REMEDIATION_EVIDENCE_MAX_AGE_SECONDS:-600}
+  REMEDIATION_EVIDENCE_CLOCK_SKEW_SECONDS: ${REMEDIATION_EVIDENCE_CLOCK_SKEW_SECONDS:-30}
+
+x-diagnosis-environment: &diagnosis-environment
+  <<: *remediation-policy
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
+  DATABASE_AUTO_CREATE: "false"
+  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
+  CELERY_DEFAULT_QUEUE: ${CELERY_DEFAULT_QUEUE:-diagnosis.default}
+  CELERY_CRITICAL_QUEUE: ${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
+  CELERY_DEAD_LETTER_QUEUE: ${CELERY_DEAD_LETTER_QUEUE:-diagnosis.dead-letter}
+  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
+  CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-5}
+  CELERY_TASK_SOFT_TIME_LIMIT: ${CELERY_TASK_SOFT_TIME_LIMIT:-1740}
+  CELERY_TASK_TIME_LIMIT: ${CELERY_TASK_TIME_LIMIT:-1800}
+  DIAGNOSIS_LEASE_SECONDS: ${DIAGNOSIS_LEASE_SECONDS:-90}
+  DIAGNOSIS_HEARTBEAT_SECONDS: ${DIAGNOSIS_HEARTBEAT_SECONDS:-30}
+  OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-1.0}
+  DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+  DASHSCOPE_API_BASE: ${DASHSCOPE_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-max}
+  LLM_REQUEST_TIMEOUT: ${LLM_REQUEST_TIMEOUT:-120}
+  DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
+  RAG_MODEL: ${RAG_MODEL:-qwen-max}
+  MILVUS_HOST: standalone
+  MILVUS_PORT: "19530"
+  PROMETHEUS_BASE_URL: http://host.docker.internal:9090
+  MCP_CLS_TRANSPORT: ${MCP_CLS_TRANSPORT:-streamable-http}
+  MCP_CLS_URL: ${MCP_CLS_DOCKER_URL:-http://host.docker.internal:8003/mcp}
+  MCP_MONITOR_TRANSPORT: ${MCP_MONITOR_TRANSPORT:-streamable-http}
+  MCP_MONITOR_URL: http://host.docker.internal:8004/mcp
+  SERVICE_CATALOG_PATH: config/service_catalog.json
+  CLS_LOG_SPOOL_ENABLED: ${CLS_LOG_SPOOL_ENABLED:-false}
+  LOG_SERVICE_NAME: ai-oncall-agent
+  TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
+  TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
+  PYTHONUTF8: "1"
+
+x-remediation-environment: &remediation-environment
+  <<: *remediation-policy
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
+  DATABASE_AUTO_CREATE: "false"
+  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
+  CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
   SERVICE_CATALOG_PATH: config/service_catalog.json
   PYTHONUTF8: "1"
 
@@ -119,8 +130,10 @@ services:
       - --loglevel=INFO
       - --pool=solo
       - --hostname=critical@%h
-      - --queues=diagnosis.critical
+      - --queues=${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
     environment: *diagnosis-environment
+    volumes:
+      - ${CLS_LOG_SPOOL_DOCKER_PATH:-./logs/cls-events}:/app/logs/cls-events
     depends_on:
       queue-bootstrap:
         condition: service_completed_successfully
@@ -142,8 +155,10 @@ services:
       - --loglevel=INFO
       - --pool=solo
       - --hostname=default@%h
-      - --queues=diagnosis.default
+      - --queues=${CELERY_DEFAULT_QUEUE:-diagnosis.default}
     environment: *diagnosis-environment
+    volumes:
+      - ${CLS_LOG_SPOOL_DOCKER_PATH:-./logs/cls-events}:/app/logs/cls-events
     depends_on:
       queue-bootstrap:
         condition: service_completed_successfully
@@ -179,6 +194,8 @@ services:
     image: ai-oncall-worker:local
     command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.outbox_publisher"]
     environment: *diagnosis-environment
+    volumes:
+      - ${CLS_LOG_SPOOL_DOCKER_PATH:-./logs/cls-events}:/app/logs/cls-events
     depends_on:
       queue-bootstrap:
         condition: service_completed_successfully

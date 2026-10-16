@@ -149,20 +149,15 @@ class VectorIndexService:
         logger.info(f"开始索引文件: {path}")
 
         try:
-            # 1. 删除该文件的旧数据（如果存在）
             normalized_path = path.as_posix()
-            vector_store_manager.delete_by_source(normalized_path)
-
-            # 2. 文档分割（splitter 内部根据文件类型选择处理器加载和分片）
+            # Parse before touching the existing, searchable version.
             documents = document_splitter_service.split_document(normalized_path)
             logger.info(f"文档分割完成: {file_path} -> {len(documents)} 个分片")
 
-            # 4. 添加文档到向量存储
-            if documents:
-                vector_store_manager.add_documents(documents)
-                logger.info(f"文件索引完成: {file_path}, 共 {len(documents)} 个分片")
-            else:
-                logger.warning(f"文件内容为空或无法分割: {file_path}")
+            if not documents or any(not doc.page_content.strip() for doc in documents):
+                raise ValueError(f"文件内容为空或无法分割: {file_path}")
+            vector_store_manager.replace_documents(normalized_path, documents)
+            logger.info(f"文件索引完成: {file_path}, 共 {len(documents)} 个分片")
 
         except Exception as e:
             logger.error(f"索引文件失败: {file_path}, 错误: {e}")

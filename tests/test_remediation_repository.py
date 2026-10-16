@@ -7,6 +7,19 @@ from app.repositories.remediation import InMemoryRemediationRepository
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 
 
+def validated_snapshot(now):
+    return [
+        {
+            "evidence_type": kind, "source": "trusted-observer", "success": True,
+            "validation_reason": "valid", "target_service": "orders",
+            "target_instance": "orders-1", "collected_at": now.isoformat(),
+            "validated_at": now.isoformat(),
+            "valid_until": (now + timedelta(minutes=10)).isoformat(),
+        }
+        for kind in ("alert", "metric")
+    ]
+
+
 def action_values(**overrides):
     values = {
         "id": "action-1",
@@ -22,7 +35,7 @@ def action_values(**overrides):
             "instance_id": "orders-1",
             "reason": "unhealthy",
         },
-        "evidence_snapshot": [],
+        "evidence_snapshot": validated_snapshot(NOW),
         "policy_decision": "allow",
         "policy_reason": "policy_allowed",
         "requested_by": "agent",
@@ -80,7 +93,8 @@ async def test_compare_and_set_rejects_illegal_state_transition():
 
 
 @pytest.mark.asyncio
-async def test_claim_execution_only_succeeds_once():
+async def test_claim_execution_only_succeeds_once(monkeypatch):
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: NOW)
     repository = InMemoryRemediationRepository()
     await repository.create(action_values(status="approved"), enqueue=False)
 
@@ -183,4 +197,79 @@ async def test_expire_due_approvals_releases_active_capacity():
 
     assert expired == 1
     assert await repository.count_active("orders") == 0
+    assert (await repository.get("action-1"))["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_swept_expiry_returns_expired_for_later_decisions():
+    repository = InMemoryRemediationRepository()
+    await repository.create(
+        action_values(status="awaiting_approval", approval_expires_at=NOW), enqueue=False
+    )
+    await repository.expire_due_approvals(NOW)
+
+    assert await repository.decide("action-1", "approve", "operator", NOW) == "expired"
+    assert await repository.decide("action-1", "reject", "operator", NOW) == "expired"
+    assert repository.outbox_events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["proposed", "approved"])
+async def test_claim_denies_legacy_evidence_without_validation_metadata(monkeypatch, status):
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: NOW)
+    repository = InMemoryRemediationRepository()
+    await repository.create(action_values(status=status, evidence_snapshot=[]), enqueue=True)
+
+    claim = await repository.claim_execution("action-1", "worker")
+
+    assert claim == "ignored"
+    action = await repository.get("action-1")
+    assert action["status"] == "denied"
+    assert action["completed_at"] == NOW
+    assert action.get("started_at") is None
+    assert action.get("worker_name") is None
+    assert action["error"]
+    assert await repository.count_active() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["proposed", "approved"])
+@pytest.mark.parametrize("invalidity", ["expired", "wrong_service", "wrong_instance", "missing_metadata", "future", "malformed"])
+async def test_claim_rejects_expired_or_unbound_frozen_evidence(monkeypatch, status, invalidity):
+    monkeypatch.setattr("app.repositories.remediation.utc_now", lambda: NOW)
+    snapshot = validated_snapshot(NOW)
+    for item in snapshot:
+        if invalidity == "expired":
+            item["valid_until"] = NOW.isoformat()
+        elif invalidity == "wrong_service":
+            item["target_service"] = "payments"
+        elif invalidity == "wrong_instance":
+            item["target_instance"] = "orders-2"
+        elif invalidity == "missing_metadata":
+            item.pop("validation_reason")
+        elif invalidity == "future":
+            item["collected_at"] = (NOW + timedelta(days=1)).isoformat()
+        elif invalidity == "malformed":
+            item["valid_until"] = "not-a-timestamp"
+    repository = InMemoryRemediationRepository()
+    await repository.create(action_values(status=status, evidence_snapshot=snapshot), enqueue=True)
+
+    claim = await repository.claim_execution("action-1", "worker")
+
+    assert claim == "ignored"
+    action = await repository.get("action-1")
+    assert action["status"] == "denied"
+    assert action["error"].startswith("frozen_evidence_invalid_or_expired")
+    assert action["completed_at"] == NOW
+    assert action.get("started_at") is None
+    assert await repository.count_active("orders") == 0
+
+
+@pytest.mark.asyncio
+async def test_approval_rechecks_frozen_evidence_atomically():
+    repository = InMemoryRemediationRepository()
+    await repository.create(action_values(status="awaiting_approval", evidence_snapshot=[],
+        approval_expires_at=NOW + timedelta(minutes=10)), enqueue=False)
+    assert await repository.decide("action-1", "approve", "operator", NOW) == "expired"
+    assert repository.outbox_events == []
     assert (await repository.get("action-1"))["status"] == "expired"

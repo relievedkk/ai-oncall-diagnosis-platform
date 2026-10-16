@@ -1,0 +1,7 @@
+{
+  "pid": 18552,
+  "endpoint": "http://127.0.0.1:3000/mcp",
+  "sanitized_log": "D:\\\u9879\u76ee\\\u667a\u80fdOnCall Agent\u7cfb\u7edf\\Oncall Agent\\logs\\cls-mcp-verified-20261015.sanitized.log",
+  "package": "cls-mcp-server@1.2.1",
+  "hidden": true
+}

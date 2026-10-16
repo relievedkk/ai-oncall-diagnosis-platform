@@ -50,21 +50,44 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject declared oversized requests before multipart parsing begins."""
+class RequestSizeLimitMiddleware:
+    """Bound the actual body, including chunked requests, before parsing it."""
 
-    async def dispatch(self, request: Request, call_next):
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > config.max_request_body_bytes:
-                    return JSONResponse(
-                        status_code=413,
-                        content={"detail": "Request body is too large"},
-                    )
-            except ValueError:
-                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
-        return await call_next(request)
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers", []))
+        try:
+            declared = int(headers.get(b"content-length", b"0"))
+            if declared < 0:
+                raise ValueError
+        except ValueError:
+            return await JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})(scope, receive, send)
+        limit = config.max_request_body_bytes
+        if declared > limit:
+            return await JSONResponse(status_code=413, content={"detail": "Request body is too large"})(scope, receive, send)
+
+        messages = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            size += len(message.get("body", b""))
+            if size > limit:
+                return await JSONResponse(status_code=413, content={"detail": "Request body is too large"})(scope, receive, send)
+            messages.append(message)
+            if not message.get("more_body", False):
+                break
+        buffered = iter(messages)
+
+        async def replay():
+            return next(buffered, None) or await receive()
+
+        await self.app(scope, replay, send)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

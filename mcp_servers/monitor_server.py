@@ -13,7 +13,7 @@ import math
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal, get_args
 
 import httpx
 from fastmcp import FastMCP
@@ -29,7 +29,8 @@ logger = logging.getLogger("Monitor_MCP_Server")
 mcp = FastMCP("Monitor")
 
 _SAFE_SERVICE = re.compile(r"^[A-Za-z0-9_.:-]+$")
-_SUPPORTED_METRICS = {"cpu", "memory", "error_rate", "latency_p95", "up"}
+ServiceMetric = Literal["cpu", "memory", "error_rate", "latency_p95", "up", "request_rate"]
+_SUPPORTED_METRICS = set(get_args(ServiceMetric))
 
 
 def log_tool_call(func: Callable[..., dict[str, Any]]):
@@ -86,8 +87,14 @@ def _escape_label(value: str) -> str:
 
 def _metric_query(service_name: str, metric: str) -> tuple[str, str, str]:
     canonical_name, service = service_catalog.resolve_name(service_name)
+    if canonical_name not in service_catalog.list_services():
+        raise ValueError(
+            "Unknown service; call list_monitored_services and use a registered service_name"
+        )
     job = str(service.get("prometheus_job") or canonical_name)
     escaped_job = _escape_label(job)
+    request_rate = f'sum(rate(oncall_http_requests_total{{job="{escaped_job}"}}[5m]))'
+    failed_rate = f'sum(rate(oncall_http_requests_total{{job="{escaped_job}",status=~"5.."}}[5m]))'
     configured = service.get("metrics", {}).get(metric)
     if configured:
         query = str(configured)
@@ -95,10 +102,8 @@ def _metric_query(service_name: str, metric: str) -> tuple[str, str, str]:
         defaults = {
             "cpu": f'sum(oncall_process_cpu_percent{{job="{escaped_job}"}})',
             "memory": f'sum(oncall_process_resident_memory_bytes{{job="{escaped_job}"}})',
-            "error_rate": (
-                f'sum(rate(oncall_http_requests_total{{job="{escaped_job}",status=~"5.."}}[5m])) '
-                f'/ clamp_min(sum(rate(oncall_http_requests_total{{job="{escaped_job}"}}[5m])), 0.001)'
-            ),
+            "error_rate": f"(({failed_rate} or (0 * {request_rate})) / {request_rate}) and ({request_rate} > 0)",
+            "request_rate": request_rate,
             "latency_p95": (
                 "histogram_quantile(0.95, sum by (le) "
                 f'(rate(oncall_http_request_duration_seconds_bucket{{job="{escaped_job}"}}[5m])))'
@@ -112,6 +117,7 @@ def _metric_query(service_name: str, metric: str) -> tuple[str, str, str]:
         "error_rate": "ratio",
         "latency_p95": "seconds",
         "up": "boolean",
+        "request_rate": "requests/second",
     }[metric]
     return canonical_name, query, unit
 
@@ -167,22 +173,35 @@ def _query_service_metric(
     end = parse_time_or_default(end_time, default_offset_hours=0)
     step = _step_seconds(interval)
     canonical_name, query, unit = _metric_query(service_name, metric)
+    traffic_points = []
+    traffic_query = None
 
     try:
         data_points = _query_range(query, start, end, step)
+        if metric == "error_rate":
+            _, traffic_query, _ = _metric_query(service_name, "request_rate")
+            traffic_points = _query_range(traffic_query, start, end, step)
     except (httpx.HTTPError, ValueError, RuntimeError) as exc:
         return {
             "success": False,
+            "data_status": "query_failed",
             "source": "prometheus",
             "service_name": canonical_name,
             "metric": metric,
             "promql": query,
-            "time_range": {"start": start.isoformat(), "end": end.isoformat(), "step_seconds": step},
+            "time_range": {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "step_seconds": step,
+            },
             "data_points": [],
             "error": str(exc),
         }
 
     values = [float(point["value"]) for point in data_points]
+    data_status = "available" if values else "no_data"
+    if metric == "error_rate" and traffic_points and traffic_points[-1]["value"] == 0:
+        data_status = "no_traffic"
     statistics = {}
     if values:
         ordered = sorted(values)
@@ -196,6 +215,7 @@ def _query_service_metric(
 
     return {
         "success": True,
+        "data_status": data_status,
         "source": "prometheus",
         "service_name": canonical_name,
         "metric": metric,
@@ -204,6 +224,8 @@ def _query_service_metric(
         "time_range": {"start": start.isoformat(), "end": end.isoformat(), "step_seconds": step},
         "data_points": data_points,
         "statistics": statistics,
+        "request_rate_promql": traffic_query,
+        "latest_request_rate": traffic_points[-1]["value"] if traffic_points else None,
         "message": f"Prometheus returned {len(data_points)} real data points",
     }
 
@@ -212,15 +234,19 @@ def _query_service_metric(
 @log_tool_call
 def query_service_metric(
     service_name: str,
-    metric: str,
+    metric: ServiceMetric,
     start_time: str | None = None,
     end_time: str | None = None,
     interval: str = "1m",
 ) -> dict[str, Any]:
     """Query a real Prometheus metric for a service.
 
-    metric supports cpu, memory, error_rate, latency_p95, and up. The response
-    includes the exact PromQL and time range used as diagnosis evidence.
+    service_name must be a registered application from list_monitored_services;
+    'all' is not a wildcard. Query each registered service separately.
+    metric supports cpu, memory, error_rate, latency_p95, up, and request_rate.
+    request_rate uses the catalog PromQL and returns requests/second; an observed
+    zero is available data, while absent series are no_data. The response includes
+    the exact PromQL and time range used as diagnosis evidence.
     """
     return _query_service_metric(service_name, metric, start_time, end_time, interval)
 

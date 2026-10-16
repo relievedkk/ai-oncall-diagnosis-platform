@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import secrets
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
+from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +28,27 @@ from app.models.alerts import AlertmanagerAlert
 
 ClaimResult = Literal["claimed", "completed", "busy", "missing"]
 DIAGNOSIS_TASK_NAME = "app.tasks.diagnosis.run_diagnosis"
+
+
+class DiagnosisLeaseLostError(RuntimeError):
+    """The caller no longer owns this diagnosis execution."""
+
+
+class CheckpointConfigurationError(RuntimeError):
+    """Checkpoint storage cannot participate in the diagnosis authority transaction."""
+
+
+def _assert_execution_owner(job: Any, execution_token: str | None) -> None:
+    if execution_token is None:
+        return  # Administrative writes do not impersonate a worker execution.
+    value = job.get if isinstance(job, dict) else lambda key: getattr(job, key, None)
+    lease = _parse_datetime(value("lease_expires_at")) if job is not None else None
+    if (
+        job is None
+        or value("execution_token") != execution_token
+        or (value("status") == "running" and (lease is None or lease <= utc_now()))
+    ):
+        raise DiagnosisLeaseLostError("diagnosis execution lease was lost")
 
 
 def utc_now() -> datetime:
@@ -60,6 +84,7 @@ def _event_report(event: dict[str, Any]) -> str:
 
 
 class DiagnosisRepository(Protocol):
+    def checkpoint_write_guard(self, diagnosis_id: str, execution_token: str, *, connection=None): ...
     async def create_or_get_job(self, values: dict[str, Any]) -> tuple[dict[str, Any], bool]: ...
 
     async def create_or_get_job_and_enqueue(
@@ -69,20 +94,21 @@ class DiagnosisRepository(Protocol):
     async def requeue_interrupted(self, diagnosis_id: str, queue_name: str) -> bool: ...
 
     async def claim_job(
-        self, diagnosis_id: str, celery_task_id: str, worker_name: str
+        self, diagnosis_id: str, celery_task_id: str, worker_name: str,
+        *, execution_token: str | None = None,
     ) -> ClaimResult: ...
 
-    async def heartbeat(self, diagnosis_id: str, celery_task_id: str) -> None: ...
+    async def heartbeat(self, diagnosis_id: str, celery_task_id: str, *, execution_token: str | None = None) -> bool: ...
 
-    async def prepare_retry(self, diagnosis_id: str, error: str) -> None: ...
+    async def prepare_retry(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None: ...
 
-    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None: ...
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None: ...
 
-    async def update_job(self, diagnosis_id: str, **values: Any) -> None: ...
+    async def update_job(self, diagnosis_id: str, *, execution_token: str | None = None, **values: Any) -> None: ...
 
-    async def record_event(self, diagnosis_id: str, event: dict[str, Any]) -> None: ...
+    async def record_event(self, diagnosis_id: str, event: dict[str, Any], *, execution_token: str | None = None) -> None: ...
 
-    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None: ...
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str, *, execution_token: str | None = None) -> None: ...
 
     async def mark_resolved(self, alert: AlertmanagerAlert) -> None: ...
 
@@ -114,8 +140,20 @@ class InMemoryDiagnosisRepository:
         self._evidence_id = 0
         self._outbox_id = 0
 
+    @asynccontextmanager
+    async def checkpoint_write_guard(self, diagnosis_id, execution_token, *, connection=None):
+        if connection is not None:
+            raise CheckpointConfigurationError("durable checkpoints require SQL diagnosis ownership")
+        async with self._lock:
+            job = self._jobs.get(diagnosis_id)
+            _assert_execution_owner(job, execution_token)
+            if not execution_token or job.get("status") != "running":
+                raise DiagnosisLeaseLostError("diagnosis is no longer running")
+            yield
+
     def _new_job(self, values: dict[str, Any]) -> dict[str, Any]:
         now = utc_now().isoformat()
+        unclaimed_identity = None
         return {
             **copy.deepcopy(values),
             "events": [],
@@ -124,6 +162,7 @@ class InMemoryDiagnosisRepository:
             "report": "",
             "error": None,
             "celery_task_id": None,
+            "execution_token": unclaimed_identity,
             "worker_name": None,
             "attempt_count": 0,
             "heartbeat_at": None,
@@ -196,7 +235,8 @@ class InMemoryDiagnosisRepository:
             return True
 
     async def claim_job(
-        self, diagnosis_id: str, celery_task_id: str, worker_name: str
+        self, diagnosis_id: str, celery_task_id: str, worker_name: str,
+        *, execution_token: str | None = None,
     ) -> ClaimResult:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
@@ -214,6 +254,7 @@ class InMemoryDiagnosisRepository:
                 status="running",
                 error=None,
                 celery_task_id=celery_task_id,
+                execution_token=execution_token or uuid4().hex,
                 worker_name=worker_name,
                 attempt_count=int(job.get("attempt_count", 0)) + 1,
                 started_at=job.get("started_at") or now.isoformat(),
@@ -226,39 +267,47 @@ class InMemoryDiagnosisRepository:
             )
             return "claimed"
 
-    async def heartbeat(self, diagnosis_id: str, celery_task_id: str) -> None:
+    async def heartbeat(self, diagnosis_id: str, celery_task_id: str, *, execution_token: str | None = None) -> bool:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
-            if not job or job.get("celery_task_id") != celery_task_id:
-                return
+            if not job or job.get("celery_task_id") != celery_task_id or job["status"] != "running":
+                return False
+            try:
+                _assert_execution_owner(job, execution_token)
+            except DiagnosisLeaseLostError:
+                return False
             now = utc_now()
             job["heartbeat_at"] = now.isoformat()
             job["lease_expires_at"] = (
                 now + timedelta(seconds=config.diagnosis_lease_seconds)
             ).isoformat()
             job["updated_at"] = now.isoformat()
+            return True
 
-    async def prepare_retry(self, diagnosis_id: str, error: str) -> None:
+    async def prepare_retry(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None:
         await self.update_job(
             diagnosis_id,
+            execution_token=execution_token,
             status="retrying",
             error=error,
             completed_at=None,
             lease_expires_at=None,
         )
 
-    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None:
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None:
         await self.update_job(
             diagnosis_id,
+            execution_token=execution_token,
             status="dead_lettered",
             error=error,
             dead_lettered_at=utc_now().isoformat(),
             lease_expires_at=None,
         )
 
-    async def update_job(self, diagnosis_id: str, **values: Any) -> None:
+    async def update_job(self, diagnosis_id: str, *, execution_token: str | None = None, **values: Any) -> None:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
+            _assert_execution_owner(job, execution_token)
             if not job:
                 return
             now = utc_now().isoformat()
@@ -271,9 +320,10 @@ class InMemoryDiagnosisRepository:
             job.update(copy.deepcopy(values))
             job["updated_at"] = now
 
-    async def record_event(self, diagnosis_id: str, event: dict[str, Any]) -> None:
+    async def record_event(self, diagnosis_id: str, event: dict[str, Any], *, execution_token: str | None = None) -> None:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
+            _assert_execution_owner(job, execution_token)
             if not job:
                 return
             safe_event = _json_safe(event)
@@ -365,9 +415,10 @@ class InMemoryDiagnosisRepository:
                 job["report"] = report
             job["updated_at"] = utc_now().isoformat()
 
-    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None:
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str, *, execution_token: str | None = None) -> None:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
+            _assert_execution_owner(job, execution_token)
             if not job:
                 return
             now = utc_now().isoformat()
@@ -464,6 +515,12 @@ class InMemoryDiagnosisRepository:
                 job_counts[status] = job_counts.get(status, 0) + 1
             outbox_counts: dict[str, int] = {}
             pending_times: list[datetime] = []
+            cutoff = utc_now() - timedelta(minutes=10)
+            recent_failures = sum(
+                item["evidence_type"] == "error"
+                and _parse_datetime(item["collected_at"]) >= cutoff
+                for job in self._jobs.values() for item in job["evidence"]
+            )
             for event in self._outbox.values():
                 status = str(event["status"])
                 outbox_counts[status] = outbox_counts.get(status, 0) + 1
@@ -478,14 +535,72 @@ class InMemoryDiagnosisRepository:
             "job_counts": job_counts,
             "outbox_counts": outbox_counts,
             "outbox_oldest_pending_seconds": oldest_age,
+            "recent_failure_count": recent_failures,
         }
 
 
 class SQLAlchemyDiagnosisRepository:
     """PostgreSQL repository used by API, publisher, and Celery workers."""
 
-    def __init__(self) -> None:
-        self._sessions = database_manager.session_factory
+    def __init__(self, sessions=None) -> None:
+        self._sessions = sessions or database_manager.session_factory
+
+    async def _assert_checkpoint_database(self, connection) -> None:
+        """Prove both connections share the same PostgreSQL lock domain.
+
+        Comparing hostnames or database names is insufficient (aliases and cloned
+        databases exist). A fresh transaction-scoped advisory lock is observable
+        only in the exact database holding it. No persistent schema is needed.
+        """
+        lock_key = secrets.randbits(63)
+        async with self._sessions.begin() as session:
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+            relation = await session.scalar(text("SELECT to_regclass('diagnosis_jobs')::oid"))
+            async with connection.transaction():
+                async with connection.cursor() as cursor:
+                    await cursor.execute(
+                        "SELECT pg_try_advisory_xact_lock(%s) AS acquired, "
+                        "to_regclass('diagnosis_jobs')::oid AS relation", (lock_key,),
+                    )
+                    row = await cursor.fetchone()
+                    acquired = row["acquired"] if isinstance(row, dict) else row[0]
+                    if acquired:
+                        raise CheckpointConfigurationError(
+                            "diagnosis checkpoints and jobs must use the same PostgreSQL database"
+                        )
+                    checkpoint_relation = row["relation"] if isinstance(row, dict) else row[1]
+                    if relation is None or checkpoint_relation != relation:
+                        raise CheckpointConfigurationError(
+                            "checkpoint connection must resolve the same diagnosis ownership table"
+                        )
+
+    @asynccontextmanager
+    async def checkpoint_write_guard(self, diagnosis_id, execution_token, *, connection=None):
+        if connection is None:
+            async with self._sessions.begin() as session:
+                job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+                _assert_execution_owner(job, execution_token)
+                if not execution_token or job.status != "running":
+                    raise DiagnosisLeaseLostError("diagnosis is no longer running")
+                yield
+            return
+        await self._assert_checkpoint_database(connection)
+        # Ownership lock and checkpoint SQL commit/rollback on one connection.
+        # Losing this connection cannot leave an independently committing saver.
+        async with connection.transaction():
+            await connection.execute("SET LOCAL lock_timeout = '5s'")
+            await connection.execute("SET LOCAL statement_timeout = '15s'")
+            await connection.execute("SET LOCAL idle_in_transaction_session_timeout = '15s'")
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT status, execution_token, lease_expires_at FROM diagnosis_jobs "
+                    "WHERE diagnosis_id = %s FOR UPDATE", (diagnosis_id,),
+                )
+                job = await cursor.fetchone()
+            _assert_execution_owner(job, execution_token)
+            if not execution_token or job["status"] != "running":
+                raise DiagnosisLeaseLostError("diagnosis is no longer running")
+            yield
 
     @staticmethod
     def _new_job(values: dict[str, Any]) -> DiagnosisJob:
@@ -563,7 +678,8 @@ class SQLAlchemyDiagnosisRepository:
             return True
 
     async def claim_job(
-        self, diagnosis_id: str, celery_task_id: str, worker_name: str
+        self, diagnosis_id: str, celery_task_id: str, worker_name: str,
+        *, execution_token: str | None = None,
     ) -> ClaimResult:
         async with self._sessions.begin() as session:
             job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
@@ -579,6 +695,7 @@ class SQLAlchemyDiagnosisRepository:
             job.status = "running"
             job.error = None
             job.celery_task_id = celery_task_id
+            job.execution_token = execution_token or uuid4().hex
             job.worker_name = worker_name
             job.attempt_count += 1
             job.started_at = job.started_at or now
@@ -588,42 +705,51 @@ class SQLAlchemyDiagnosisRepository:
             job.updated_at = now
             return "claimed"
 
-    async def heartbeat(self, diagnosis_id: str, celery_task_id: str) -> None:
+    async def heartbeat(self, diagnosis_id: str, celery_task_id: str, *, execution_token: str | None = None) -> bool:
         now = utc_now()
         async with self._sessions.begin() as session:
-            await session.execute(
+            conditions = [
+                DiagnosisJob.diagnosis_id == diagnosis_id,
+                DiagnosisJob.celery_task_id == celery_task_id,
+                DiagnosisJob.status == "running",
+            ]
+            if execution_token is not None:
+                conditions.extend([
+                    DiagnosisJob.execution_token == execution_token,
+                    DiagnosisJob.lease_expires_at > now,
+                ])
+            result = await session.execute(
                 update(DiagnosisJob)
-                .where(
-                    DiagnosisJob.diagnosis_id == diagnosis_id,
-                    DiagnosisJob.celery_task_id == celery_task_id,
-                    DiagnosisJob.status == "running",
-                )
+                .where(*conditions)
                 .values(
                     heartbeat_at=now,
                     lease_expires_at=now + timedelta(seconds=config.diagnosis_lease_seconds),
                     updated_at=now,
                 )
             )
+            return bool(result.rowcount)
 
-    async def prepare_retry(self, diagnosis_id: str, error: str) -> None:
+    async def prepare_retry(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None:
         await self.update_job(
             diagnosis_id,
+            execution_token=execution_token,
             status="retrying",
             error=error,
             completed_at=None,
             lease_expires_at=None,
         )
 
-    async def mark_dead_lettered(self, diagnosis_id: str, error: str) -> None:
+    async def mark_dead_lettered(self, diagnosis_id: str, error: str, *, execution_token: str | None = None) -> None:
         await self.update_job(
             diagnosis_id,
+            execution_token=execution_token,
             status="dead_lettered",
             error=error,
             dead_lettered_at=utc_now(),
             lease_expires_at=None,
         )
 
-    async def update_job(self, diagnosis_id: str, **values: Any) -> None:
+    async def update_job(self, diagnosis_id: str, *, execution_token: str | None = None, **values: Any) -> None:
         allowed = {
             "status",
             "alert_status",
@@ -657,18 +783,22 @@ class SQLAlchemyDiagnosisRepository:
                 updates[key] = _parse_datetime(updates[key])
         updates["updated_at"] = now
         async with self._sessions.begin() as session:
+            if execution_token is not None:
+                job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+                _assert_execution_owner(job, execution_token)
             await session.execute(
                 update(DiagnosisJob)
                 .where(DiagnosisJob.diagnosis_id == diagnosis_id)
                 .values(**updates)
             )
 
-    async def record_event(self, diagnosis_id: str, event: dict[str, Any]) -> None:
+    async def record_event(self, diagnosis_id: str, event: dict[str, Any], *, execution_token: str | None = None) -> None:
         event_type = str(event.get("type", "event"))
         source = str(event.get("stage", "aiops"))
         now = utc_now()
         async with self._sessions.begin() as session:
-            job = await session.get(DiagnosisJob, diagnosis_id)
+            job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+            _assert_execution_owner(job, execution_token)
             if job is None:
                 return
             step: DiagnosisStep | None = None
@@ -789,9 +919,12 @@ class SQLAlchemyDiagnosisRepository:
                     report.updated_at = now
             job.updated_at = now
 
-    async def skip_remaining_steps(self, diagnosis_id: str, reason: str) -> None:
+    async def skip_remaining_steps(self, diagnosis_id: str, reason: str, *, execution_token: str | None = None) -> None:
         now = utc_now()
         async with self._sessions.begin() as session:
+            if execution_token is not None:
+                job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+                _assert_execution_owner(job, execution_token)
             await session.execute(
                 update(DiagnosisStep)
                 .where(
@@ -934,6 +1067,12 @@ class SQLAlchemyDiagnosisRepository:
 
     async def get_operational_metrics(self) -> dict[str, Any]:
         async with self._sessions() as session:
+            recent_failures = await session.scalar(
+                select(func.count()).select_from(DiagnosisEvidence).where(
+                    DiagnosisEvidence.evidence_type == "error",
+                    DiagnosisEvidence.collected_at >= utc_now() - timedelta(minutes=10),
+                )
+            )
             job_rows = (
                 await session.execute(
                     select(DiagnosisJob.status, func.count()).group_by(DiagnosisJob.status)
@@ -954,6 +1093,7 @@ class SQLAlchemyDiagnosisRepository:
             oldest_age = max(0.0, (utc_now() - oldest_pending).total_seconds())
         return {
             "job_counts": {str(status): int(count) for status, count in job_rows},
+            "recent_failure_count": int(recent_failures or 0),
             "outbox_counts": {str(status): int(count) for status, count in outbox_rows},
             "outbox_oldest_pending_seconds": oldest_age,
         }

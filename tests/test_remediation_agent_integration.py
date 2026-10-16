@@ -109,9 +109,9 @@ class TrackingRepository(InMemoryDiagnosisRepository):
         super().__init__()
         self.order = order
 
-    async def record_event(self, diagnosis_id, event):
+    async def record_event(self, diagnosis_id, event, **kwargs):
         self.order.append(f"record:{event.get('type')}")
-        await super().record_event(diagnosis_id, event)
+        await super().record_event(diagnosis_id, event, **kwargs)
 
 
 class RecordingRemediationService:
@@ -119,8 +119,10 @@ class RecordingRemediationService:
         self.order = order
         self.error = error
         self.calls = []
+        self.execution_tokens = []
 
-    async def propose(self, diagnosis_id, intent, evidence, requested_by="agent"):
+    async def propose(self, diagnosis_id, intent, evidence, requested_by="agent", **kwargs):
+        self.execution_tokens.append(kwargs.get("execution_token"))
         self.order.append("propose")
         self.calls.append((diagnosis_id, intent, evidence, requested_by))
         if self.error is not None:
@@ -177,6 +179,7 @@ async def test_runner_records_report_before_submitting_remediation(monkeypatch):
     assert order.index("record:report") < order.index("propose")
     assert remediation.calls[0][0] == diagnosis_id
     assert remediation.calls[0][3] == "agent"
+    assert remediation.execution_tokens[0] == (await repository.get_job(diagnosis_id))["execution_token"]
 
 
 @pytest.mark.asyncio
