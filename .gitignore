@@ -86,3 +86,16 @@ dmypy.json
 # Isolated feature worktrees
 .worktrees/
 
+
+# Local test artifacts and execution notes
+/docs/authority-checkpoint-output-2026-10-16.txt
+/docs/authority-checkpoint-results-2026-10-16.xml
+/docs/cls-mcp-runtime-2026-10-15.json
+/docs/frontend-rendering-2026-10-16.png
+/docs/functional-results-2026-10-16.json
+/docs/history-rendering-2026-10-16.png
+/docs/milvus-functional-check-2026-10-15.md
+/docs/pytest-output-2026-10-16.txt
+/docs/pytest-results-2026-10-16.xml
+/docs/real-provider-check-2026-10-15.md
+/docs/superpowers/plans/2026-10-15-functional-tests-and-repairs.md
