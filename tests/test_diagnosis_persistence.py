@@ -82,3 +82,31 @@ async def test_postgres_concurrent_claim_has_one_owner(postgres_diagnosis):
     )
     assert sorted(claims) == ["busy", "claimed"]
     assert (await repository.get_job(job_id))["attempt_count"] == 1
+
+
+async def test_postgres_dead_letter_replay_is_atomic(postgres_diagnosis):
+    repository, sessions, job_id = postgres_diagnosis
+    await repository.claim_job(job_id, "old", "worker", execution_token="old")
+    await repository.mark_dead_lettered(job_id, "failure", execution_token="old")
+    assert await repository.claim_job(job_id, "duplicate", "worker") == "dead_lettered"
+    results = await asyncio.gather(*(repository.requeue_dead_lettered(job_id, "diagnosis.default") for _ in range(2)))
+    assert sorted(results) == [False, True]
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(OutboxEvent).where(OutboxEvent.diagnosis_id == job_id)) == 2
+    assert await repository.claim_job(job_id, "replay", "worker", execution_token="new") == "claimed"
+    assert not await repository.heartbeat(job_id, "old", execution_token="old")
+
+
+async def test_operator_cli_requeues_dead_letter_once(postgres_diagnosis):
+    import subprocess
+    import sys
+    repository, _sessions, job_id = postgres_diagnosis
+    await repository.claim_job(job_id, "old", "worker", execution_token="old")
+    await repository.mark_dead_lettered(job_id, "failure", execution_token="old")
+    environment = {**os.environ, "DATABASE_URL": os.environ["TEST_DATABASE_URL"]}
+    command = [sys.executable, "-m", "app.tasks.replay_dead_letter", job_id]
+    first = await asyncio.to_thread(subprocess.run, command, env=environment, capture_output=True, text=True, timeout=20)
+    assert first.returncode == 0, first.stderr
+    assert (await repository.get_job(job_id))["status"] == "queued"
+    duplicate = await asyncio.to_thread(subprocess.run, command, env=environment, capture_output=True, text=True, timeout=20)
+    assert duplicate.returncode == 1

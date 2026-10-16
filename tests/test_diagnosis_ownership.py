@@ -118,3 +118,31 @@ def test_valid_mcp_text_metric_preserves_success_and_payload():
     evidence = _remediation_evidence({"evidence": [{"evidence_type": "metric", "source": "query_cpu_metrics", "payload": {"result": [{"type": "text", "text": '{"success":true,"data_status":"available","data_points":[{"timestamp":"2026-10-16T00:00:00Z","value":90}]}'}]}}]})
     assert evidence[0]["success"] is True
     assert evidence[0]["payload"]["data_points"] == [{"timestamp": "2026-10-16T00:00:00Z", "value": 90}]
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_requires_explicit_atomic_replay():
+    import asyncio
+    repository = diagnosis.InMemoryDiagnosisRepository()
+    job_id = await queued_job(repository)
+    await repository.claim_job(job_id, "old", "worker", execution_token="old")
+    await repository.mark_dead_lettered(job_id, "failure", execution_token="old")
+    assert await repository.claim_job(job_id, "redelivery", "worker") == "dead_lettered"
+    results = await asyncio.gather(*(repository.requeue_dead_lettered(job_id, "diagnosis.default") for _ in range(2)))
+    assert sorted(results) == [False, True]
+    assert len(repository._outbox) == 2
+    job = await repository.get_job(job_id)
+    assert job["execution_token"] is None
+    assert job["dead_lettered_at"] is None
+    assert await repository.claim_job(job_id, "replay", "worker", execution_token="new") == "claimed"
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_duplicate_is_acknowledged_without_starting_graph():
+    from app.services.diagnosis_runner import DiagnosisRunner
+    repository = diagnosis.InMemoryDiagnosisRepository()
+    job_id = await queued_job(repository)
+    await repository.claim_job(job_id, "old", "worker", execution_token="old")
+    await repository.mark_dead_lettered(job_id, "failure", execution_token="old")
+    assert await DiagnosisRunner(repository).run(job_id, "duplicate", "worker") == "already_dead_lettered"
+    assert (await repository.get_job(job_id))["attempt_count"] == 1

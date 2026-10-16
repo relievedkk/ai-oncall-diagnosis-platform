@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from contextlib import contextmanager
 from threading import RLock
 
 from langchain_core.documents import Document
@@ -10,6 +11,7 @@ from loguru import logger
 
 from app.config import config
 from app.core.milvus_client import milvus_manager
+from app.core.vector_lock import vector_operation_lock
 from app.services.vector_embedding_service import vector_embedding_service
 
 # 统一使用 biz collection
@@ -19,15 +21,21 @@ COLLECTION_NAME = "biz"
 class VectorStoreManager:
     """向量存储管理器"""
 
-    # All manager instances in this worker share the same mutation/read lock.
-    # Milvus does not provide a transaction across insert + delete; other workers
-    # must coordinate externally if they can index the same source concurrently.
+    # Thread lock plus a PostgreSQL transaction lock shared by every worker.
     _operation_lock = RLock()
 
     def __init__(self):
         """初始化向量存储管理器"""
         self.vector_store: Milvus | None = None
         self.collection_name = COLLECTION_NAME
+
+    def _distributed_lock(self):
+        return vector_operation_lock(self.collection_name)
+
+    @contextmanager
+    def _operation_guard(self):
+        with self._operation_lock, self._distributed_lock() as connection:
+            yield connection
 
     def _initialize_vector_store(self):
         """初始化 Milvus VectorStore"""
@@ -70,6 +78,12 @@ class VectorStoreManager:
             raise
 
     def add_documents(self, documents: list[Document]) -> list[str]:
+        if not documents:
+            return []
+        with self._operation_guard():
+            return self._add_documents(documents)
+
+    def _add_documents(self, documents: list[Document]) -> list[str]:
         """
         批量添加文档到向量存储（自动批量向量化）
 
@@ -116,7 +130,7 @@ class VectorStoreManager:
         """
         if not documents or any(not doc.page_content.strip() for doc in documents):
             raise ValueError("Cannot replace an index with empty document content")
-        with self._operation_lock:
+        with self._operation_guard() as coordinator:
             store = self._initialize_vector_store()
             collection = milvus_manager.get_collection()
             source_expr = f'metadata["_source"] == {json.dumps(file_path, ensure_ascii=False)}'
@@ -148,11 +162,18 @@ class VectorStoreManager:
                     logger.exception("Failed to clean staged index version {}", version)
                 raise
             # Never delete by source here: that would also delete the new version.
+            if coordinator is not None:
+                coordinator.execute("SELECT 1")
             if old_ids:
                 collection.delete(f"id in {json.dumps(old_ids)}")
+                collection.flush()
             return ids
 
     def delete_by_source(self, file_path: str) -> int:
+        with self._operation_guard():
+            return self._delete_by_source(file_path)
+
+    def _delete_by_source(self, file_path: str) -> int:
         """
         删除指定文件的所有文档
 
@@ -201,7 +222,7 @@ class VectorStoreManager:
             List[Document]: 相关文档列表
         """
         try:
-            with self._operation_lock:
+            with self._operation_guard():
                 vector_store = self._initialize_vector_store()
                 docs = vector_store.similarity_search(query, k=k)
             logger.debug("相似度搜索完成: 查询长度={}, 结果数={}", len(query), len(docs))

@@ -749,8 +749,8 @@ class AIOnCallApp {
             this.isStreaming = false;
             this.updateUI();
             
-            // 如果当前对话是从历史记录加载的，更新历史记录
-            if (this.isCurrentChatFromHistory && this.currentChatHistory.length > 0) {
+            // 保存当前会话，包含尚未切换过的新对话
+            if (this.currentChatHistory.length > 0) {
                 this.updateCurrentChatHistory();
                 this.renderChatHistory(); // 更新历史对话列表显示
             }
@@ -977,6 +977,7 @@ class AIOnCallApp {
                 content: content,
                 timestamp: new Date().toISOString()
             });
+            this.updateCurrentChatHistory();
         }
         
         const messageDiv = document.createElement('div');
@@ -1124,11 +1125,9 @@ class AIOnCallApp {
                 content: fullResponse,
                 timestamp: new Date().toISOString()
             });
-            // 如果当前对话是从历史记录加载的，更新历史记录
-            if (this.isCurrentChatFromHistory) {
-                this.updateCurrentChatHistory();
-                this.renderChatHistory();
-            }
+            // 保存当前会话，包含尚未切换过的新对话
+            this.updateCurrentChatHistory();
+            this.renderChatHistory();
         }
     }
 
@@ -1608,6 +1607,7 @@ class AIOnCallApp {
             content: response,
             timestamp: new Date().toISOString()
         });
+        this.updateCurrentChatHistory();
         
         this.scrollToBottom();
         return messageElement;

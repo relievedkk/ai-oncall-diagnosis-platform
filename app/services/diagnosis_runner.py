@@ -75,6 +75,8 @@ class DiagnosisRunner:
         claim: ClaimResult = await self.repository.claim_job(
             diagnosis_id, celery_task_id, worker_name, execution_token=execution_token
         )
+        if claim == "dead_lettered":
+            return "already_dead_lettered"
         if claim == "completed":
             return "already_completed"
         if claim == "busy":

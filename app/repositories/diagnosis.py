@@ -26,7 +26,7 @@ from app.db.models import (
 from app.db.session import database_manager
 from app.models.alerts import AlertmanagerAlert
 
-ClaimResult = Literal["claimed", "completed", "busy", "missing"]
+ClaimResult = Literal["claimed", "completed", "busy", "missing", "dead_lettered"]
 DIAGNOSIS_TASK_NAME = "app.tasks.diagnosis.run_diagnosis"
 
 
@@ -92,6 +92,8 @@ class DiagnosisRepository(Protocol):
     ) -> tuple[dict[str, Any], bool]: ...
 
     async def requeue_interrupted(self, diagnosis_id: str, queue_name: str) -> bool: ...
+
+    async def requeue_dead_lettered(self, diagnosis_id: str, queue_name: str) -> bool: ...
 
     async def claim_job(
         self, diagnosis_id: str, celery_task_id: str, worker_name: str,
@@ -219,6 +221,17 @@ class InMemoryDiagnosisRepository:
             self._enqueue(job["diagnosis_id"], queue_name)
             return copy.deepcopy(job), True
 
+    async def requeue_dead_lettered(self, diagnosis_id: str, queue_name: str) -> bool:
+        async with self._lock:
+            job = self._jobs.get(diagnosis_id)
+            if not job or job["status"] != "dead_lettered":
+                return False
+            job.update(status="queued", error=None, execution_token=None,
+                       lease_expires_at=None, completed_at=None, dead_lettered_at=None,
+                       updated_at=utc_now().isoformat())
+            self._enqueue(diagnosis_id, queue_name)
+            return True
+
     async def requeue_interrupted(self, diagnosis_id: str, queue_name: str) -> bool:
         async with self._lock:
             job = self._jobs.get(diagnosis_id)
@@ -242,6 +255,8 @@ class InMemoryDiagnosisRepository:
             job = self._jobs.get(diagnosis_id)
             if not job:
                 return "missing"
+            if job["status"] == "dead_lettered":
+                return "dead_lettered"
             if job["status"] == "completed":
                 return "completed"
             lease = _parse_datetime(job.get("lease_expires_at"))
@@ -664,6 +679,21 @@ class SQLAlchemyDiagnosisRepository:
             raise RuntimeError(f"diagnosis job was not persisted: {job.diagnosis_id}")
         return created, True
 
+    async def requeue_dead_lettered(self, diagnosis_id: str, queue_name: str) -> bool:
+        async with self._sessions.begin() as session:
+            job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+            if not job or job.status != "dead_lettered":
+                return False
+            job.status = "queued"
+            job.error = None
+            job.execution_token = None
+            job.lease_expires_at = None
+            job.completed_at = None
+            job.dead_lettered_at = None
+            job.updated_at = utc_now()
+            session.add(self._new_outbox(diagnosis_id, queue_name))
+            return True
+
     async def requeue_interrupted(self, diagnosis_id: str, queue_name: str) -> bool:
         async with self._sessions.begin() as session:
             job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
@@ -685,6 +715,8 @@ class SQLAlchemyDiagnosisRepository:
             job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
             if job is None:
                 return "missing"
+            if job.status == "dead_lettered":
+                return "dead_lettered"
             if job.status == "completed":
                 return "completed"
             now = utc_now()

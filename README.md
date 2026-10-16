@@ -513,3 +513,12 @@ Remediation requires successful, non-demo observations attributed to the request
 Approval expires at the earlier of its configured deadline and the frozen evidence deadline. Approval and initial execution claims recheck frozen evidence under the action lock. Legacy snapshots without validation metadata cannot authorize execution; obtain fresh evidence and submit a new proposal. Recovery of an already-started action remains available after evidence expires. Replica counts come only from validated target metrics; conflicting counts deny scaling.
 
 Diagnosis checkpoint writes require a live execution token and lock the diagnosis job in the same PostgreSQL transaction as the checkpoint mutation. The checkpoint database and business database must be the same actual PostgreSQL database and resolve the same `diagnosis_jobs` table. Different databases or shadow ownership tables fail closed. Chat checkpoints may still use a separate database. This protection adds no new schema migration.
+
+
+### Dead-letter replay and index coordination
+
+Replay a dead-lettered diagnosis explicitly with `python -m app.tasks.replay_dead_letter DIAGNOSIS_ID` using the deployment's database configuration. The command atomically resets the terminal state and adds one durable outbox event; the outbox publisher and diagnosis workers must be running. Duplicate replay requests do not enqueue twice. Ordinary broker redelivery of a dead-lettered diagnosis is acknowledged without another retry loop. Previously completed remediation actions remain protected by their existing idempotency keys.
+
+Milvus reads and index mutations through the manager now share a PostgreSQL transaction advisory lock across processes. All workers sharing the `biz` collection must use the same `DATABASE_URL` coordinator; failure to acquire the lock prevents mutation. Index replacement still inserts and flushes the new version before deleting and flushing old IDs. This is serialization of cooperating workers, not a cross-database transaction with Milvus. Direct external Milvus writers must follow the same coordination protocol.
+
+New chat messages are saved to the current user's local history immediately, including completed streaming replies. Switching to another chat is no longer required before refresh. This browser history remains local to the browser and user storage namespace.

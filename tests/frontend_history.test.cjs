@@ -8,9 +8,11 @@ function element() {
     return { style: {}, children: [], appendChild(child) { this.children.push(child); } };
 }
 
-function loadApp(history) {
+function loadApp(history, storage = new Map()) {
     const context = {
         console,
+        localStorage: { getItem(key) { return storage.get(key) ?? null; },
+            setItem(key, value) { storage.set(key, value); } },
         document: { createElement: element, head: element(), addEventListener() {} },
         fetch: async () => ({ ok: true, json: async () => ({ history }) }),
     };
@@ -51,4 +53,34 @@ test('legacy cached bot messages use the sanitized Markdown renderer', () => {
     const message = app.addMessage('bot', '- safe', false, false);
     assert.equal(rendered, '- safe');
     assert.equal(message.className, 'message assistant');
+});
+
+
+test('new streaming chat survives reload without switching sessions', () => {
+    const app = loadApp([]);
+    let persisted;
+    Object.assign(app, {sessionId: 'new-session', chatHistories: [],
+        currentChatHistory: [{type: 'user', content: 'question'}],
+        isCurrentChatFromHistory: false, renderChatHistory() {},
+        saveChatHistories() { persisted = JSON.stringify(this.chatHistories); }});
+    app.handleStreamComplete(null, 'answer');
+    assert.equal(JSON.parse(persisted)[0].id, 'new-session');
+    assert.equal(JSON.parse(persisted)[0].messages[1].content, 'answer');
+    app.handleStreamComplete(null, 'second answer');
+    assert.equal(JSON.parse(persisted).length, 1);
+});
+
+
+test('first user message is restored from local storage before any reply', () => {
+    const storage = new Map();
+    const app = loadApp([], storage);
+    Object.assign(app, {sessionId: 'pending', historyStorageKey: 'user-7',
+        currentChatHistory: [], chatHistories: [], scrollToBottom() {},
+        chatMessages: {querySelectorAll: () => [], appendChild() {}}});
+    app.addMessage('user', 'pending question');
+    const reloaded = loadApp([], storage);
+    reloaded.historyStorageKey = 'user-7';
+    assert.equal(reloaded.loadChatHistories()[0].messages[0].content, 'pending question');
+    reloaded.historyStorageKey = 'user-8';
+    assert.equal(reloaded.loadChatHistories().length, 0);
 });

@@ -24,10 +24,7 @@ def retrieve_knowledge(query: str) -> tuple[str, list[Document]]:
         logger.info("知识检索工具被调用，查询长度={}", len(query))
 
         # 从向量存储中检索相关文档
-        vector_store = vector_store_manager.get_vector_store()
-        retriever = vector_store.as_retriever(search_kwargs={"k": config.rag_top_k})
-
-        docs = retriever.invoke(query)
+        docs = vector_store_manager.similarity_search(query, k=config.rag_top_k)
 
         if not docs:
             logger.warning("未检索到相关文档")
