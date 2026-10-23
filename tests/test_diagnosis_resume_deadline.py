@@ -158,19 +158,20 @@ async def test_stream_survives_attempt_error_and_waits_for_committed_completion(
     class Repository:
         calls = 0
 
-        async def get_job(self, _):
+        async def get_job_stream(self, _, *, after_id=0, limit=100):
             self.calls += 1
             return {
                 "status": "retrying" if self.calls == 1 else "completed",
                 "attempt_count": 2,
                 "report": "final report",
-                "evidence": [
+                "evidence": [item for item in [
                     {"id": 1, "payload": {"type": "error", "attempt": 1, "message": "temporary"}},
                     {
                         "id": 2,
                         "payload": {"type": "complete", "attempt": 2, "response": "final report"},
                     },
-                ],
+                ] if item["id"] > after_id][:limit],
+                "has_more": False,
             }
 
     repository = Repository()
@@ -189,7 +190,7 @@ async def test_stream_emits_terminal_failure_even_without_error_evidence():
     from app.services.alert_diagnosis_service import AlertDiagnosisService
 
     class Repository:
-        async def get_job(self, _):
+        async def get_job_stream(self, _, *, after_id=0, limit=100):
             return {"status": "dead_lettered", "error": "retries exhausted", "evidence": []}
 
     events = [

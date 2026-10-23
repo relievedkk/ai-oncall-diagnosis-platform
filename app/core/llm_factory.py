@@ -13,7 +13,22 @@
 from langchain_openai import ChatOpenAI
 
 from app.config import config
+from app.core.data_safety import ModelInputRejected, model_input_bytes, redact_sensitive
 from app.core.model_protection import ModelObserver
+
+
+class SafeChatOpenAI(ChatOpenAI):
+    """Keep the boundary in the transport path, including tool/structured calls."""
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # Never rewrite tool JSON Schemas: only actual conversational data.
+        for field in ("messages", "input"):
+            if field in payload:
+                payload[field] = redact_sensitive(payload[field])
+        if model_input_bytes(payload) > config.model_max_input_bytes:
+            raise ModelInputRejected("模型输入超过安全上限，请缩小问题或证据范围")
+        return payload
 
 
 class LLMFactory:
@@ -34,14 +49,14 @@ class LLMFactory:
         base_url = base_url or LLMFactory.DASHSCOPE_BASE_URL
         api_key = api_key or config.dashscope_api_key
 
-        return ChatOpenAI(
+        return SafeChatOpenAI(
             model=model,
             temperature=temperature,
             streaming=streaming,
             base_url=base_url,
             api_key=api_key,
             timeout=config.llm_request_timeout,
-            max_retries=1,
+            max_retries=0,
             stream_usage=True,
             callbacks=[ModelObserver()],
         )

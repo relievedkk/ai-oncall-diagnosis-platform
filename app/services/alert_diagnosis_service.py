@@ -10,7 +10,8 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.config import config
-from app.models.alerts import AlertmanagerAlert, AlertmanagerWebhook
+from app.core.data_safety import redact_sensitive
+from app.models.alerts import AlertmanagerAlert, AlertmanagerWebhook, canonical_alert_timestamp
 from app.repositories.diagnosis import (
     DiagnosisRepository,
     InMemoryDiagnosisRepository,
@@ -34,7 +35,7 @@ def _parse_tool_result(value: Any) -> dict[str, Any] | None:
 
 def _format_stream_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     """Expose persisted tool evidence as a readable SSE event, not raw JSON."""
-    payload = evidence.get("payload")
+    payload = redact_sensitive(evidence.get("payload"))
     if isinstance(payload, dict) and isinstance(payload.get("type"), str):
         public_event = dict(payload)
         if public_event.get("type") == "step_complete":
@@ -81,10 +82,11 @@ class AlertDiagnosisService:
 
     @staticmethod
     def _event_key(alert: AlertmanagerAlert) -> str:
+        starts_at = canonical_alert_timestamp(alert.starts_at)
         if alert.fingerprint:
-            return f"{alert.fingerprint}:{alert.starts_at}"
+            return f"{alert.fingerprint}:{starts_at}"
         canonical = json.dumps(
-            {"labels": alert.labels, "startsAt": alert.starts_at},
+            {"labels": alert.labels, "startsAt": starts_at},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -105,6 +107,9 @@ class AlertDiagnosisService:
         return config.celery_default_queue
 
     async def handle_webhook(self, payload: AlertmanagerWebhook) -> list[str]:
+        # Revalidate the complete batch even for internal/model_construct callers.
+        # No resolve, queue write, or worker launch may precede this boundary.
+        payload = AlertmanagerWebhook.model_validate(payload.model_dump(by_alias=True))
         diagnosis_ids: list[str] = []
         for alert in payload.alerts:
             if alert.status == "resolved":
@@ -130,6 +135,7 @@ class AlertDiagnosisService:
                 },
                 queue_name,
             )
+            diagnosis_id = job["diagnosis_id"]  # Preserve IDs from pre-canonical history.
             diagnosis_ids.append(diagnosis_id)
 
             should_run = created
@@ -176,11 +182,11 @@ class AlertDiagnosisService:
             yield event
 
     async def stream_job(self, diagnosis_id: str) -> AsyncGenerator[dict[str, Any], None]:
-        seen_evidence: set[int] = set()
+        after_id = 0
         completion = None
         latest_error = None
         while True:
-            job = await self.repository.get_job(diagnosis_id)
+            job = await self.repository.get_job_stream(diagnosis_id, after_id=after_id, limit=100)
             if job is None:
                 yield {
                     "type": "error",
@@ -191,9 +197,7 @@ class AlertDiagnosisService:
                 return
             for evidence in job["evidence"]:
                 evidence_id = int(evidence["id"])
-                if evidence_id in seen_evidence:
-                    continue
-                seen_evidence.add(evidence_id)
+                after_id = evidence_id
                 event = _format_stream_evidence(evidence)
                 if event.get("type") == "complete":
                     completion = event
@@ -203,17 +207,19 @@ class AlertDiagnosisService:
                     # An attempt error is progress while Celery owns retry policy.
                     event = {**event, "type": "status", "stage": "attempt_failed"}
                 yield event
+            if job.get("has_more"):
+                continue  # Drain persisted pages before emitting terminal state.
             if job["status"] == "completed":
                 if completion is None or completion.get("attempt") != job.get("attempt_count"):
                     completion = {"type": "complete", "response": job.get("report", "")}
-                yield {**completion, "diagnosis_id": diagnosis_id}
+                yield redact_sensitive({**completion, "diagnosis_id": diagnosis_id})
                 return
             if job["status"] in {"failed", "interrupted", "dead_lettered"}:
-                yield {
+                yield redact_sensitive({
                     "type": "error", "stage": job["status"],
                     "message": job.get("error") or (latest_error or {}).get("message") or "诊断任务未完成",
                     "diagnosis_id": diagnosis_id,
-                }
+                })
                 return
             await asyncio.sleep(0.5)
 
@@ -230,10 +236,10 @@ class AlertDiagnosisService:
         task.add_done_callback(self._tasks.discard)
 
     async def get_job(self, diagnosis_id: str) -> dict[str, Any] | None:
-        return await self.repository.get_job(diagnosis_id)
+        return redact_sensitive(await self.repository.get_job(diagnosis_id))
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
-        return await self.repository.list_jobs()
+    async def list_jobs(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return redact_sensitive(await self.repository.list_jobs(limit=limit, offset=offset))
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks)

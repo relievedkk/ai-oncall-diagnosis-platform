@@ -17,6 +17,11 @@ from app.config import config
 # 全局 MCP 客户端（延迟初始化）
 _mcp_client: MultiServerMCPClient | None = None
 
+# CLS is deliberately absent: its raw API remains private to query_service_logs.
+_AGENT_TOOL_ALLOWLIST = {
+    "monitor": frozenset({"query_service_metric", "query_cpu_metrics", "query_memory_metrics"}),
+}
+
 
 def format_exception_chain(exc: BaseException) -> str:
     """展开 ExceptionGroup / TaskGroup，便于日志定位真实子异常。"""
@@ -36,16 +41,16 @@ def format_exception_chain(exc: BaseException) -> str:
 async def load_mcp_tools_safe(
     client: MultiServerMCPClient,
 ) -> tuple[list[BaseTool | Any], str | None]:
-    """逐个加载 MCP 服务；单个服务失败时保留其他服务的工具。"""
+    """Load only approved agent tools from known servers, preserving provenance.
+
+    Direct client.get_tools(server_name="cls") remains available to the local
+    catalog-backed log wrapper; raw cloud tools must never reach model binding.
+    """
     connections = getattr(client, "connections", None)
     if not connections:
-        try:
-            tools = await client.get_tools()
-            return tools, None
-        except BaseException as e:
-            return [], format_exception_chain(e)
+        return [], "MCP agent tools require named server connections for authorization"
 
-    server_names = list(connections)
+    server_names = [name for name in connections if name in _AGENT_TOOL_ALLOWLIST]
     results = await asyncio.gather(
         *(client.get_tools(server_name=name) for name in server_names),
         return_exceptions=True,
@@ -59,7 +64,11 @@ async def load_mcp_tools_safe(
         if isinstance(result, BaseException):
             errors.append(f"[{server_name}] {format_exception_chain(result)}")
         else:
-            tools.extend(result)
+            tools.extend(
+                tool
+                for tool in result
+                if getattr(tool, "name", None) in _AGENT_TOOL_ALLOWLIST[server_name]
+            )
 
     return tools, "\n".join(errors) or None
 

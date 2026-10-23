@@ -7,7 +7,12 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from app.config import config
 from app.core.credentials import secrets_equal
 from app.models.auth import LoginRequest, LoginResponse, UserInfo
-from app.services.auth_service import AuthenticationError, SessionPrincipal, auth_service
+from app.services.auth_service import (
+    AuthenticationBusyError,
+    AuthenticationError,
+    SessionPrincipal,
+    auth_service,
+)
 
 router = APIRouter()
 
@@ -48,6 +53,12 @@ async def login(payload: LoginRequest, response: Response) -> LoginResponse:
             payload.password.get_secret_value(),
             payload.remember,
         )
+    except AuthenticationBusyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="登录服务繁忙，请稍后重试",
+            headers={"Retry-After": "1"},
+        ) from exc
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

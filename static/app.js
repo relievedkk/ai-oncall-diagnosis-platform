@@ -4,6 +4,7 @@ class AIOnCallApp {
         this.apiBaseUrl = '/api';
         this.currentUser = currentUser;
         this.historyStorageKey = `chatHistories:user:${currentUser.id}`;
+        this.initializeIdentity();
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
@@ -245,7 +246,130 @@ class AIOnCallApp {
         if (this.currentUserAvatar) this.currentUserAvatar.textContent = displayName.slice(0, 1).toUpperCase();
     }
 
+    initializeIdentity() {
+        this.identityInvalidated = false;
+        this.requestControllers = new Set();
+        this.activeReaders = new Set();
+        try {
+            let state = localStorage.getItem('aiOnCallAuthState');
+            if (!state || JSON.parse(state).userId !== this.currentUser.id) {
+                state = JSON.stringify({userId: this.currentUser.id, version: `${Date.now()}-${Math.random()}`});
+                localStorage.setItem('aiOnCallAuthState', state);
+            }
+            this.identityVersion = state;
+        } catch (error) {
+            // Storage may be disabled. The session still uses server authentication.
+            this.identityVersion = null;
+        }
+        window.addEventListener('storage', event => {
+            if ((event.key === 'aiOnCallAuthState' || event.key === null) &&
+                event.newValue !== this.identityVersion) this.invalidateIdentity();
+        });
+        window.addEventListener('focus', () => this.isIdentityCurrent());
+        window.addEventListener('pageshow', () => this.isIdentityCurrent());
+    }
+
+    isIdentityCurrent() {
+        if (this.identityInvalidated) return false;
+        if (this.identityVersion != null) {
+            try {
+                if (localStorage.getItem('aiOnCallAuthState') !== this.identityVersion) {
+                    this.invalidateIdentity();
+                    return false;
+                }
+            } catch (error) { /* Storage can become unavailable during a session. */ }
+        }
+        return true;
+    }
+
+    assertIdentityCurrent() {
+        if (!this.isIdentityCurrent()) throw new Error('登录状态已变化，请重新登录');
+    }
+
+    invalidateIdentity(redirect = true) {
+        this.identityInvalidated = true;
+        for (const controller of this.requestControllers || []) controller.abort();
+        this.requestControllers?.clear();
+        for (const reader of this.activeReaders || []) {
+            Promise.resolve(reader.cancel()).catch(() => {});
+        }
+        this.activeReaders?.clear();
+        this.chatHistories = [];
+        this.currentChatHistory = [];
+        for (const element of [this.chatMessages, this.chatHistoryList]) {
+            if (element) element.innerHTML = '';
+        }
+        for (const element of [this.currentUserName, this.currentUserRole, this.currentUserAvatar]) {
+            if (element) element.textContent = '';
+        }
+        for (const element of [this.messageInput, this.sendButton, this.fileInput, this.logoutBtn]) {
+            if (element) element.disabled = true;
+        }
+        if (redirect) window.location.replace('/login');
+    }
+
+    async authFetch(url, options = {}) {
+        this.assertIdentityCurrent();
+        const controller = new AbortController();
+        this.requestControllers?.add(controller);
+        let response;
+        try {
+            response = await fetch(url, {...options, signal: controller.signal});
+            this.assertIdentityCurrent();
+        } catch (error) {
+            this.requestControllers?.delete(controller);
+            throw error;
+        }
+        if (!response.body || !response.ok) {
+            this.requestControllers?.delete(controller);
+            if (!response.ok) controller.abort();
+        }
+        // Cookies may change while a body or stream is still being received.
+        return new Proxy(response, {get: (target, property) => {
+            if (property === 'json') return async () => {
+                try {
+                    const data = await target.json();
+                    this.assertIdentityCurrent();
+                    return data;
+                } finally {
+                    this.requestControllers?.delete(controller);
+                }
+            };
+            if (property === 'body' && target.body) return new Proxy(target.body, {
+                get: (body, key) => {
+                    if (key === 'getReader') return () => {
+                        this.assertIdentityCurrent();
+                        const reader = body.getReader();
+                        this.activeReaders?.add(reader);
+                        return new Proxy(reader, {get: (stream, field) => {
+                            if (field === 'read') return async () => {
+                                this.assertIdentityCurrent();
+                                const chunk = await stream.read();
+                                this.assertIdentityCurrent();
+                                if (chunk.done) {
+                                    this.activeReaders?.delete(reader);
+                                    this.requestControllers?.delete(controller);
+                                }
+                                return chunk;
+                            };
+                            if (field === 'releaseLock') return () => {
+                                this.activeReaders?.delete(reader);
+                                this.requestControllers?.delete(controller);
+                                controller.abort();
+                                return stream.releaseLock();
+                            };
+                            return typeof stream[field] === 'function' ? stream[field].bind(stream) : stream[field];
+                        }});
+                    };
+                    return typeof body[key] === 'function' ? body[key].bind(body) : body[key];
+                }
+            });
+            return typeof target[property] === 'function' ? target[property].bind(target) : target[property];
+        }});
+    }
+
     getRequestHeaders(headers = {}) {
+        this.assertIdentityCurrent();
         const csrfToken = this.getCookie('oncall_csrf');
         if (csrfToken) {
             return { ...headers, 'X-CSRF-Token': csrfToken };
@@ -260,19 +384,28 @@ class AIOnCallApp {
     }
 
     ensureAuthenticated(response) {
+        this.assertIdentityCurrent();
         if (response.status === 401) {
-            window.location.replace('/login');
+            this.invalidateIdentity();
             throw new Error('登录状态已失效，请重新登录');
         }
     }
 
     async logout() {
+        if (!this.isIdentityCurrent()) return;
+        const headers = this.getRequestHeaders();
         if (this.logoutBtn) this.logoutBtn.disabled = true;
+        try {
+            localStorage.removeItem(this.historyStorageKey);
+            localStorage.setItem('aiOnCallAuthState', JSON.stringify({userId: null, version: `${Date.now()}-${Math.random()}`}));
+        } catch (error) { /* Cache cleanup is best effort when storage is unavailable. */ }
+        this.invalidateIdentity(false);
         try {
             await fetch('/api/auth/logout', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: this.getRequestHeaders()
+                headers,
+                keepalive: true
             });
         } finally {
             window.location.replace('/login');
@@ -301,6 +434,7 @@ class AIOnCallApp {
 
     // 新建对话
     newChat() {
+        if (!this.isIdentityCurrent()) return;
         if (this.isStreaming) {
             this.showNotification('请等待当前对话完成后再新建对话', 'warning');
             return;
@@ -358,6 +492,7 @@ class AIOnCallApp {
     
     // 保存当前对话到历史记录（新建）
     saveCurrentChat() {
+        if (!this.isIdentityCurrent()) return;
         if (this.currentChatHistory.length === 0) {
             return;
         }
@@ -398,6 +533,7 @@ class AIOnCallApp {
     
     // 更新当前对话的历史记录
     updateCurrentChatHistory() {
+        if (!this.isIdentityCurrent()) return;
         if (this.currentChatHistory.length === 0) {
             return;
         }
@@ -429,6 +565,7 @@ class AIOnCallApp {
     
     // 加载历史对话列表
     loadChatHistories() {
+        if (!this.isIdentityCurrent()) return [];
         try {
             const stored = localStorage.getItem(this.historyStorageKey);
             return stored ? JSON.parse(stored) : [];
@@ -440,6 +577,7 @@ class AIOnCallApp {
     
     // 保存历史对话列表到localStorage
     saveChatHistories() {
+        if (!this.isIdentityCurrent()) return;
         try {
             localStorage.setItem(this.historyStorageKey, JSON.stringify(this.chatHistories));
         } catch (e) {
@@ -449,6 +587,7 @@ class AIOnCallApp {
     
     // 渲染历史对话列表
     renderChatHistory() {
+        if (!this.isIdentityCurrent()) return;
         if (!this.chatHistoryList) {
             return;
         }
@@ -495,6 +634,7 @@ class AIOnCallApp {
     
     // 加载历史对话
     async loadChatHistory(historyId) {
+        if (!this.isIdentityCurrent()) return;
         const history = this.chatHistories.find(h => h.id === historyId);
         if (!history) {
             return;
@@ -513,7 +653,7 @@ class AIOnCallApp {
         
         try {
             // 从后端获取会话历史
-            const response = await fetch(`/api/chat/session/${historyId}`, {
+            const response = await this.authFetch(`/api/chat/session/${historyId}`, {
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders()
             });
@@ -565,6 +705,7 @@ class AIOnCallApp {
                 }
             }
         } catch (error) {
+            if (!this.isIdentityCurrent()) return;
             console.error('加载会话历史失败:', error);
             // 出错时使用localStorage的历史记录
             this.sessionId = history.id;
@@ -588,7 +729,7 @@ class AIOnCallApp {
     async deleteChatHistory(historyId) {
         try {
             // 调用后端API清空会话
-            const response = await fetch('/api/chat/clear', {
+            const response = await this.authFetch('/api/chat/clear', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders({
@@ -672,6 +813,7 @@ class AIOnCallApp {
 
     // 更新UI
     updateUI() {
+        if (!this.isIdentityCurrent()) return;
         // 更新模式选择器显示
         if (this.currentModeText) {
             const modeNames = {
@@ -717,6 +859,7 @@ class AIOnCallApp {
 
     // 发送消息
     async sendMessage() {
+        if (!this.isIdentityCurrent()) return;
         let message = '';
         if (this.messageInput) {
             message = this.messageInput.value.trim();
@@ -771,7 +914,7 @@ class AIOnCallApp {
         const loadingMessage = this.addLoadingMessage('正在思考...');
         
         try {
-            const response = await fetch(`${this.apiBaseUrl}/chat`, {
+            const response = await this.authFetch(`${this.apiBaseUrl}/chat`, {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders({
@@ -830,7 +973,7 @@ class AIOnCallApp {
     // 发送流式消息
     async sendStreamMessage(message) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/chat_stream`, {
+            const response = await this.authFetch(`${this.apiBaseUrl}/chat_stream`, {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders({
@@ -975,7 +1118,7 @@ class AIOnCallApp {
 
     async showUsageSummary() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/feedback/summary`, {credentials: 'same-origin'});
+            const response = await this.authFetch(`${this.apiBaseUrl}/feedback/summary`, {credentials: 'same-origin'});
             this.ensureAuthenticated(response);
             if (!response.ok) throw new Error('summary unavailable');
             const data = await response.json();
@@ -1003,18 +1146,20 @@ class AIOnCallApp {
             button.onclick = async () => {
                 button.disabled = true;
                 try {
-                    const response = await fetch(`${this.apiBaseUrl}/feedback`, {
+                    const response = await this.authFetch(`${this.apiBaseUrl}/feedback`, {
                         method: 'POST', credentials: 'same-origin',
                         headers: this.getRequestHeaders({'Content-Type': 'application/json'}),
                         body: JSON.stringify({interaction_id: interactionId, resolution})
                     });
                     this.ensureAuthenticated(response);
                     if (!response.ok) throw new Error('feedback unavailable');
+                    await response.json();
                     label.textContent = '反馈已保存，可重新选择';
                 } catch (error) {
+                    if (!this.isIdentityCurrent()) return;
                     label.textContent = '反馈未保存，请稍后重试';
                 } finally {
-                    button.disabled = false;
+                    button.disabled = !this.isIdentityCurrent();
                 }
             };
             controls.appendChild(button);
@@ -1024,6 +1169,7 @@ class AIOnCallApp {
 
     // 添加消息到聊天界面
     addMessage(type, content, isStreaming = false, saveToHistory = true) {
+        if (!this.isIdentityCurrent()) return null;
         // Older local caches used "bot" for assistant messages.
         if (type === 'bot') type = 'assistant';
         // 检查是否是第一条消息，如果是则移除居中样式
@@ -1092,6 +1238,7 @@ class AIOnCallApp {
 
     // 添加带加载动画的消息
     addLoadingMessage(content) {
+        if (!this.isIdentityCurrent()) return null;
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message assistant';
 
@@ -1168,6 +1315,7 @@ class AIOnCallApp {
 
     // 处理流式传输完成
     handleStreamComplete(assistantMessageElement, fullResponse) {
+        if (!this.isIdentityCurrent()) return;
         if (assistantMessageElement) {
             assistantMessageElement.classList.remove('streaming');
             const messageContent = assistantMessageElement.querySelector('.message-content');
@@ -1192,6 +1340,7 @@ class AIOnCallApp {
 
     // 显示通知
     showNotification(message, type = 'info') {
+        if (!this.isIdentityCurrent()) return;
         // 创建通知元素
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
@@ -1255,6 +1404,7 @@ class AIOnCallApp {
 
     // 上传文件到知识库
     async uploadFile(file) {
+        if (!this.isIdentityCurrent()) return;
         // 再次验证文件类型（双重保险）
         if (!this.validateFileType(file)) {
             this.showNotification('只支持上传 TXT、Markdown、PDF 或 DOCX 文件', 'error');
@@ -1279,7 +1429,7 @@ class AIOnCallApp {
             formData.append('file', file);
 
             // 发送上传请求
-            const response = await fetch(`${this.apiBaseUrl}/upload`, {
+            const response = await this.authFetch(`${this.apiBaseUrl}/upload`, {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders(),
@@ -1327,7 +1477,7 @@ class AIOnCallApp {
     // 发送智能运维请求（SSE 流式模式）
     async sendAIOpsRequest(loadingMessageElement) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/aiops`, {
+            const response = await this.authFetch(`${this.apiBaseUrl}/aiops`, {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: this.getRequestHeaders({
@@ -1548,6 +1698,7 @@ class AIOnCallApp {
 
     // 更新智能运维流式内容（实时显示）
     updateAIOpsStreamContent(messageElement, content) {
+        if (!this.isIdentityCurrent()) return;
         if (!messageElement) return;
         
         // 添加 aiops-message 类
@@ -1569,6 +1720,7 @@ class AIOnCallApp {
 
     // 更新智能运维消息（带折叠详情）
     updateAIOpsMessage(messageElement, response, details) {
+        if (!this.isIdentityCurrent()) return;
         console.log('updateAIOpsMessage 被调用');
         console.log('messageElement:', messageElement);
         console.log('response:', response);
@@ -1674,6 +1826,7 @@ class AIOnCallApp {
 
     // 添加智能运维消息（带折叠详情）- 保留用于兼容性
     addAIOpsMessage(response, details) {
+        if (!this.isIdentityCurrent()) return null;
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message assistant aiops-message';
 
@@ -1752,6 +1905,7 @@ class AIOnCallApp {
 
     // 触发智能运维（点击智能运维按钮时直接调用）
     async triggerAIOps() {
+        if (!this.isIdentityCurrent()) return;
         if (this.isStreaming) {
             this.showNotification('请等待当前操作完成', 'warning');
             return;
@@ -1857,12 +2011,20 @@ document.head.appendChild(style);
 // 初始化应用
 document.addEventListener('DOMContentLoaded', async () => {
     try {
+        let initialIdentity;
+        try { initialIdentity = localStorage.getItem('aiOnCallAuthState'); } catch (error) { /* Optional cache. */ }
         const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
         if (!response.ok) {
             window.location.replace('/login');
             return;
         }
         const currentUser = await response.json();
+        try {
+            if (initialIdentity !== localStorage.getItem('aiOnCallAuthState')) {
+                window.location.replace('/login');
+                return;
+            }
+        } catch (error) { /* Optional cache. */ }
         new AIOnCallApp(currentUser);
     } catch (error) {
         console.error('读取登录状态失败:', error);

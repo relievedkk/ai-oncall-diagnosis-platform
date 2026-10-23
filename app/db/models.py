@@ -146,6 +146,8 @@ class DiagnosisJob(Base):
     execution_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worker_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    model_input_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

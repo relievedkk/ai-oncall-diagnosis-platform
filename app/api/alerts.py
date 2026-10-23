@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Response, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 
 from app.config import config
 from app.core.credentials import secrets_equal
@@ -42,8 +42,8 @@ async def alertmanager_webhook(
 
 
 @router.get("/aiops/jobs")
-async def list_aiops_jobs():
-    return {"jobs": await alert_diagnosis_service.list_jobs()}
+async def list_aiops_jobs(limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=100_000)):
+    return {"jobs": await alert_diagnosis_service.list_jobs(limit=limit, offset=offset)}
 
 
 @router.get("/aiops/jobs/{diagnosis_id}")

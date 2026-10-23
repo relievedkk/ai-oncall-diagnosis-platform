@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.config import config
 from app.core.checkpoint import diagnosis_checkpoint_scope
+from app.core.data_safety import diagnosis_budget_scope, redact_sensitive
 from app.core.evidence import decode_evidence_result, valid_evidence
 from app.core.metrics import AIOPS_ACTIVE, AIOPS_DIAGNOSES
 from app.harness.contracts import parse_action_intent
@@ -68,8 +69,13 @@ class DiagnosisRunner:
         self.remediation = remediation or remediation_service
 
     async def run(
-        self, diagnosis_id: str, celery_task_id: str, worker_name: str,
-        *, execution_token: str | None = None, retry_managed: bool = False,
+        self,
+        diagnosis_id: str,
+        celery_task_id: str,
+        worker_name: str,
+        *,
+        execution_token: str | None = None,
+        retry_managed: bool = False,
     ) -> str:
         execution_token = execution_token or uuid4().hex
         claim: ClaimResult = await self.repository.claim_job(
@@ -100,9 +106,11 @@ class DiagnosisRunner:
         )
         error_event_seen = False
         timeout_seconds = min(
-            (limit for limit in (
-                config.celery_task_soft_time_limit, config.celery_task_time_limit
-            ) if limit and limit > 0),
+            (
+                limit
+                for limit in (config.celery_task_soft_time_limit, config.celery_task_time_limit)
+                if limit and limit > 0
+            ),
             default=None,
         )
         deadline = asyncio.timeout(timeout_seconds)
@@ -111,10 +119,12 @@ class DiagnosisRunner:
                 checkpoint_scope.enter_context(
                     diagnosis_checkpoint_scope(self.repository, diagnosis_id, execution_token)
                 )
+                checkpoint_scope.enter_context(
+                    diagnosis_budget_scope(self.repository, diagnosis_id, execution_token)
+                )
                 session_id = f"aiops:{diagnosis_id}"
-                resume = (
-                    job["attempt_count"] > 1
-                    and await aiops_service.has_pending_execution(session_id)
+                resume = job["attempt_count"] > 1 and await aiops_service.has_pending_execution(
+                    session_id
                 )
                 resume_kwargs = {"resume": True} if resume else {}
                 if trigger == "manual":
@@ -127,6 +137,7 @@ class DiagnosisRunner:
 
                 events = await checkpoint_scope.enter_async_context(aclosing(events))
                 async for event in events:
+                    event = redact_sensitive(event)
                     durable_event = {
                         **event,
                         "diagnosis_id": diagnosis_id,
@@ -154,7 +165,9 @@ class DiagnosisRunner:
                 return "completed"
         except asyncio.CancelledError:
             if lease_lost.is_set():
-                raise DiagnosisLeaseLostError("diagnosis heartbeat could not renew ownership") from None
+                raise DiagnosisLeaseLostError(
+                    "diagnosis heartbeat could not renew ownership"
+                ) from None
             await self.repository.record_event(
                 diagnosis_id,
                 {
@@ -167,7 +180,9 @@ class DiagnosisRunner:
                 execution_token=execution_token,
             )
             await self.repository.update_job(
-                diagnosis_id, status="interrupted", error="diagnosis worker was cancelled",
+                diagnosis_id,
+                status="interrupted",
+                error="diagnosis worker was cancelled",
                 execution_token=execution_token,
             )
             AIOPS_DIAGNOSES.labels(trigger=trigger, status="interrupted").inc()
@@ -177,7 +192,8 @@ class DiagnosisRunner:
         except Exception as exc:
             error_message = (
                 f"diagnosis deadline exceeded ({timeout_seconds:g}s)"
-                if deadline.expired() else str(exc)
+                if deadline.expired()
+                else str(exc)
             )
             if not error_event_seen:
                 await self.repository.record_event(
@@ -192,7 +208,9 @@ class DiagnosisRunner:
                     execution_token=execution_token,
                 )
             await self.repository.update_job(
-                diagnosis_id, error=error_message, execution_token=execution_token,
+                diagnosis_id,
+                error=error_message,
+                execution_token=execution_token,
                 **({} if retry_managed else {"status": "failed"}),
             )
             AIOPS_DIAGNOSES.labels(trigger=trigger, status="failed").inc()
@@ -237,8 +255,12 @@ class DiagnosisRunner:
             )
 
     async def _heartbeat_loop(
-        self, diagnosis_id: str, celery_task_id: str, execution_token: str,
-        owner_task: asyncio.Task | None, lease_lost: asyncio.Event,
+        self,
+        diagnosis_id: str,
+        celery_task_id: str,
+        execution_token: str,
+        owner_task: asyncio.Task | None,
+        lease_lost: asyncio.Event,
     ) -> None:
         while True:
             await asyncio.sleep(config.diagnosis_heartbeat_seconds)

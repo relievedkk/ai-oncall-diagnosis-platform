@@ -9,7 +9,7 @@ _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _CREDENTIAL = re.compile(
     r"""(?i)(["']?(?:password|secret[_-]?key|secret[_-]?id|api[_-]?key|access[_-]?token|token|authorization)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)"""
 )
-_URL_PASSWORD = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://[^:/\s]+:)[^@\s]+@")
+_URL_PASSWORD = re.compile(r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://[^:/\s]+:)[^@\s]+@")
 
 
 def make_redactor(secrets: Iterable[str]) -> Callable[[str], str]:

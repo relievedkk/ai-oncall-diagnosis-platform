@@ -6,7 +6,7 @@
 
 ### CLS
 
-默认由 `python -m mcp_servers.cls_gateway` 在 `3000` 端口启动认证网关，官方 `cls-mcp-server@1.2.1` 仅通过私有 stdio 子进程通信，不开 HTTP 端口。客户端必须携带独立的 `MCP_CLS_TOKEN` Bearer 凭据；`app.local_env` 自动生成并由 Compose 传递给诊断 Worker。未配置 Node.js 或云凭据时，Windows 启动脚本回退到仅绑定本地的 `cls_server.py` 演示服务。升级时必须先停止旧的未认证 CLS HTTP 进程；启动脚本发现旧入口会拒绝继续。
+默认由 `python -m mcp_servers.cls_gateway` 在 `3000` 端口启动认证网关，官方 `cls-mcp-server@1.2.1` 仅通过私有 stdio 子进程通信，不开 HTTP 端口。客户端必须携带独立的 `MCP_CLS_TOKEN` Bearer 凭据；`app.local_env` 自动生成并由 Compose 传递给诊断 Worker。网关只开放登记服务范围内的 `SearchLog`：地域、主题及服务错误日志谓词必须与服务目录一致，时间范围最多 24 小时、Limit 为 1–100；不开放主题清单、回调配置或任意查询。聊天和诊断 Agent 使用本地 `query_service_logs`，不能直接调用原始 CLS 工具。未配置 Node.js 或云凭据时，Windows 启动脚本回退到仅绑定本地的 `cls_server.py` 演示服务。升级时必须先停止旧的未认证 CLS HTTP 进程；启动脚本发现旧入口会拒绝继续。
 
 ### Monitor
 

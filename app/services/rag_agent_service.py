@@ -25,6 +25,7 @@ from app.agent.mcp_client import (
 from app.config import config
 from app.core.checkpoint import checkpoint_manager
 from app.core.llm_factory import llm_factory
+from app.core.tool_data_boundary import ToolDataBoundaryMiddleware
 from app.services.conversation_memory import SummaryMiddleware, TokenTrimMiddleware
 from app.services.health_inspection import inspect_registered_services, is_full_health_request
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
@@ -128,6 +129,7 @@ class RagAgentService:
             tools=all_tools,
             checkpointer=self.checkpointer,
             middleware=[
+                ToolDataBoundaryMiddleware(),
                 SummaryMiddleware(self.model, max_messages=12, keep_recent=6),
                 TokenTrimMiddleware(),
             ],

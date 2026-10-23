@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     database_max_overflow: int = 20
     readiness_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
     rag_context_budget: int = Field(default=16000, ge=2000, le=100000)
+    model_max_input_bytes: int = Field(default=65536, ge=4096, le=1048576)
+    tool_result_max_bytes: int = Field(default=16384, ge=1024, le=65536)
+    diagnosis_max_model_calls: int = Field(default=24, ge=1, le=100)
+    diagnosis_max_model_input_bytes: int = Field(default=262144, ge=4096, le=4194304)
     chat_max_concurrent: int = Field(default=4, ge=1, le=100)
     chat_max_waiting: int = Field(default=16, ge=0, le=1000)
     chat_queue_timeout_seconds: float = Field(default=30.0, gt=0, le=120)

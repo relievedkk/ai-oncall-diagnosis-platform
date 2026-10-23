@@ -11,6 +11,7 @@ from langgraph.prebuilt import ToolNode
 from loguru import logger
 
 from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
+from app.core.data_safety import bounded_tool_result, redact_sensitive, sanitize_tool_message
 from app.core.llm_factory import llm_factory
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
@@ -119,7 +120,8 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
         # 当前步骤可依赖前一步发现的服务、时间范围或查询参数。
         messages = [
-            SystemMessage(content="""你是一个能力强大的助手，负责执行具体的任务步骤。
+            SystemMessage(
+                content="""你是一个能力强大的助手，负责执行具体的任务步骤。
 
 你可以使用各种工具来完成任务。对于每个步骤：
 1. 理解步骤的目标
@@ -132,7 +134,8 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 - 不要编造数据，只返回实际获取的信息
 - 工具参数必须来自原始任务、服务目录或真实工具结果，不得填入示例 ID 或猜测值
 - 执行结果要清晰、准确
-- 专注于当前步骤，不要考虑其他任务"""),
+- 专注于当前步骤，不要考虑其他任务"""
+            ),
         ]
         if state.get("input"):
             messages.append(
@@ -167,6 +170,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             calls_by_id = {str(call.get("id", "")): call for call in llm_response.tool_calls}
             final_tool_messages = []
             for tool_message in tool_messages["messages"]:
+                tool_message = sanitize_tool_message(tool_message)
                 tool_call_id = str(getattr(tool_message, "tool_call_id", ""))
                 call = calls_by_id.get(tool_call_id, {})
                 tool_name = str(
@@ -179,7 +183,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                     {
                         "evidence_type": classify_tool_evidence(tool_name),
                         "source": tool_name,
-                        "query": call.get("args", {}),
+                        "query": redact_sensitive(call.get("args", {})),
                         "result": content,
                         "success": not failed,
                     }
@@ -196,7 +200,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                     retried_queries.add(query_key)
                     retry_request = AIMessage(content="", tool_calls=[call])
                     retried = await tool_node.ainvoke({"messages": [*messages[:-1], retry_request]})
-                    tool_message = retried["messages"][0]
+                    tool_message = sanitize_tool_message(retried["messages"][0])
                     content = getattr(tool_message, "content", str(tool_message))
                     failed = getattr(tool_message, "status", "success") == "error"
                     failed = failed or _tool_result_failed(content)
@@ -204,7 +208,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                         {
                             "evidence_type": classify_tool_evidence(tool_name),
                             "source": tool_name,
-                            "query": call.get("args", {}),
+                            "query": redact_sensitive(call.get("args", {})),
                             "result": content,
                             "success": not failed,
                             "attempt": 2,
@@ -218,7 +222,12 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             messages.extend(final_tool_messages)
             llm_response = await llm_with_tools.ainvoke(messages)
         content = getattr(llm_response, "content", str(llm_response))
-        result = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        safe_content = bounded_tool_result(content)
+        result = (
+            safe_content
+            if isinstance(safe_content, str)
+            else json.dumps(safe_content, ensure_ascii=False)
+        )
         if not result.strip():
             raise RuntimeError("模型未返回步骤执行结果")
         if execution_errors:

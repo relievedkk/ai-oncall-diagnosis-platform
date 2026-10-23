@@ -46,6 +46,13 @@
                 })
             });
             if (response.ok) {
+                const payload = await response.json();
+                try {
+                    localStorage.setItem('aiOnCallAuthState', JSON.stringify({
+                        userId: payload.user.id,
+                        version: `${Date.now()}-${Math.random()}`
+                    }));
+                } catch (storageError) { /* Login remains available when storage is disabled. */ }
                 window.location.replace('/');
                 return;
             }

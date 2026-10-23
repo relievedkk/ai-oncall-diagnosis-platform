@@ -6,18 +6,75 @@ Docker clients, using a dedicated credential independent from the Web API key.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from fastmcp import FastMCP
 from fastmcp.client.transports import StdioTransport
+from fastmcp.exceptions import ToolError
 from fastmcp.server import create_proxy
 from fastmcp.server.auth import AccessToken, TokenVerifier
+from fastmcp.server.middleware import Middleware
 
 from app.config import config
 from app.core.credentials import secrets_equal
+from app.services.service_catalog import service_catalog
+
+_SEARCH_ARGUMENTS = frozenset({"Region", "TopicId", "Query", "From", "To", "Limit"})
+_MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000
+_CLOCK_SKEW_MS = 60 * 1000
+
+
+class CatalogSearchPolicy(Middleware):
+    """Authorize raw CLS requests before proxy dispatch or argument coercion."""
+
+    async def on_list_tools(self, context, call_next):
+        return [tool for tool in await call_next(context) if tool.name == "SearchLog"]
+
+    async def on_call_tool(self, context, call_next):
+        message = context.message
+        if message.name != "SearchLog":
+            raise ToolError("Only catalog-scoped SearchLog is allowed")
+        args = message.arguments or {}
+        if set(args) != _SEARCH_ARGUMENTS:
+            raise ToolError("SearchLog requires exactly Region, TopicId, Query, From, To, Limit")
+        if any(type(args[key]) is not str for key in ("Region", "TopicId", "Query")):
+            raise ToolError("Region, TopicId and Query must be strings")
+        if any(type(args[key]) is not int for key in ("From", "To", "Limit")):
+            raise ToolError("From, To and Limit must be integers without coercion")
+        if not 1 <= args["Limit"] <= 100:
+            raise ToolError("Limit must be 1..100")
+        start, end = args["From"], args["To"]
+        now = int(time.time() * 1000)
+        if not (
+            now - _MAX_LOOKBACK_MS - _CLOCK_SKEW_MS <= start < end <= now + _CLOCK_SKEW_MS
+            and end - start <= _MAX_LOOKBACK_MS
+        ):
+            raise ToolError("From/To must be recent epoch milliseconds spanning at most 24 hours")
+
+        for name, entry in service_catalog.list_services().items():
+            mapping = entry.get("cls", {}) if isinstance(entry, dict) else {}
+            if (
+                not isinstance(mapping, dict)
+                or not mapping.get("region")
+                or not mapping.get("topic_id")
+            ):
+                continue
+            query = (
+                f"service:{json.dumps(name, ensure_ascii=False)} "
+                'AND (level:"ERROR" OR level:"FATAL" OR level:"CRITICAL")'
+            )
+            if (
+                args["Region"] == mapping["region"]
+                and args["TopicId"] == mapping["topic_id"]
+                and args["Query"] == query
+            ):
+                return await call_next(context)
+        raise ToolError("SearchLog query must exactly match a registered service CLS mapping")
 
 
 class CLSTokenVerifier(TokenVerifier):
@@ -86,11 +143,13 @@ def create_gateway(*, backend=None, token: str | None = None) -> FastMCP:
         raise ValueError(
             "MCP_CLS_TOKEN must be an independent random secret of at least 32 characters"
         )
-    return create_proxy(
+    gateway = create_proxy(
         backend if backend is not None else official_transport(),
         name="Authenticated CLS",
         auth=CLSTokenVerifier(token),
     )
+    gateway.add_middleware(CatalogSearchPolicy())
+    return gateway
 
 
 def main() -> None:

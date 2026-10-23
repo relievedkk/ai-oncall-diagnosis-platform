@@ -1,8 +1,16 @@
 import io
+import time
 
 from loguru import logger
 
 from oncall_logging.redaction import make_redactor, patch_record
+
+
+def test_long_non_url_text_does_not_cause_repeated_scheme_backtracking():
+    text = "X" * 70_000
+    started = time.perf_counter()
+    assert make_redactor([])(text) == text
+    assert time.perf_counter() - started < 1.0
 
 
 def test_redacts_known_secrets_and_authorization_values():

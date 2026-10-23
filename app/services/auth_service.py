@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import BoundedSemaphore
 
 from pwdlib import PasswordHash
 from sqlalchemy import delete, select
@@ -17,6 +20,10 @@ from app.db.session import database_manager
 
 class AuthenticationError(RuntimeError):
     """Credentials are invalid, disabled, or temporarily locked."""
+
+
+class AuthenticationBusyError(RuntimeError):
+    """The bounded password worker pool has no available capacity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,9 +52,48 @@ class CreatedSession:
 
 
 class AuthService:
-    def __init__(self) -> None:
+    def __init__(self, *, password_workers: int = 2, password_queue_size: int = 8) -> None:
+        if password_workers < 1 or password_queue_size < 0:
+            raise ValueError("Invalid password worker limits")
+        self._password_workers = password_workers
+        self._password_capacity = BoundedSemaphore(password_workers + password_queue_size)
+        self._password_executor: ThreadPoolExecutor | None = None
+        self._password_shutdown_task: asyncio.Task | None = None
         self.password_hash = PasswordHash.recommended()
         self._dummy_hash = self.password_hash.hash(secrets.token_urlsafe(24))
+
+    async def _verify_password(self, password: str, password_hash: str) -> bool:
+        if (
+            self._password_shutdown_task is not None
+            and not self._password_shutdown_task.done()
+        ) or not self._password_capacity.acquire(blocking=False):
+            raise AuthenticationBusyError("Password service busy")
+        try:
+            if self._password_executor is None:
+                self._password_executor = ThreadPoolExecutor(
+                    max_workers=self._password_workers, thread_name_prefix="oncall-password"
+                )
+            future = self._password_executor.submit(
+                self.password_hash.verify, password, password_hash
+            )
+        except BaseException:
+            self._password_capacity.release()
+            raise
+        # Release from the underlying concurrent future, never the cancelled request.
+        future.add_done_callback(lambda completed: self._password_capacity.release())
+        return await asyncio.shield(asyncio.wrap_future(future))
+
+    async def shutdown(self) -> None:
+        """Drain workers without blocking the loop; permit a later application lifespan."""
+        if self._password_shutdown_task is None or self._password_shutdown_task.done():
+            executor = self._password_executor
+            self._password_executor = None
+            if executor is None:
+                return
+            self._password_shutdown_task = asyncio.create_task(
+                asyncio.to_thread(executor.shutdown, wait=True)
+            )
+        await asyncio.shield(self._password_shutdown_task)
 
     @staticmethod
     def hash_secret(value: str) -> str:
@@ -88,11 +134,11 @@ class AuthService:
                 select(User).where(User.username == normalized).with_for_update()
             )
             if user is None:
-                self.password_hash.verify(password, self._dummy_hash)
+                await self._verify_password(password, self._dummy_hash)
                 raise AuthenticationError("Invalid username or password")
 
             locked = user.locked_until is not None and user.locked_until > now
-            password_valid = self.password_hash.verify(password, user.password_hash)
+            password_valid = await self._verify_password(password, user.password_hash)
             if locked or not user.is_active or not password_valid:
                 if not locked and user.is_active:
                     user.failed_login_count += 1

@@ -8,12 +8,13 @@ import json
 import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from app.config import config
 from app.db.models import (
@@ -24,10 +25,37 @@ from app.db.models import (
     OutboxEvent,
 )
 from app.db.session import database_manager
-from app.models.alerts import AlertmanagerAlert
+from app.models.alerts import AlertmanagerAlert, canonical_alert_timestamp
 
 ClaimResult = Literal["claimed", "completed", "busy", "missing", "dead_lettered"]
 DIAGNOSIS_TASK_NAME = "app.tasks.diagnosis.run_diagnosis"
+_SUMMARY_FIELDS = (
+    "diagnosis_id", "trigger", "status", "alert_status", "service", "alert_name",
+    "severity", "attempt_count", "model_calls", "model_input_bytes", "created_at",
+    "updated_at", "started_at", "completed_at", "resolved_at", "dead_lettered_at",
+)
+
+
+def _validate_page(limit: int, offset: int = 0) -> None:
+    if not 1 <= limit <= 100 or not 0 <= offset <= 100_000:
+        raise ValueError("pagination outside supported bounds")
+
+
+def _summary(job: Any) -> dict[str, Any]:
+    getter = job.get if isinstance(job, dict) else lambda name: getattr(job, name, None)
+    return {key: (_iso(value) if isinstance(value, datetime) else value)
+            for key in _SUMMARY_FIELDS for value in [getter(key)]}
+
+
+def _same_alert_period(job: dict[str, Any], values: dict[str, Any]) -> bool:
+    if job.get("trigger") != "alertmanager" or values.get("trigger") != "alertmanager":
+        return False
+    payload = values.get("alert", {})
+    try:
+        alert = AlertmanagerAlert.model_validate(payload)
+        return _matches_alert(job, alert)
+    except (ValueError, TypeError):
+        return False
 
 
 class DiagnosisLeaseLostError(RuntimeError):
@@ -126,7 +154,12 @@ class DiagnosisRepository(Protocol):
 
     async def get_job(self, diagnosis_id: str) -> dict[str, Any] | None: ...
 
-    async def list_jobs(self) -> list[dict[str, Any]]: ...
+    async def list_jobs(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]: ...
+
+    async def get_job_stream(self, diagnosis_id: str, *, after_id: int = 0, limit: int = 100) -> dict[str, Any] | None: ...
+
+    async def reserve_model_budget(self, diagnosis_id: str, *, execution_token: str,
+                                   input_bytes: int, max_calls: int, max_input_bytes: int) -> bool: ...
 
     async def get_operational_metrics(self) -> dict[str, Any]: ...
 
@@ -167,6 +200,8 @@ class InMemoryDiagnosisRepository:
             "execution_token": unclaimed_identity,
             "worker_name": None,
             "attempt_count": 0,
+            "model_calls": 0,
+            "model_input_bytes": 0,
             "heartbeat_at": None,
             "lease_expires_at": None,
             "created_at": now,
@@ -201,6 +236,9 @@ class InMemoryDiagnosisRepository:
     async def create_or_get_job(self, values: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         async with self._lock:
             existing_id = self._event_index.get(values["event_key"])
+            if not existing_id:
+                existing_id = next((key for key, job in self._jobs.items()
+                                    if _same_alert_period(job, values)), None)
             if existing_id:
                 return copy.deepcopy(self._jobs[existing_id]), False
             job = self._new_job(values)
@@ -213,6 +251,9 @@ class InMemoryDiagnosisRepository:
     ) -> tuple[dict[str, Any], bool]:
         async with self._lock:
             existing_id = self._event_index.get(values["event_key"])
+            if not existing_id:
+                existing_id = next((key for key, job in self._jobs.items()
+                                    if _same_alert_period(job, values)), None)
             if existing_id:
                 return copy.deepcopy(self._jobs[existing_id]), False
             job = self._new_job(values)
@@ -447,7 +488,7 @@ class InMemoryDiagnosisRepository:
     async def mark_resolved(self, alert: AlertmanagerAlert) -> None:
         async with self._lock:
             for job in self._jobs.values():
-                if not _matches_alert(job, alert):
+                if job.get("alert_status") != "firing" or not _matches_alert(job, alert):
                     continue
                 job["alert_status"] = "resolved"
                 job["resolved_at"] = alert.ends_at or utc_now().isoformat()
@@ -517,10 +558,42 @@ class InMemoryDiagnosisRepository:
             job = self._jobs.get(diagnosis_id)
             return copy.deepcopy(job) if job else None
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def reserve_model_budget(self, diagnosis_id: str, *, execution_token: str,
+                                   input_bytes: int, max_calls: int, max_input_bytes: int) -> bool:
+        if input_bytes < 0 or max_calls < 1 or max_input_bytes < 0 or not execution_token:
+            return False
         async with self._lock:
-            jobs = copy.deepcopy(list(self._jobs.values()))
-        return sorted(jobs, key=lambda item: item["created_at"], reverse=True)
+            job = self._jobs.get(diagnosis_id)
+            try:
+                _assert_execution_owner(job, execution_token)
+            except DiagnosisLeaseLostError:
+                return False
+            if job["status"] != "running":
+                return False
+            if job["model_calls"] >= max_calls or job["model_input_bytes"] + input_bytes > max_input_bytes:
+                return False
+            job["model_calls"] += 1
+            job["model_input_bytes"] += input_bytes
+            return True
+
+    async def get_job_stream(self, diagnosis_id: str, *, after_id: int = 0, limit: int = 100) -> dict[str, Any] | None:
+        _validate_page(limit)
+        if after_id < 0:
+            raise ValueError("evidence cursor must be nonnegative")
+        async with self._lock:
+            job = self._jobs.get(diagnosis_id)
+            if not job:
+                return None
+            # Copy only the requested page, never the accumulated transcript.
+            pending = list(islice((item for item in job["evidence"] if item["id"] > after_id), limit + 1))
+            return {**_summary(job), "error": job.get("error"), "report": job.get("report", ""),
+                    "evidence": copy.deepcopy(pending[:limit]), "has_more": len(pending) > limit}
+
+    async def list_jobs(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        _validate_page(limit, offset)
+        async with self._lock:
+            jobs = sorted(self._jobs.values(), key=lambda item: (item["created_at"], item["diagnosis_id"]), reverse=True)
+            return [copy.deepcopy(_summary(job)) for job in jobs[offset:offset + limit]]
 
     async def get_operational_metrics(self) -> dict[str, Any]:
         async with self._lock:
@@ -658,6 +731,31 @@ class SQLAlchemyDiagnosisRepository:
     ) -> tuple[dict[str, Any], bool]:
         job = self._new_job(values)
         async with self._sessions() as session:
+            # Historical IDs included the original timestamp spelling. Match the
+            # stored period before insertion rather than rewriting public IDs.
+            if values.get("trigger") == "alertmanager":
+                statement = select(DiagnosisJob).where(DiagnosisJob.trigger == "alertmanager")
+                fingerprint = values.get("fingerprint")
+                if fingerprint:
+                    statement = statement.where(DiagnosisJob.fingerprint == fingerprint)
+                else:
+                    statement = statement.where(or_(DiagnosisJob.fingerprint.is_(None), DiagnosisJob.fingerprint == ""))
+                    for key, value in values.get("alert", {}).get("labels", {}).items():
+                        statement = statement.where(DiagnosisJob.alert_payload["labels"][key].as_string() == value)
+                candidates = await session.stream_scalars(statement.execution_options(yield_per=100))
+                existing_id = None
+                async for candidate in candidates:
+                    if _same_alert_period({**_job_identity(candidate), "trigger": candidate.trigger}, values):
+                        existing_id = candidate.diagnosis_id
+                        break
+                await candidates.close()
+                if existing_id:
+                    existing = await session.scalar(select(DiagnosisJob).where(
+                        DiagnosisJob.diagnosis_id == existing_id
+                    ).options(selectinload(DiagnosisJob.steps), selectinload(DiagnosisJob.evidence),
+                              selectinload(DiagnosisJob.report)))
+                    if existing is not None:
+                        return _job_to_dict(existing), False
             session.add(job)
             if queue_name:
                 session.add(self._new_outbox(job.diagnosis_id, queue_name))
@@ -1080,22 +1178,56 @@ class SQLAlchemyDiagnosisRepository:
     async def get_job(self, diagnosis_id: str) -> dict[str, Any] | None:
         return await self._load_job(diagnosis_id)
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def reserve_model_budget(self, diagnosis_id: str, *, execution_token: str,
+                                   input_bytes: int, max_calls: int, max_input_bytes: int) -> bool:
+        if input_bytes < 0 or max_calls < 1 or max_input_bytes < 0 or not execution_token:
+            return False
+        async with self._sessions.begin() as session:
+            job = await session.get(DiagnosisJob, diagnosis_id, with_for_update=True)
+            try:
+                _assert_execution_owner(job, execution_token)
+            except DiagnosisLeaseLostError:
+                return False
+            if job.status != "running":
+                return False
+            if job.model_calls >= max_calls or job.model_input_bytes + input_bytes > max_input_bytes:
+                return False
+            job.model_calls += 1
+            job.model_input_bytes += input_bytes
+            return True
+
+    async def get_job_stream(self, diagnosis_id: str, *, after_id: int = 0, limit: int = 100) -> dict[str, Any] | None:
+        _validate_page(limit)
+        if after_id < 0:
+            raise ValueError("evidence cursor must be nonnegative")
+        async with self._sessions() as session:
+            job = await session.get(DiagnosisJob, diagnosis_id, options=[
+                load_only(*(getattr(DiagnosisJob, key) for key in _SUMMARY_FIELDS), DiagnosisJob.error)
+            ])
+            if job is None:
+                return None
+            evidence = list((await session.scalars(select(DiagnosisEvidence).where(
+                DiagnosisEvidence.diagnosis_id == diagnosis_id, DiagnosisEvidence.id > after_id
+            ).order_by(DiagnosisEvidence.id).limit(limit + 1))).all())
+            report = await session.scalar(select(DiagnosisReport.content).where(DiagnosisReport.diagnosis_id == diagnosis_id))
+            return {**_summary(job), "error": job.error, "report": report or "",
+                    "evidence": [_evidence_to_dict(item) for item in evidence[:limit]],
+                    "has_more": len(evidence) > limit}
+
+    async def list_jobs(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        _validate_page(limit, offset)
         async with self._sessions() as session:
             jobs = list(
                 (
                     await session.scalars(
                         select(DiagnosisJob)
-                        .options(
-                            selectinload(DiagnosisJob.steps),
-                            selectinload(DiagnosisJob.evidence),
-                            selectinload(DiagnosisJob.report),
-                        )
-                        .order_by(DiagnosisJob.created_at.desc())
+                        .options(load_only(*(getattr(DiagnosisJob, key) for key in _SUMMARY_FIELDS)))
+                        .order_by(DiagnosisJob.created_at.desc(), DiagnosisJob.diagnosis_id.desc())
+                        .limit(limit).offset(offset)
                     )
                 ).all()
             )
-            return [_job_to_dict(job) for job in jobs]
+            return [_summary(job) for job in jobs]
 
     async def get_operational_metrics(self) -> dict[str, Any]:
         async with self._sessions() as session:
@@ -1162,13 +1294,21 @@ def _job_identity(job: DiagnosisJob) -> dict[str, Any]:
 
 
 def _matches_alert(job: dict[str, Any], alert: AlertmanagerAlert) -> bool:
+    payload = job.get("alert", {})
     if alert.fingerprint:
-        return job.get("fingerprint") == alert.fingerprint
-    labels = job.get("alert", {}).get("labels", {})
-    return all(
-        alert.labels.get(key, "") == labels.get(key, "")
-        for key in ("alertname", "service", "job", "instance")
-    )
+        if job.get("fingerprint") != alert.fingerprint:
+            return False
+    elif job.get("fingerprint") or payload.get("labels", {}) != alert.labels:
+        return False
+    try:
+        return canonical_alert_timestamp(payload.get("startsAt", "")) == canonical_alert_timestamp(alert.starts_at)
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def _evidence_to_dict(item: DiagnosisEvidence) -> dict[str, Any]:
+    return {"id": item.id, "step_id": item.step_id, "evidence_type": item.evidence_type,
+            "source": item.source, "payload": item.payload, "collected_at": _iso(item.collected_at)}
 
 
 def _job_to_dict(job: DiagnosisJob) -> dict[str, Any]:
@@ -1216,6 +1356,8 @@ def _job_to_dict(job: DiagnosisJob) -> dict[str, Any]:
         "celery_task_id": job.celery_task_id,
         "worker_name": job.worker_name,
         "attempt_count": job.attempt_count,
+        "model_calls": job.model_calls,
+        "model_input_bytes": job.model_input_bytes,
         "heartbeat_at": _iso(job.heartbeat_at),
         "lease_expires_at": _iso(job.lease_expires_at),
         "created_at": _iso(job.created_at),

@@ -10,6 +10,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from starlette.responses import JSONResponse
 
 from app.config import config
+from app.core.data_safety import reserve_model_input
 
 
 class ProviderUnavailable(RuntimeError):
@@ -63,6 +64,7 @@ class ModelObserver(AsyncCallbackHandler):
 
     async def on_chat_model_start(self, serialized, messages, **kwargs):
         provider_circuit.ensure_available()
+        await reserve_model_input(messages, kwargs.get("invocation_params"))
         capture = _capture.get()
         if capture is not None:
             capture.calls += 1

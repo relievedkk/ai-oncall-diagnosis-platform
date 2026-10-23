@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.tools import tool
 
 from app.agent.mcp_client import get_mcp_client_with_retry
+from app.core.data_safety import bounded_tool_result, redact_sensitive
 from app.services.service_catalog import service_catalog
 
 
@@ -140,13 +141,17 @@ async def query_service_logs(
         possibly_truncated = len(records) >= limit
         if local:
             records = [row for row in records if _matches_service_error(row, name)]
-        return {
-            **evidence,
-            "success": True,
-            "returned_count": len(records),
-            "limit": limit,
-            "possibly_truncated": possibly_truncated,
-            "records": records,
-        }
+        return bounded_tool_result(
+            {
+                **evidence,
+                "success": True,
+                "returned_count": len(records),
+                "limit": limit,
+                "possibly_truncated": possibly_truncated,
+                "records": records,
+            }
+        )
     except Exception as exc:
-        return {**evidence, "success": False, "error": f"{type(exc).__name__}: {exc}"}
+        return redact_sensitive(
+            {**evidence, "success": False, "error": f"{type(exc).__name__}: {exc}"}
+        )

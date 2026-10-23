@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     await alert_diagnosis_service.shutdown()
+    await auth_service.shutdown()
     await queue_observer.stop()
     await checkpoint_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")
