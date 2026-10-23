@@ -1249,3 +1249,21 @@ body {
         right: 0;
     }
 }
+.answer-feedback {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: #64748b;
+}
+.answer-feedback button {
+    padding: 4px 9px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+.answer-feedback button:disabled { opacity: .6; cursor: wait; }

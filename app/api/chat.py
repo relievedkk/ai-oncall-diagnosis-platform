@@ -13,7 +13,9 @@ from sse_starlette.sse import EventSourceResponse
 from app.agent.mcp_client import format_exception_chain
 from app.models.request import ChatRequest, ClearRequest
 from app.models.response import ApiResponse, SessionInfoResponse
+from app.services.conversation_memory import ContextBudgetExceeded
 from app.services.rag_agent_service import rag_agent_service
+from app.services.usage_feedback import InteractionTracker
 
 router = APIRouter()
 
@@ -48,25 +50,45 @@ async def chat(request: ChatRequest, http_request: Request):
     """
     try:
         logger.info("[会话 {}] 收到快速对话请求，长度={}", request.id, len(request.question))
-        answer = await rag_agent_service.query(
-            request.question, session_id=_session_thread_id(http_request, request.id)
-        )
+        async with InteractionTracker(http_request, request.id) as interaction:
+            answer = await rag_agent_service.query(
+                request.question, session_id=_session_thread_id(http_request, request.id)
+            )
+            interaction.content(answer)
+            interaction.status = "completed"
 
         logger.info(f"[会话 {request.id}] 快速对话完成")
 
         return {
             "code": 200,
             "message": "success",
-            "data": {"success": True, "answer": answer, "errorMessage": None},
+            "data": {
+                "success": True,
+                "answer": answer,
+                "errorMessage": None,
+                "interaction_id": interaction.identity,
+            },
         }
 
+    except ContextBudgetExceeded as exc:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "code": 413,
+                "message": "请缩小问题或工具查询范围",
+                "data": {"success": False, "answer": None, "errorMessage": str(exc)},
+            },
+        )
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
-        return JSONResponse(status_code=503, content={
-            "code": 503,
-            "message": "error",
-            "data": {"success": False, "answer": None, "errorMessage": "对话服务暂时不可用"},
-        })
+        return JSONResponse(
+            status_code=503,
+            content={
+                "code": 503,
+                "message": "error",
+                "data": {"success": False, "answer": None, "errorMessage": "对话服务暂时不可用"},
+            },
+        )
 
 
 @router.post("/chat_stream")
@@ -97,66 +119,79 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
     async def event_generator():
         try:
-            async for chunk in rag_agent_service.query_stream(
-                request.question, session_id=_session_thread_id(http_request, request.id)
-            ):
-                chunk_type = chunk.get("type", "unknown")
-                chunk_data = chunk.get("data", None)
+            async with InteractionTracker(http_request, request.id) as interaction:
+                async for chunk in rag_agent_service.query_stream(
+                    request.question, session_id=_session_thread_id(http_request, request.id)
+                ):
+                    chunk_type = chunk.get("type", "unknown")
+                    chunk_data = chunk.get("data", None)
 
-                # 处理调试类型消息（新增）
-                if chunk_type == "debug":
-                    # 调试信息，可以选择发送或忽略
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {
-                                "type": "debug",
-                                "node": chunk.get("node", "unknown"),
-                                "message_type": chunk.get("message_type", "unknown"),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
-                elif chunk_type == "tool_call":
-                    # 发送工具调用事件（可选，前端可以显示工具调用状态）
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {"type": "tool_call", "data": chunk_data}, ensure_ascii=False
-                        ),
-                    }
-                elif chunk_type == "search_results":
-                    # 发送检索结果（可选，前端可以忽略）
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {"type": "search_results", "data": chunk_data}, ensure_ascii=False
-                        ),
-                    }
-                elif chunk_type == "content":
-                    # 发送内容块 - 关键：data 必须是 JSON 字符串
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {"type": "content", "data": chunk_data}, ensure_ascii=False
-                        ),
-                    }
-                elif chunk_type == "complete":
-                    # 发送完成信号
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {"type": "done", "data": chunk_data}, ensure_ascii=False
-                        ),
-                    }
-                elif chunk_type == "error":
-                    # 发送错误信息
-                    yield {
-                        "event": "message",
-                        "data": json.dumps(
-                            {"type": "error", "data": "对话服务暂时不可用"}, ensure_ascii=False
-                        ),
-                    }
+                    if chunk_type == "content" and isinstance(chunk_data, str):
+                        interaction.content(chunk_data)
+                    elif chunk_type == "error":
+                        interaction.status = "failed"
+                    elif chunk_type == "complete" and interaction.status != "failed":
+                        interaction.status = "completed"
+                        await interaction.persist()
+                        chunk_data = {
+                            **(chunk_data if isinstance(chunk_data, dict) else {}),
+                            "interaction_id": interaction.identity,
+                        }
+
+                    # 处理调试类型消息（新增）
+                    if chunk_type == "debug":
+                        # 调试信息，可以选择发送或忽略
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {
+                                    "type": "debug",
+                                    "node": chunk.get("node", "unknown"),
+                                    "message_type": chunk.get("message_type", "unknown"),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    elif chunk_type == "tool_call":
+                        # 发送工具调用事件（可选，前端可以显示工具调用状态）
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {"type": "tool_call", "data": chunk_data}, ensure_ascii=False
+                            ),
+                        }
+                    elif chunk_type == "search_results":
+                        # 发送检索结果（可选，前端可以忽略）
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {"type": "search_results", "data": chunk_data}, ensure_ascii=False
+                            ),
+                        }
+                    elif chunk_type == "content":
+                        # 发送内容块 - 关键：data 必须是 JSON 字符串
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {"type": "content", "data": chunk_data}, ensure_ascii=False
+                            ),
+                        }
+                    elif chunk_type == "complete":
+                        # 发送完成信号
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {"type": "done", "data": chunk_data}, ensure_ascii=False
+                            ),
+                        }
+                    elif chunk_type == "error":
+                        # 发送错误信息
+                        yield {
+                            "event": "message",
+                            "data": json.dumps(
+                                {"type": "error", "data": "对话服务暂时不可用"}, ensure_ascii=False
+                            ),
+                        }
 
             logger.info(f"[会话 {request.id}] 流式对话完成")
 
@@ -183,7 +218,9 @@ async def clear_session(request: ClearRequest, http_request: Request):
         操作结果
     """
     try:
-        success = await rag_agent_service.clear_session(_session_thread_id(http_request, request.session_id))
+        success = await rag_agent_service.clear_session(
+            _session_thread_id(http_request, request.session_id)
+        )
         logger.info(f"清空会话: {request.session_id}, 结果: {success}")
 
         return ApiResponse(
@@ -208,7 +245,9 @@ async def get_session_info(session_id: str, request: Request) -> SessionInfoResp
         会话信息
     """
     try:
-        history = await rag_agent_service.get_session_history(_session_thread_id(request, session_id))
+        history = await rag_agent_service.get_session_history(
+            _session_thread_id(request, session_id)
+        )
 
         return SessionInfoResponse(
             session_id=session_id, message_count=len(history), history=history

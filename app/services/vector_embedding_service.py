@@ -37,6 +37,8 @@ class DashScopeEmbeddings(Embeddings):
         )
         self.model = model
         self.dimensions = dimensions
+        # text-embedding-v3/v4 compatible API accepts at most 10 inputs per request.
+        self.batch_size = 10
 
         logger.info(f"DashScope Embeddings 初始化完成 - 模型: {model}, 维度: {dimensions}")
 
@@ -56,12 +58,19 @@ class DashScopeEmbeddings(Embeddings):
         try:
             logger.info(f"批量嵌入 {len(texts)} 个文档")
 
-            # 批量调用 API
-            response = self.client.embeddings.create(
-                model=self.model, input=texts, dimensions=self.dimensions, encoding_format="float"
-            )
-
-            embeddings = [item.embedding for item in response.data]
+            embeddings = []
+            for offset in range(0, len(texts), self.batch_size):
+                batch = texts[offset : offset + self.batch_size]
+                response = self.client.embeddings.create(
+                    model=self.model,
+                    input=batch,
+                    dimensions=self.dimensions,
+                    encoding_format="float",
+                )
+                items = sorted(response.data, key=lambda item: item.index)
+                if [item.index for item in items] != list(range(len(batch))):
+                    raise ValueError("incomplete or duplicate embedding response indices")
+                embeddings.extend(item.embedding for item in items)
             logger.debug(f"批量嵌入完成, 维度: {len(embeddings[0])}")
 
             return embeddings

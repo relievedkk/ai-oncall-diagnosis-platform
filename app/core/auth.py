@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 from pathlib import Path
 
 from fastapi import Request
@@ -10,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import config
+from app.core.credentials import secrets_equal
 from app.harness.gateway import validate_remediation_adapter
 from app.services.auth_service import auth_service
 
@@ -40,7 +40,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 )
             supplied = request.headers.get("Authorization", "")
             expected = f"Bearer {config.alertmanager_webhook_token}"
-            if not secrets.compare_digest(supplied, expected):
+            if not secrets_equal(supplied, expected):
                 return JSONResponse(
                     status_code=401, content={"detail": "Invalid Alertmanager webhook token"}
                 )
@@ -67,7 +67,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 supplied_key = authorization.removeprefix("Bearer ")
 
         if supplied_key:
-            if not secrets.compare_digest(supplied_key, config.api_key):
+            if not secrets_equal(supplied_key, config.api_key):
                 return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
             request.state.auth_kind = "api_key"
             return await call_next(request)
@@ -82,8 +82,8 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                     valid_csrf = bool(
                         csrf_cookie
                         and csrf_header
-                        and secrets.compare_digest(csrf_cookie, csrf_header)
-                        and secrets.compare_digest(
+                        and secrets_equal(csrf_cookie, csrf_header)
+                        and secrets_equal(
                             principal.csrf_hash,
                             auth_service.hash_secret(csrf_header),
                         )

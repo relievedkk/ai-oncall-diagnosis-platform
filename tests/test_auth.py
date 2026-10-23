@@ -119,3 +119,58 @@ def test_logout_revokes_session_and_clears_cookies(monkeypatch: pytest.MonkeyPat
     assert any(
         item.startswith(f"{config.csrf_cookie_name}=") and "Max-Age=0" in item for item in cleared
     )
+
+
+@pytest.mark.parametrize(
+    "path,header",
+    [
+        ("/api/private", b"X-API-Key"),
+        ("/api/alerts/webhook", b"Authorization"),
+    ],
+)
+def test_non_ascii_credentials_are_rejected_without_server_error(monkeypatch, path, header):
+    monkeypatch.setattr(config, "auth_enabled", True)
+    monkeypatch.setattr(config, "api_key", "a" * 64)
+    monkeypatch.setattr(config, "alertmanager_webhook_token", "w" * 64)
+    app = FastAPI()
+    app.add_middleware(ApiKeyMiddleware)
+    response = TestClient(app, raise_server_exceptions=False).get(
+        path, headers={header: b"Bearer \xe9"}
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/api/private", "/api/auth/logout"])
+def test_non_ascii_csrf_is_rejected_without_server_error(monkeypatch, path):
+    monkeypatch.setattr(config, "auth_enabled", True)
+    monkeypatch.setattr(config, "web_login_enabled", True)
+    monkeypatch.setattr(config, "api_key", "a" * 64)
+
+    async def principal(_):
+        return _principal()
+
+    monkeypatch.setattr(auth_service, "get_principal", principal)
+    app = FastAPI()
+    app.add_middleware(ApiKeyMiddleware)
+    app.include_router(auth_router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
+    client.cookies.set(config.session_cookie_name, "session-value")
+    response = client.post(
+        path,
+        headers={
+            b"Cookie": b"oncall_session=session-value; oncall_csrf=\xe9",
+            b"X-CSRF-Token": b"\xe9",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_webhook_endpoint_rejects_non_ascii_token(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.api.alerts import _verify_alertmanager_token
+
+    monkeypatch.setattr(config, "alertmanager_webhook_token", "w" * 64)
+    with pytest.raises(HTTPException) as error:
+        _verify_alertmanager_token("Bearer é")
+    assert error.value.status_code == 401

@@ -1,11 +1,11 @@
 """Browser login, session introspection, and logout endpoints."""
 
-import secrets
 import time
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.config import config
+from app.core.credentials import secrets_equal
 from app.models.auth import LoginRequest, LoginResponse, UserInfo
 from app.services.auth_service import AuthenticationError, SessionPrincipal, auth_service
 
@@ -77,7 +77,7 @@ async def logout(request: Request) -> Response:
     csrf_header = request.headers.get("X-CSRF-Token", "")
     if token and (
         not csrf_cookie
-        or not secrets.compare_digest(csrf_cookie, csrf_header)
+        or not secrets_equal(csrf_cookie, csrf_header)
         or not await auth_service.csrf_is_valid(token, csrf_header)
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")

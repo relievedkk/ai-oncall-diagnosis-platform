@@ -13,12 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api import aiops, alerts, auth, chat, debug, file, health, metrics, remediation
+from app.api import aiops, alerts, auth, chat, debug, feedback, file, health, metrics, remediation
 from app.config import config
 from app.core.auth import ApiKeyMiddleware, validate_security_configuration
 from app.core.checkpoint import checkpoint_manager
 from app.core.metrics import prometheus_http_middleware
 from app.core.milvus_client import milvus_manager
+from app.core.model_protection import ModelAdmissionMiddleware
 from app.core.security import (
     RateLimitMiddleware,
     RequestSizeLimitMiddleware,
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔌 正在连接 PostgreSQL...")
     await database_manager.initialize()
+    app.state.usage_tracking_started = config.usage_tracking_enabled
     await auth_service.ensure_bootstrap_user()
     logger.info("✅ Web 登录账户已就绪")
     await checkpoint_manager.initialize()
@@ -88,8 +90,9 @@ app.middleware("http")(prometheus_http_middleware)
 
 # 配置中间件
 # 注册顺序：后注册者先执行（Starlette 栈式）。CORS 最外层处理预检，ApiKey 次之校验受保护路由
-app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(ModelAdmissionMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     TrustedHostMiddleware,
@@ -121,6 +124,7 @@ app.include_router(health.router, tags=["健康检查"])
 app.include_router(metrics.router, tags=["监控指标"])
 app.include_router(auth.router, prefix="/api", tags=["账号认证"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
+app.include_router(feedback.router, prefix="/api", tags=["使用反馈"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
 app.include_router(alerts.router, prefix="/api", tags=["Alertmanager"])

@@ -120,6 +120,14 @@ class AIOnCallApp {
         this.currentUserRole = document.getElementById('currentUserRole');
         this.currentUserAvatar = document.getElementById('currentUserAvatar');
         this.logoutBtn = document.getElementById('logoutBtn');
+        if (this.currentUser?.role === 'admin' && this.logoutBtn?.parentNode) {
+            const usageButton = document.createElement('button');
+            usageButton.type = 'button';
+            usageButton.className = this.logoutBtn.className;
+            usageButton.textContent = '使用统计';
+            usageButton.onclick = () => this.showUsageSummary();
+            this.logoutBtn.parentNode.insertBefore(usageButton, this.logoutBtn);
+        }
         
         // 聊天区域元素
         this.chatMessages = document.getElementById('chatMessages');
@@ -796,7 +804,8 @@ class AIOnCallApp {
                 if (chatResponse && chatResponse.success) {
                     // 成功：添加实际响应消息（即使 answer 为空也显示）
                     const answer = chatResponse.answer || '（无回复内容）';
-                    this.addMessage('assistant', answer);
+                    const element = this.addMessage('assistant', answer);
+                    this.attachFeedback(element, chatResponse.interaction_id);
                 } else if (chatResponse && chatResponse.errorMessage) {
                     // 业务错误
                     throw new Error(chatResponse.errorMessage);
@@ -916,6 +925,7 @@ class AIOnCallApp {
                                     } else if (sseMessage.type === 'done') {
                                         console.log('[SSE调试] 收到done标记，流结束');
                                         this.handleStreamComplete(assistantMessageElement, fullResponse);
+                                        this.attachFeedback(assistantMessageElement, sseMessage.data?.interaction_id);
                                         return;
                                     } else if (sseMessage.type === 'error') {
                                         console.error('[SSE调试] 收到错误:', sseMessage.data);
@@ -961,6 +971,55 @@ class AIOnCallApp {
         } catch (error) {
             throw error;
         }
+    }
+
+    async showUsageSummary() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/feedback/summary`, {credentials: 'same-origin'});
+            this.ensureAuthenticated(response);
+            if (!response.ok) throw new Error('summary unavailable');
+            const data = await response.json();
+            const rate = data.resolved_rate == null ? '暂无反馈' : `${(data.resolved_rate * 100).toFixed(1)}%`;
+            const coverage = data.feedback_coverage == null ? '暂无可反馈回答' : `${(data.feedback_coverage * 100).toFixed(1)}%`;
+            const latency = data.latency_p95_ms == null ? '暂无完整样本' : `${(data.latency_p95_ms / 1000).toFixed(2)} 秒`;
+            this.addMessage('assistant', `近30天使用统计\n\n- 参与用户：${data.distinct_human_users} 人\n- 请求记录：${data.interactions} 次\n- 有效反馈：${data.feedback_count} 条\n- 已反馈回答中的解决比例：${rate}\n- 反馈覆盖率：${coverage}\n- 回答耗时 P95：${latency}\n\n未提交反馈的回答不计为已解决。`, false, false);
+        } catch (error) {
+            this.addMessage('assistant', '使用统计暂时无法加载，请稍后重试。', false, false);
+        }
+    }
+
+    attachFeedback(messageElement, interactionId) {
+        if (!messageElement || !interactionId || !this.currentUser) return;
+        const controls = document.createElement('div');
+        controls.className = 'answer-feedback';
+        const label = document.createElement('span');
+        label.textContent = '这条回答是否解决了问题？';
+        controls.appendChild(label);
+        const choices = [['resolved', '已解决'], ['partial', '部分解决'], ['unresolved', '未解决']];
+        for (const [resolution, text] of choices) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = text;
+            button.onclick = async () => {
+                button.disabled = true;
+                try {
+                    const response = await fetch(`${this.apiBaseUrl}/feedback`, {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: this.getRequestHeaders({'Content-Type': 'application/json'}),
+                        body: JSON.stringify({interaction_id: interactionId, resolution})
+                    });
+                    this.ensureAuthenticated(response);
+                    if (!response.ok) throw new Error('feedback unavailable');
+                    label.textContent = '反馈已保存，可重新选择';
+                } catch (error) {
+                    label.textContent = '反馈未保存，请稍后重试';
+                } finally {
+                    button.disabled = false;
+                }
+            };
+            controls.appendChild(button);
+        }
+        messageElement.appendChild(controls);
     }
 
     // 添加消息到聊天界面
@@ -1297,12 +1356,12 @@ class AIOnCallApp {
                     const { done, value } = await reader.read();
                     
                     if (done) {
-                        // 流结束，更新最终内容
+                        // Only an explicit terminal event confirms completion.
                         if (fullResponse) {
                             console.log('AI Ops 流结束，更新最终内容，长度:', fullResponse.length);
                             this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
                         }
-                        break;
+                        throw new Error('诊断连接已中断，任务可能仍在后台运行，请查看任务状态');
                     }
 
                     // 解码数据并添加到缓冲区
@@ -1381,7 +1440,7 @@ class AIOnCallApp {
                                                 throw new Error(sseMessage.data || sseMessage.message || '智能运维分析失败');
                                             }
                                         } catch (e) {
-                                            if (e.message.includes('智能运维')) throw e;
+                                            if (!(e instanceof SyntaxError)) throw e;
                                             console.log('[AI Ops SSE] 单个JSON解析失败:', jsonStr);
                                         }
                                     }
@@ -1468,7 +1527,7 @@ class AIOnCallApp {
                                         }
                                     }
                                 } catch (e) {
-                                    if (e.message.includes('智能运维')) throw e;
+                                    if (!(e instanceof SyntaxError)) throw e;
                                     // 非 JSON 格式，直接追加原始数据
                                     fullResponse += rawData;
                                     if (loadingMessageElement) {

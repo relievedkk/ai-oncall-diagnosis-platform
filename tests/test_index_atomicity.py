@@ -51,6 +51,15 @@ class MemoryStore:
                 raise RuntimeError("partial insert")
         return ids
 
+    def add_embeddings(self, texts, embeddings, metadatas, ids, **kwargs):
+        return self.add_documents(
+            [
+                Document(page_content=text, metadata=metadata)
+                for text, metadata in zip(texts, metadatas, strict=True)
+            ],
+            ids,
+        )
+
 
 @pytest.fixture
 def indexed_file(tmp_path, monkeypatch):
@@ -61,6 +70,10 @@ def indexed_file(tmp_path, monkeypatch):
     manager.vector_store = MemoryStore(collection)
     monkeypatch.setattr(manager, "_distributed_lock", lambda: nullcontext())
     monkeypatch.setattr(index_module, "vector_store_manager", manager)
+    monkeypatch.setattr(
+        "app.services.vector_store_manager.vector_embedding_service.embed_documents",
+        lambda texts: [[1.0] * 1024 for _ in texts],
+    )
     monkeypatch.setattr(
         "app.services.vector_store_manager.milvus_manager.get_collection", lambda: collection
     )
@@ -92,6 +105,40 @@ def test_successful_reindex_persists_new_version_before_removing_old(indexed_fil
     assert [doc.page_content for doc in collection.rows.values()] == ["replacement"]
     assert collection.events.index("flush") < collection.events.index("delete")
     assert all(doc.metadata.get("_index_version") for doc in collection.rows.values())
+
+
+def test_retirement_flush_failure_keeps_committed_new_version(indexed_file):
+    path, manager, collection = indexed_file
+    flushes = 0
+
+    def flush():
+        nonlocal flushes
+        flushes += 1
+        if flushes == 2:
+            raise RuntimeError("retirement flush failed")
+
+    collection.flush = flush
+    result = manager.replace_documents(path.as_posix(), [Document(page_content="new")])
+    assert result
+    assert any(doc.page_content == "new" for doc in collection.rows.values())
+
+
+def test_uncertain_coordinator_commit_preserves_both_versions(indexed_file, monkeypatch):
+    from contextlib import contextmanager
+
+    from app.services.vector_store_manager import IndexCommitUncertain
+
+    path, manager, collection = indexed_file
+
+    @contextmanager
+    def lost_commit_response():
+        yield None
+        raise RuntimeError("commit response lost")
+
+    monkeypatch.setattr(manager, "_distributed_lock", lost_commit_response)
+    with pytest.raises(IndexCommitUncertain):
+        manager.replace_documents(path.as_posix(), [Document(page_content="new")])
+    assert {doc.page_content for doc in collection.rows.values()} == {"old", "new"}
 
 
 def test_concurrent_replacements_keep_only_one_complete_version(indexed_file):
@@ -136,16 +183,24 @@ def test_concurrent_replacements_keep_only_one_complete_version(indexed_file):
 def test_separate_processes_serialize_replacements(monkeypatch):
     import multiprocessing
     import os
+
     if not os.environ.get("TEST_DATABASE_URL"):
         pytest.skip("TEST_DATABASE_URL required")
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
     ctx = multiprocessing.get_context("spawn")
     with ctx.Manager() as shared:
-        rows = shared.dict({"old": Document(page_content="old", metadata={"_source": "shared.txt"})})
+        rows = shared.dict(
+            {"old": Document(page_content="old", metadata={"_source": "shared.txt"})}
+        )
         first_inside, release, second_started, second_inside = (ctx.Event() for _ in range(4))
         results = ctx.Queue()
-        a = ctx.Process(target=_replace_in_process, args=(rows, "a", first_inside, release, results, None))
-        b = ctx.Process(target=_replace_in_process, args=(rows, "b", second_inside, None, results, second_started))
+        a = ctx.Process(
+            target=_replace_in_process, args=(rows, "a", first_inside, release, results, None)
+        )
+        b = ctx.Process(
+            target=_replace_in_process,
+            args=(rows, "b", second_inside, None, results, second_started),
+        )
         a.start()
         try:
             assert first_inside.wait(20)
@@ -169,15 +224,19 @@ def test_separate_processes_serialize_replacements(monkeypatch):
 
 def _replace_in_process(rows, text, inside, release, results, started):
     from app.services import vector_store_manager as module
+
     collection = MemoryCollection("shared.txt")
+    module.vector_embedding_service.embed_documents = lambda texts: [[1.0] * 1024 for _ in texts]
     collection.rows = rows
     store = MemoryStore(collection)
     original = store.add_documents
+
     def add(documents, ids):
         inside.set()
         if release is not None:
             assert release.wait(20)
         return original(documents, ids)
+
     store.add_documents = add
     manager = VectorStoreManager()
     manager.vector_store = store
@@ -194,13 +253,43 @@ def _replace_in_process(rows, text, inside, release, results, started):
 
 def test_coordinator_failure_never_touches_existing_vectors(indexed_file, monkeypatch):
     from contextlib import contextmanager
+
     path, manager, collection = indexed_file
+
     @contextmanager
     def unavailable():
         raise RuntimeError("coordinator unavailable")
         yield
+
     monkeypatch.setattr(manager, "_distributed_lock", unavailable)
     with pytest.raises(RuntimeError, match="coordinator unavailable"):
         manager.replace_documents(path.as_posix(), [Document(page_content="new")])
     assert list(collection.rows) == ["old"]
     assert collection.events == []
+
+
+def test_external_transaction_defers_retirement_until_owner_commits(indexed_file, monkeypatch):
+    from contextlib import contextmanager
+
+    path, manager, collection = indexed_file
+    owner = object()
+    acquired = []
+
+    @contextmanager
+    def guard(connection=None):
+        acquired.append(connection)
+        yield None
+
+    monkeypatch.setattr(manager, "_operation_guard", guard)
+    after_commit = []
+    manager.replace_documents(
+        path.as_posix(),
+        [Document(page_content="new")],
+        coordinator=owner,
+        after_commit=after_commit,
+    )
+    assert acquired == [owner]
+    assert {doc.page_content for doc in collection.rows.values()} == {"old", "new"}
+    assert len(after_commit) == 1
+    after_commit[0]()
+    assert [doc.page_content for doc in collection.rows.values()] == ["new"]

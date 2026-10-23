@@ -49,7 +49,7 @@ def harden_env(path: Path) -> list[str]:
     values = _load(lines)
     generated: list[str] = []
 
-    for key in ("API_KEY", "ALERTMANAGER_WEBHOOK_TOKEN"):
+    for key in ("API_KEY", "ALERTMANAGER_WEBHOOK_TOKEN", "MCP_CLS_TOKEN"):
         current = values.get(key, "")
         if current in PLACEHOLDERS or len(current) < 32:
             lines = _set(lines, key, secrets.token_hex(32))
@@ -70,6 +70,7 @@ def harden_env(path: Path) -> list[str]:
         "WEB_LOGIN_ENABLED": "true",
         # The application refuses this bind unless strong authentication is enabled.
         "HOST": container_bind_host,
+        "MCP_CLS_GATEWAY_HOST": container_bind_host,
     }.items():
         lines = _set(lines, key, value)
 

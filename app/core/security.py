@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import time
 from collections import defaultdict, deque
 
@@ -65,24 +64,38 @@ class RequestSizeLimitMiddleware:
             if declared < 0:
                 raise ValueError
         except ValueError:
-            return await JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})(scope, receive, send)
+            return await JSONResponse(
+                status_code=400, content={"detail": "Invalid Content-Length"}
+            )(scope, receive, send)
         limit = config.max_request_body_bytes
         if declared > limit:
-            return await JSONResponse(status_code=413, content={"detail": "Request body is too large"})(scope, receive, send)
+            return await JSONResponse(
+                status_code=413, content={"detail": "Request body is too large"}
+            )(scope, receive, send)
 
-        messages = []
-        size = 0
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            size += len(message.get("body", b""))
-            if size > limit:
-                return await JSONResponse(status_code=413, content={"detail": "Request body is too large"})(scope, receive, send)
-            messages.append(message)
-            if not message.get("more_body", False):
-                break
-        buffered = iter(messages)
+        body = bytearray()
+        try:
+            # A total deadline also bounds clients that trickle small chunks.
+            async with asyncio.timeout(config.request_body_timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > limit:
+                        return await JSONResponse(
+                            status_code=413, content={"detail": "Request body is too large"},
+                            headers={"Connection": "close"},
+                        )(scope, receive, send)
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            return await JSONResponse(
+                status_code=408, content={"detail": "Request body read timed out"},
+                headers={"Connection": "close"},
+            )(scope, receive, send)
+        buffered = iter([{"type": "http.request", "body": bytes(body), "more_body": False}])
 
         async def replay():
             return next(buffered, None) or await receive()
@@ -105,9 +118,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_key(request: Request) -> str:
-        credential = request.headers.get("X-API-Key") or request.headers.get("Authorization", "")
-        if credential:
-            return hashlib.sha256(credential.encode("utf-8")).hexdigest()[:24]
+        # This middleware runs before authentication. Neither bearer credentials
+        # nor forwarding headers are trusted identities at this boundary.
         return request.client.host if request.client else "unknown"
 
     @staticmethod

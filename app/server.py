@@ -21,7 +21,8 @@ def main() -> None:
             proxy_headers=False,
             timeout_keep_alive=5,
             limit_concurrency=100,
-            limit_max_requests=10_000,
+            # Native entrypoints have no supervising parent to respawn workers.
+            # Keep serving until an explicit shutdown instead of exiting on traffic.
         )
     )
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None

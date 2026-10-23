@@ -1,7 +1,7 @@
 """知识检索工具 - 从向量数据库中检索相关信息"""
 
 from langchain_core.documents import Document
-from langchain_core.tools import tool
+from langchain_core.tools import ToolException, tool
 from loguru import logger
 
 from app.config import config
@@ -38,7 +38,9 @@ def retrieve_knowledge(query: str) -> tuple[str, list[Document]]:
 
     except Exception as e:
         logger.error(f"知识检索工具调用失败: {e}")
-        return f"检索知识时发生错误: {str(e)}", []
+        raise ToolException(
+            "知识检索服务暂不可用，请稍后重试；本次查询失败，不能据此判断知识库没有相关资料。"
+        ) from e
 
 
 def format_docs(docs: list[Document]) -> str:

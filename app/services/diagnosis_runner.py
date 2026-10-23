@@ -69,7 +69,7 @@ class DiagnosisRunner:
 
     async def run(
         self, diagnosis_id: str, celery_task_id: str, worker_name: str,
-        *, execution_token: str | None = None,
+        *, execution_token: str | None = None, retry_managed: bool = False,
     ) -> str:
         execution_token = execution_token or uuid4().hex
         claim: ClaimResult = await self.repository.claim_job(
@@ -162,6 +162,7 @@ class DiagnosisRunner:
                     "stage": "interrupted",
                     "message": "diagnosis worker was cancelled",
                     "diagnosis_id": diagnosis_id,
+                    "attempt": job["attempt_count"],
                 },
                 execution_token=execution_token,
             )
@@ -186,11 +187,13 @@ class DiagnosisRunner:
                         "stage": "timeout" if deadline.expired() else "exception",
                         "message": error_message,
                         "diagnosis_id": diagnosis_id,
+                        "attempt": job["attempt_count"],
                     },
                     execution_token=execution_token,
                 )
             await self.repository.update_job(
-                diagnosis_id, status="failed", error=error_message, execution_token=execution_token
+                diagnosis_id, error=error_message, execution_token=execution_token,
+                **({} if retry_managed else {"status": "failed"}),
             )
             AIOPS_DIAGNOSES.labels(trigger=trigger, status="failed").inc()
             logger.exception("Diagnosis execution failed: {}", diagnosis_id)

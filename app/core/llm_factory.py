@@ -13,6 +13,7 @@
 from langchain_openai import ChatOpenAI
 
 from app.config import config
+from app.core.model_protection import ModelObserver
 
 
 class LLMFactory:
@@ -40,7 +41,9 @@ class LLMFactory:
             base_url=base_url,
             api_key=api_key,
             timeout=config.llm_request_timeout,
-            max_retries=2,
+            max_retries=1,
+            stream_usage=True,
+            callbacks=[ModelObserver()],
         )
 
 

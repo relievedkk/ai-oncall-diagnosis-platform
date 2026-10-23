@@ -13,7 +13,7 @@ def test_harden_env_generates_secrets_without_replacing_valid_values(tmp_path: P
     generated = harden_env(env_file)
     content = env_file.read_text(encoding="utf-8")
 
-    assert generated == ["API_KEY", "ALERTMANAGER_WEBHOOK_TOKEN", "ADMIN_PASSWORD"]
+    assert generated == ["API_KEY", "ALERTMANAGER_WEBHOOK_TOKEN", "MCP_CLS_TOKEN", "ADMIN_PASSWORD"]
     assert "DEBUG=false" in content
     assert "AUTH_ENABLED=true" in content
     assert "WEB_LOGIN_ENABLED=true" in content
@@ -39,6 +39,7 @@ def test_harden_env_preserves_explicit_local_demo_password(tmp_path: Path) -> No
     env_file.write_text(
         "API_KEY=" + "a" * 64 + "\n"
         "ALERTMANAGER_WEBHOOK_TOKEN=" + "b" * 64 + "\n"
+        "MCP_CLS_TOKEN=" + "c" * 64 + "\n"
         "ADMIN_PASSWORD=123456\n"
         "ALLOW_WEAK_ADMIN_PASSWORD=true\n",
         encoding="utf-8",

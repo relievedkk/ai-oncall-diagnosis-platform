@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     database_connect_retry_seconds: float = 2.0
     database_pool_size: int = 10
     database_max_overflow: int = 20
+    readiness_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    rag_context_budget: int = Field(default=16000, ge=2000, le=100000)
+    chat_max_concurrent: int = Field(default=4, ge=1, le=100)
+    chat_max_waiting: int = Field(default=16, ge=0, le=1000)
+    chat_queue_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    provider_cooldown_seconds: float = Field(default=30.0, gt=0, le=300)
+    usage_tracking_enabled: bool = True
+    usage_data_origin: str = Field(default="real", pattern="^(real|evaluation)$")
 
     # Celery / RabbitMQ 独立诊断队列
     celery_broker_url: str = "amqp://oncall:oncall@127.0.0.1:5672//"
@@ -93,6 +101,8 @@ class Settings(BaseSettings):
     # 腾讯云托管 MCP 的 URL 通常含 /sse/，需使用 sse；本地 FastMCP 使用 streamable-http
     mcp_cls_transport: str = "streamable-http"
     mcp_cls_url: str = "http://localhost:8003/mcp"
+    mcp_cls_token: str = Field(default="", repr=False)
+    mcp_cls_gateway_host: str = "127.0.0.1"
     mcp_monitor_transport: str = "streamable-http"
     mcp_monitor_url: str = "http://localhost:8004/mcp"
 
@@ -115,6 +125,7 @@ class Settings(BaseSettings):
     auth_enabled: bool = True
     trusted_hosts: str = "localhost,127.0.0.1,host.docker.internal,testserver"
     max_request_body_bytes: int = 12 * 1024 * 1024
+    request_body_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     max_upload_bytes: int = 10 * 1024 * 1024
     max_archive_uncompressed_bytes: int = 50 * 1024 * 1024
     rate_limit_enabled: bool = True
@@ -185,6 +196,8 @@ class Settings(BaseSettings):
             "cls": {
                 "transport": self.mcp_cls_transport,
                 "url": self.mcp_cls_url,
+                **({"headers": {"Authorization": f"Bearer {self.mcp_cls_token}"}}
+                   if self.mcp_cls_token else {}),
             },
             "monitor": {
                 "transport": self.mcp_monitor_transport,

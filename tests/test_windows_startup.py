@@ -35,6 +35,8 @@ def test_startup_reports_success_only_after_health_check(tmp_path, health_failur
     )
     (stubs / "curl.cmd").write_text(
         '@echo off\nsetlocal enabledelayedexpansion\n'
+        'echo %* | findstr /C:"3000/mcp" >nul\n'
+        'if not errorlevel 1 (echo 401 & exit /b 0)\n'
         'echo %* | findstr /C:"/health" >nul\n'
         'if errorlevel 1 exit /b 0\n'
         'set count=0\n'

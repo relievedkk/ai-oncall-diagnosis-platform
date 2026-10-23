@@ -177,6 +177,8 @@ class AlertDiagnosisService:
 
     async def stream_job(self, diagnosis_id: str) -> AsyncGenerator[dict[str, Any], None]:
         seen_evidence: set[int] = set()
+        completion = None
+        latest_error = None
         while True:
             job = await self.repository.get_job(diagnosis_id)
             if job is None:
@@ -192,8 +194,26 @@ class AlertDiagnosisService:
                 if evidence_id in seen_evidence:
                     continue
                 seen_evidence.add(evidence_id)
-                yield _format_stream_evidence(evidence)
-            if job["status"] in {"completed", "failed", "interrupted", "dead_lettered"}:
+                event = _format_stream_evidence(evidence)
+                if event.get("type") == "complete":
+                    completion = event
+                    continue  # A durable event precedes the job's authority commit.
+                if event.get("type") == "error":
+                    latest_error = event
+                    # An attempt error is progress while Celery owns retry policy.
+                    event = {**event, "type": "status", "stage": "attempt_failed"}
+                yield event
+            if job["status"] == "completed":
+                if completion is None or completion.get("attempt") != job.get("attempt_count"):
+                    completion = {"type": "complete", "response": job.get("report", "")}
+                yield {**completion, "diagnosis_id": diagnosis_id}
+                return
+            if job["status"] in {"failed", "interrupted", "dead_lettered"}:
+                yield {
+                    "type": "error", "stage": job["status"],
+                    "message": job.get("error") or (latest_error or {}).get("message") or "诊断任务未完成",
+                    "diagnosis_id": diagnosis_id,
+                }
                 return
             await asyncio.sleep(0.5)
 

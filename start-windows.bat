@@ -218,12 +218,16 @@ echo [6/9] Starting CLS MCP service...
 if /I "!MCP_CLS_MODE!"=="official" (
     netstat -ano | findstr /R /C:":3000 .*LISTENING" >nul 2>&1
     if not errorlevel 1 (
-        echo [INFO] Official CLS MCP Server is already running on port 3000
+        set CLS_HTTP_STATUS=
+        for /f %%H in ('curl -s --max-time 5 -o NUL -w "%%{http_code}" -X POST http://127.0.0.1:3000/mcp') do set CLS_HTTP_STATUS=%%H
+        if not "!CLS_HTTP_STATUS!"=="401" (
+            echo [ERROR] Stop the old unauthenticated CLS service on port 3000 before restarting.
+            exit /b 1
+        )
+        echo [INFO] Authenticated CLS gateway is already running on port 3000
     ) else (
-        REM Credentials are inherited through the environment, never command arguments.
-        set "TENCENTCLOUD_SECRET_ID=!CLS_SECRET_ID!"
-        set "TENCENTCLOUD_SECRET_KEY=!CLS_SECRET_KEY!"
-        start "CLS MCP Server" /min cmd /c "set TRANSPORT=http&&set PORT=3000&&set TZ=Asia/Shanghai&&npx -y cls-mcp-server@1.2.1"
+        REM The official server uses private stdio; only the authenticated gateway opens HTTP.
+        start "CLS MCP Server" /min %PYTHON_CMD% -m mcp_servers.cls_gateway
         echo [INFO] Waiting for official CLS MCP Server ^(first run downloads package, ~15-20s^)...
         call powershell -NoProfile -Command "Start-Sleep -Seconds 15"
     )

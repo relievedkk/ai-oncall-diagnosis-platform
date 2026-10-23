@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import secrets
-
 from fastapi import APIRouter, Header, HTTPException, Response, status
 
 from app.config import config
+from app.core.credentials import secrets_equal
 from app.models.alerts import AlertmanagerWebhook
 from app.services.alert_diagnosis_service import alert_diagnosis_service
 
@@ -22,7 +21,7 @@ def _verify_alertmanager_token(authorization: str | None) -> None:
         )
     supplied = authorization or ""
     prefix = "Bearer "
-    if not supplied.startswith(prefix) or not secrets.compare_digest(
+    if not supplied.startswith(prefix) or not secrets_equal(
         supplied[len(prefix) :], expected
     ):
         raise HTTPException(status_code=401, detail="Invalid Alertmanager webhook token")

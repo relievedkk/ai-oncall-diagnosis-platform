@@ -1,5 +1,6 @@
 """Liveness and dependency-aware readiness endpoints."""
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -28,7 +29,9 @@ async def _readiness_response() -> JSONResponse:
     }
 
     try:
-        milvus_healthy = milvus_manager.health_check()
+        milvus_healthy = await asyncio.wait_for(
+            asyncio.to_thread(milvus_manager.health_check), config.readiness_timeout_seconds
+        )
     except Exception as exc:
         logger.warning("Milvus 健康检查失败: {}", exc)
         milvus_healthy = False
@@ -36,7 +39,13 @@ async def _readiness_response() -> JSONResponse:
         "status": "connected" if milvus_healthy else "disconnected",
     }
 
-    postgres_healthy = await database_manager.health_check()
+    try:
+        postgres_healthy = await asyncio.wait_for(
+            database_manager.health_check(), config.readiness_timeout_seconds
+        )
+    except Exception as exc:
+        logger.warning("PostgreSQL 就绪探针失败: {}", type(exc).__name__)
+        postgres_healthy = False
     health_data["postgresql"] = {
         "status": "connected" if postgres_healthy else "disconnected",
     }
@@ -44,9 +53,11 @@ async def _readiness_response() -> JSONResponse:
     rabbitmq_healthy = False
     queues: dict[str, Any] = {}
     try:
-        queues = await queue_observer.rabbitmq_queues()
+        queues = await asyncio.wait_for(
+            queue_observer.rabbitmq_queues(), config.readiness_timeout_seconds
+        )
         rabbitmq_healthy = True
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
+    except (httpx.HTTPError, ValueError, TypeError, TimeoutError) as exc:
         logger.warning("RabbitMQ 健康检查失败: {}", exc)
     health_data["rabbitmq"] = {
         "status": "authenticated" if rabbitmq_healthy else "disconnected",

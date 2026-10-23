@@ -25,6 +25,48 @@ class Base(DeclarativeBase):
     pass
 
 
+class KnowledgeDocumentVersion(Base):
+    """Shared authority for the searchable version, independent of Milvus cleanup."""
+    __tablename__ = "knowledge_document_versions"
+    collection_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source: Mapped[str] = mapped_column(String(2048), primary_key=True)
+    version: Mapped[str] = mapped_column(String(36), nullable=False)
+
+
+class ChatInteraction(Base):
+    __tablename__ = "chat_interactions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    session_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    first_content_ms: Mapped[int | None] = mapped_column(Integer)
+    answer_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    usage_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AnswerFeedback(Base):
+    __tablename__ = "answer_feedback"
+    interaction_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_interactions.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    resolution: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class User(Base):
     """Human operator account used by the browser login flow."""
 

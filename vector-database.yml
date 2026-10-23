@@ -37,6 +37,7 @@ x-diagnosis-environment: &diagnosis-environment
   PROMETHEUS_BASE_URL: http://host.docker.internal:9090
   MCP_CLS_TRANSPORT: ${MCP_CLS_TRANSPORT:-streamable-http}
   MCP_CLS_URL: ${MCP_CLS_DOCKER_URL:-http://host.docker.internal:8003/mcp}
+  MCP_CLS_TOKEN: ${MCP_CLS_TOKEN:-}
   MCP_MONITOR_TRANSPORT: ${MCP_MONITOR_TRANSPORT:-streamable-http}
   MCP_MONITOR_URL: http://host.docker.internal:8004/mcp
   SERVICE_CATALOG_PATH: config/service_catalog.json

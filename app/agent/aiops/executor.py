@@ -6,7 +6,7 @@ Executor 节点：执行单个步骤
 import json
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 from loguru import logger
 
@@ -17,6 +17,31 @@ from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 from .state import PlanExecuteState
 
 MAX_TOOL_ROUNDS = 8
+RETRYABLE_READ_TOOLS = frozenset(
+    {
+        "query_service_metrics",
+        "query_service_logs",
+        "query_prometheus_alerts",
+        "retrieve_knowledge",
+        "list_monitored_services",
+    }
+)
+
+
+def _explicitly_retryable(content: Any) -> bool:
+    if isinstance(content, str):
+        try:
+            return _explicitly_retryable(json.loads(content))
+        except (TypeError, json.JSONDecodeError):
+            return False
+    if isinstance(content, list):
+        return any(_explicitly_retryable(item) for item in content)
+    if isinstance(content, dict):
+        if content.get("retryable") is True:
+            return True
+        if content.get("type") == "text":
+            return _explicitly_retryable(content.get("text"))
+    return False
 
 
 def _tool_result_failed(content: Any) -> bool:
@@ -94,8 +119,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
         # 当前步骤可依赖前一步发现的服务、时间范围或查询参数。
         messages = [
-            SystemMessage(
-                content="""你是一个能力强大的助手，负责执行具体的任务步骤。
+            SystemMessage(content="""你是一个能力强大的助手，负责执行具体的任务步骤。
 
 你可以使用各种工具来完成任务。对于每个步骤：
 1. 理解步骤的目标
@@ -108,22 +132,28 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 - 不要编造数据，只返回实际获取的信息
 - 工具参数必须来自原始任务、服务目录或真实工具结果，不得填入示例 ID 或猜测值
 - 执行结果要清晰、准确
-- 专注于当前步骤，不要考虑其他任务"""
-            ),
+- 专注于当前步骤，不要考虑其他任务"""),
         ]
         if state.get("input"):
-            messages.append(HumanMessage(content=f"原始任务及服务映射（当前步骤必须遵守其范围和参数）:\n{state['input']}"))
+            messages.append(
+                HumanMessage(
+                    content=f"原始任务及服务映射（当前步骤必须遵守其范围和参数）:\n{state['input']}"
+                )
+            )
         history = "\n\n".join(
             f"步骤: {step}\n结果: {result}" for step, result in state.get("past_steps", [])
         )
         if history:
-            messages.append(HumanMessage(content=f"已执行步骤的真实结果（供当前步骤参考）:\n{history}"))
+            messages.append(
+                HumanMessage(content=f"已执行步骤的真实结果（供当前步骤参考）:\n{history}")
+            )
         messages.append(HumanMessage(content=f"请执行以下任务: {task}"))
 
         # 持续执行模型请求的工具，直到生成答案或达到有界调用限制。
         llm_response = await llm_with_tools.ainvoke(messages)
         logger.info(f"LLM 响应类型: {type(llm_response)}")
         tool_rounds = 0
+        retried_queries: set[str] = set()
         while getattr(llm_response, "tool_calls", None):
             if tool_rounds >= MAX_TOOL_ROUNDS:
                 raise RuntimeError(f"工具调用达到最大轮数 {MAX_TOOL_ROUNDS}，步骤未完成")
@@ -135,6 +165,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             tool_messages = await tool_node.ainvoke({"messages": messages})
 
             calls_by_id = {str(call.get("id", "")): call for call in llm_response.tool_calls}
+            final_tool_messages = []
             for tool_message in tool_messages["messages"]:
                 tool_call_id = str(getattr(tool_message, "tool_call_id", ""))
                 call = calls_by_id.get(tool_call_id, {})
@@ -144,8 +175,6 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                 content = getattr(tool_message, "content", str(tool_message))
                 failed = getattr(tool_message, "status", "success") == "error"
                 failed = failed or _tool_result_failed(content)
-                if failed:
-                    execution_errors.append(f"{task}: 工具 {tool_name} 执行失败")
                 tool_evidence.append(
                     {
                         "evidence_type": classify_tool_evidence(tool_name),
@@ -155,9 +184,38 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                         "success": not failed,
                     }
                 )
+                query_key = json.dumps(
+                    [tool_name, call.get("args", {})], sort_keys=True, ensure_ascii=False
+                )
+                if (
+                    failed
+                    and tool_name in RETRYABLE_READ_TOOLS
+                    and _explicitly_retryable(content)
+                    and query_key not in retried_queries
+                ):
+                    retried_queries.add(query_key)
+                    retry_request = AIMessage(content="", tool_calls=[call])
+                    retried = await tool_node.ainvoke({"messages": [*messages[:-1], retry_request]})
+                    tool_message = retried["messages"][0]
+                    content = getattr(tool_message, "content", str(tool_message))
+                    failed = getattr(tool_message, "status", "success") == "error"
+                    failed = failed or _tool_result_failed(content)
+                    tool_evidence.append(
+                        {
+                            "evidence_type": classify_tool_evidence(tool_name),
+                            "source": tool_name,
+                            "query": call.get("args", {}),
+                            "result": content,
+                            "success": not failed,
+                            "attempt": 2,
+                        }
+                    )
+                if failed:
+                    execution_errors.append(f"{task}: 工具 {tool_name} 执行失败")
+                final_tool_messages.append(tool_message)
 
             # 第三步：将工具结果返回给 LLM 生成最终答案
-            messages.extend(tool_messages["messages"])
+            messages.extend(final_tool_messages)
             llm_response = await llm_with_tools.ainvoke(messages)
         content = getattr(llm_response, "content", str(llm_response))
         result = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)

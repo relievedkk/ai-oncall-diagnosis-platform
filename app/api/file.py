@@ -14,7 +14,8 @@ from loguru import logger
 
 from app.config import config
 from app.core.auth import is_path_allowed
-from app.services.vector_index_service import vector_index_service
+from app.services.vector_index_service import is_internal_upload_path, vector_index_service
+from app.services.vector_store_manager import IndexCommitUncertain
 
 router = APIRouter()
 
@@ -81,7 +82,9 @@ async def upload_file(file: UploadFile = File(...)):
 
             _validate_file_content(temp_path, file_extension)
             storage_filename = f"{digest.hexdigest()[:32]}.{file_extension}"
-            file_path = UPLOAD_DIR / storage_filename
+            object_dir = UPLOAD_DIR / ".objects"
+            object_dir.mkdir(exist_ok=True)
+            file_path = object_dir / storage_filename
             created_new = not file_path.exists()
             if created_new:
                 os.replace(temp_path, file_path)
@@ -97,14 +100,26 @@ async def upload_file(file: UploadFile = File(...)):
         try:
             logger.info(f"开始为上传文件创建向量索引: {file_path}")
             await asyncio.to_thread(
-                vector_index_service.index_single_file,
+                vector_index_service.index_uploaded_file,
                 str(file_path),
+                safe_filename,
+                digest.hexdigest(),
+                str(UPLOAD_DIR),
             )
             logger.info(f"向量索引创建成功: {file_path}")
+        except IndexCommitUncertain as e:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "文档已保存，索引提交结果待协调，请重建索引后重试查询",
+                    "filename": safe_filename,
+                    "index_status": "pending_reconciliation",
+                },
+            ) from e
         except Exception as e:
             logger.error("向量索引创建失败: {}, 错误: {}", storage_filename, e)
-            if created_new:
-                file_path.unlink(missing_ok=True)
+            # Blobs are immutable and may already be referenced by another
+            # document. A failed upload must never delete a shared object.
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -154,7 +169,7 @@ async def index_directory(
     try:
         target = directory_path if directory_path else "uploads"
 
-        if not is_path_allowed(target):
+        if not is_path_allowed(target) or is_internal_upload_path(target):
             logger.warning(f"索引目录被拒绝（不在白名单内）: {target}")
             raise HTTPException(
                 status_code=403,

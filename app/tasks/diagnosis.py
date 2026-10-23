@@ -69,7 +69,7 @@ def run_diagnosis(self: Task, diagnosis_id: str) -> str:
     execution_token = uuid4().hex
     try:
         return _run_async(_runner.run(
-            diagnosis_id, task_id, worker_name, execution_token=execution_token
+            diagnosis_id, task_id, worker_name, execution_token=execution_token, retry_managed=True
         ))
     except DiagnosisLeaseLostError:
         return "lease_lost"

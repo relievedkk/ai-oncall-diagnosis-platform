@@ -132,3 +132,77 @@ async def test_runner_deadline_cancels_slow_work_and_records_failure(monkeypatch
     assert job["status"] == "failed"
     assert "deadline" in job["error"].casefold()
     assert job["report"] == ""
+
+
+@pytest.mark.asyncio
+async def test_queue_managed_failure_does_not_expose_terminal_status_before_retry(monkeypatch):
+    runner_module = importlib.import_module("app.services.diagnosis_runner")
+    repository = InMemoryDiagnosisRepository()
+    job_id = await create_job(repository)
+
+    async def failure(**kwargs):
+        yield {"type": "error", "message": "temporary provider failure"}
+
+    monkeypatch.setattr(runner_module.aiops_service, "diagnose", failure)
+    with pytest.raises(RuntimeError, match="temporary"):
+        await DiagnosisRunner(repository).run(job_id, "task", "worker", retry_managed=True)
+    assert (await repository.get_job(job_id))["status"] == "running"
+    await repository.prepare_retry(job_id, "temporary provider failure")
+    assert (await repository.get_job(job_id))["status"] == "retrying"
+
+
+@pytest.mark.asyncio
+async def test_stream_survives_attempt_error_and_waits_for_committed_completion():
+    from app.services.alert_diagnosis_service import AlertDiagnosisService
+
+    class Repository:
+        calls = 0
+
+        async def get_job(self, _):
+            self.calls += 1
+            return {
+                "status": "retrying" if self.calls == 1 else "completed",
+                "attempt_count": 2,
+                "report": "final report",
+                "evidence": [
+                    {"id": 1, "payload": {"type": "error", "attempt": 1, "message": "temporary"}},
+                    {
+                        "id": 2,
+                        "payload": {"type": "complete", "attempt": 2, "response": "final report"},
+                    },
+                ],
+            }
+
+    repository = Repository()
+    events = [
+        event
+        async for event in AlertDiagnosisService(repository, inline_worker=False).stream_job("test")
+    ]
+    assert repository.calls == 2
+    assert all(event["type"] not in {"error", "complete"} for event in events[:-1])
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["response"] == "final report"
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_terminal_failure_even_without_error_evidence():
+    from app.services.alert_diagnosis_service import AlertDiagnosisService
+
+    class Repository:
+        async def get_job(self, _):
+            return {"status": "dead_lettered", "error": "retries exhausted", "evidence": []}
+
+    events = [
+        event
+        async for event in AlertDiagnosisService(Repository(), inline_worker=False).stream_job(
+            "test"
+        )
+    ]
+    assert events == [
+        {
+            "type": "error",
+            "stage": "dead_lettered",
+            "message": "retries exhausted",
+            "diagnosis_id": "test",
+        }
+    ]

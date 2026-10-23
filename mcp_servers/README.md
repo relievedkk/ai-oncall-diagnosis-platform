@@ -6,7 +6,7 @@
 
 ### CLS
 
-默认使用官方 `cls-mcp-server`，由 `start-windows.bat` 在 `3000` 端口启动，读取 `.env` 中的腾讯云凭据。未配置 Node.js 或凭据时，启动脚本会回退到本地 `cls_server.py` 演示服务。
+默认由 `python -m mcp_servers.cls_gateway` 在 `3000` 端口启动认证网关，官方 `cls-mcp-server@1.2.1` 仅通过私有 stdio 子进程通信，不开 HTTP 端口。客户端必须携带独立的 `MCP_CLS_TOKEN` Bearer 凭据；`app.local_env` 自动生成并由 Compose 传递给诊断 Worker。未配置 Node.js 或云凭据时，Windows 启动脚本回退到仅绑定本地的 `cls_server.py` 演示服务。升级时必须先停止旧的未认证 CLS HTTP 进程；启动脚本发现旧入口会拒绝继续。
 
 ### Monitor
 

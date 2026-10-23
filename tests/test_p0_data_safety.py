@@ -24,10 +24,10 @@ async def test_upload_reports_index_failure(
 ) -> None:
     monkeypatch.setattr(file_api, "UPLOAD_DIR", tmp_path)
 
-    def fail_index(_: str) -> None:
+    def fail_index(*args, **kwargs) -> None:
         raise RuntimeError("embedding unavailable")
 
-    monkeypatch.setattr(file_api.vector_index_service, "index_single_file", fail_index)
+    monkeypatch.setattr(file_api.vector_index_service, "index_uploaded_file", fail_index)
     upload = UploadFile(filename="runbook.md", file=io.BytesIO(b"hello"))
 
     with pytest.raises(HTTPException) as exc_info:
