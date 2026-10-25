@@ -26,6 +26,8 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
       DATABASE_AUTO_CREATE: "false"
       AUTH_ENABLED: "false"
+      # Tests stub provider calls; module imports still require a non-empty key.
+      DASHSCOPE_API_KEY: "ci-test-only-not-a-real-key"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
