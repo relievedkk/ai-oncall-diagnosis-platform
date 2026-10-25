@@ -1,0 +1,99 @@
+{
+  "cpu_load": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "cpu_spin": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "memory_pressure": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "downstream_timeout": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "connection_pool": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "bad_configuration": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "release_regression": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "no_alerts": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "missing_logs": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "conflicting_signals": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "stale_runbook": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs",
+      "retrieve_knowledge"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  },
+  "dependency_failure": {
+    "query_sequence": [
+      "query_prometheus_alerts",
+      "query_service_metrics",
+      "query_service_logs"
+    ],
+    "description": "Scripted reads only. Generic observation summarizer; no expected cause."
+  }
+}

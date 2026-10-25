@@ -1,0 +1,1138 @@
+[
+  {
+    "case_id": "cpu_load",
+    "title": "CPU 随流量上升",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的CPU 随流量上升；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "CPU 随流量上升",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "CPU 随流量上升",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=94%; request_rate=4200/s; queue_depth=120",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 94.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "request_rate",
+            "value": 4200.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "queue_depth",
+            "value": 120.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "request volume increased 4x; worker stacks distributed across requests"
+          }
+        ],
+        "summary": "request volume increased 4x; worker stacks distributed across requests"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "cpu_spin",
+    "title": "CPU 持续占用",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的CPU 持续占用；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "CPU 持续占用",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "CPU 持续占用",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=99%; request_rate=30/s; queue_depth=1",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 99.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "request_rate",
+            "value": 30.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "queue_depth",
+            "value": 1.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "profile: 97% CPU in RetryLoop.run; same stack repeated 10000 samples"
+          }
+        ],
+        "summary": "profile: 97% CPU in RetryLoop.run; same stack repeated 10000 samples"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "memory_pressure",
+    "title": "内存压力",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的内存压力；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "内存压力",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "内存压力",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "rss=3.9GiB; limit=4GiB; gc_pause=820ms",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "rss",
+            "value": 3.9,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "limit",
+            "value": 4.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "gc_pause",
+            "value": 820.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "OOMKilled instance checkout-1; heap grew after cache population"
+          }
+        ],
+        "summary": "OOMKilled instance checkout-1; heap grew after cache population"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "downstream_timeout",
+    "title": "下游超时",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的下游超时；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "下游超时",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "下游超时",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "p99=4.8s; upstream_cpu=21%; payment_p99=4.6s",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "p99",
+            "value": 4.8,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "upstream_cpu",
+            "value": 21.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "payment_p99",
+            "value": 4.6,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "payment-client request timeout after 4500ms; trace dependency payment-api"
+          }
+        ],
+        "summary": "payment-client request timeout after 4500ms; trace dependency payment-api"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "connection_pool",
+    "title": "连接池耗尽",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的连接池耗尽；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "连接池耗尽",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "连接池耗尽",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "db_pool_active=50; db_pool_limit=50; waiting=260",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "db_pool_active",
+            "value": 50.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "db_pool_limit",
+            "value": 50.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "waiting",
+            "value": 260.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "connection acquire timed out; long transaction age=180s"
+          }
+        ],
+        "summary": "connection acquire timed out; long transaction age=180s"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "bad_configuration",
+    "title": "错误配置",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的错误配置；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "错误配置",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "错误配置",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "error_rate=63%; cpu=18%; revision=r42",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "error_rate",
+            "value": 63.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 18.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "CONFIG: PAYMENT_ENDPOINT=http://invalid.internal; DNS NXDOMAIN"
+          }
+        ],
+        "summary": "CONFIG: PAYMENT_ENDPOINT=http://invalid.internal; DNS NXDOMAIN"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "release_regression",
+    "title": "发布回归",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的发布回归；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "发布回归",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "发布回归",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "error_rate r41=0.1% r42=27%; deploy_at=10:00",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "r41",
+            "value": 0.1,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "r42",
+            "value": 27.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "deploy_at",
+            "value": 10.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "r42 TypeError checkout.total at line 81; r41 no matching errors"
+          }
+        ],
+        "summary": "r42 TypeError checkout.total at line 81; r41 no matching errors"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "no_alerts",
+    "title": "无活跃告警",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的无活跃告警；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [],
+        "total": 0
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=15%; rss=0.8GiB; error_rate=0.1%",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 15.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "rss",
+            "value": 0.8,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "error_rate",
+            "value": 0.1,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "no recent errors"
+          }
+        ],
+        "summary": "no recent errors"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "missing_logs",
+    "title": "关键日志缺失",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的关键日志缺失；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "关键日志缺失",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "关键日志缺失",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=96%; latency_p99=3s",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 96.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "latency_p99",
+            "value": 3.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": []
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "conflicting_signals",
+    "title": "指标日志冲突",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的指标日志冲突；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "指标日志冲突",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "指标日志冲突",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=98%; instance=checkout-1",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 98.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-2",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-2",
+            "message": "instance=checkout-2; health check normal; CPU=12%"
+          }
+        ],
+        "summary": "instance=checkout-2; health check normal; CPU=12%"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  },
+  {
+    "case_id": "stale_runbook",
+    "title": "旧手册误导",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的旧手册误导；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "旧手册误导",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "旧手册误导",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "metrics": "cpu=22%; db_pool_active=50; waiting=260",
+        "data_points": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "cpu",
+            "value": 22.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "db_pool_active",
+            "value": 50.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          },
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "metric": "waiting",
+            "value": 260.0,
+            "labels": {
+              "service": "checkout-api",
+              "instance": "checkout-1"
+            }
+          }
+        ]
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "records": [
+          {
+            "timestamp": "2026-10-26T10:05:00+08:00",
+            "service": "checkout-api",
+            "instance": "checkout-1",
+            "message": "connection acquire timeout; payment endpoint reachable"
+          }
+        ],
+        "summary": "connection acquire timeout; payment endpoint reachable"
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "2024旧手册：CPU升高通常由忙循环引起，请先重启。版本适用性未复核。"
+      }
+    }
+  },
+  {
+    "case_id": "dependency_failure",
+    "title": "工具依赖失败",
+    "source": "synthetic",
+    "target_service": "checkout-api",
+    "task": "诊断 checkout-api 的工具依赖失败；仅分析指定时间与实例范围，证据不足时明确说明。",
+    "service_catalog": [
+      {
+        "service_name": "checkout-api",
+        "instances": [
+          "checkout-1",
+          "checkout-2"
+        ],
+        "metrics_job": "checkout",
+        "log_topic": "checkout-logs"
+      }
+    ],
+    "tools": {
+      "query_prometheus_alerts": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "alerts": [
+          {
+            "alertname": "工具依赖失败",
+            "service": "checkout-api",
+            "state": "firing",
+            "labels": {
+              "alertname": "工具依赖失败",
+              "service": "checkout-api",
+              "instance": "checkout-1",
+              "severity": "warning"
+            }
+          }
+        ],
+        "total": 1
+      },
+      "query_service_metrics": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": false,
+        "metrics": "",
+        "error": "synthetic dependency unavailable",
+        "retryable": false
+      },
+      "query_service_logs": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": false,
+        "error": "synthetic dependency unavailable",
+        "retryable": false,
+        "records": [],
+        "summary": ""
+      },
+      "retrieve_knowledge": {
+        "service_name": "checkout-api",
+        "instance": "checkout-1",
+        "timestamp": "2026-10-26T10:05:00+08:00",
+        "provenance": "synthetic_fixture",
+        "success": true,
+        "text": "运行手册只提供待验证假设。"
+      }
+    }
+  }
+]

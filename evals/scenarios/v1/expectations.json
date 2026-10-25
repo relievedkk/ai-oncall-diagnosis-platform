@@ -1,0 +1,331 @@
+{
+  "cpu_load": {
+    "known_cause": "高流量导致CPU负载上升",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "高流量导致CPU负载上升"
+  },
+  "cpu_spin": {
+    "known_cause": "重试死循环",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "重试死循环"
+  },
+  "memory_pressure": {
+    "known_cause": "缓存增长导致内存压力",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "缓存增长导致内存压力"
+  },
+  "downstream_timeout": {
+    "known_cause": "支付下游超时",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "支付下游超时"
+  },
+  "connection_pool": {
+    "known_cause": "长事务占用连接池",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "长事务占用连接池"
+  },
+  "bad_configuration": {
+    "known_cause": "错误的下游地址配置",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "错误的下游地址配置"
+  },
+  "release_regression": {
+    "known_cause": "新版本空值处理回归",
+    "acceptable_outcomes": [
+      "diagnosed",
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": false,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "新版本空值处理回归"
+  },
+  "no_alerts": {
+    "known_cause": "构造输入中没有活跃告警",
+    "acceptable_outcomes": [
+      "no_active_alerts"
+    ],
+    "required_support_types": [],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": true,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "构造输入中没有活跃告警"
+  },
+  "missing_logs": {
+    "known_cause": "日志缺失，无法区分流量与忙循环",
+    "acceptable_outcomes": [
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": true,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "日志缺失，无法区分流量与忙循环"
+  },
+  "conflicting_signals": {
+    "known_cause": "不同实例的观测冲突，不能确认原因",
+    "acceptable_outcomes": [
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [
+      "log"
+    ],
+    "forbid_diagnosed": true,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "不同实例的观测冲突，不能确认原因"
+  },
+  "stale_runbook": {
+    "known_cause": "连接池压力，旧手册的CPU原因不适用",
+    "acceptable_outcomes": [
+      "insufficient_evidence"
+    ],
+    "required_support_types": [
+      "metric",
+      "log"
+    ],
+    "required_counterevidence_types": [
+      "log"
+    ],
+    "forbid_diagnosed": true,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "连接池压力，旧手册的CPU原因不适用"
+  },
+  "dependency_failure": {
+    "known_cause": "指标和日志依赖不可用",
+    "acceptable_outcomes": [
+      "dependency_failed"
+    ],
+    "required_support_types": [],
+    "required_counterevidence_types": [],
+    "forbid_diagnosed": true,
+    "source": "synthetic",
+    "review_status": "unreviewed",
+    "reviewer": null,
+    "reviewed_at": null,
+    "human_scores": {
+      "root_cause_semantics": null,
+      "recommendation_quality": null
+    },
+    "review_checklist": [
+      "确认服务、实例和时间范围一致",
+      "区分观测事实与候选根因",
+      "检查支持与反证引用",
+      "检查建议是否需要更多证据"
+    ],
+    "acceptable_conclusions": "指标和日志依赖不可用"
+  }
+}
