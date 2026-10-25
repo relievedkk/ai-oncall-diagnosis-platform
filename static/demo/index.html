@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OnCall Lab · 合成故障重放</title>
+  <link rel="stylesheet" href="/demo/style.css">
+  <script src="/demo/app.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/">ONCALL <span>LAB</span></a><span class="pill">LOCAL / REPLAY</span></header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">可检查的诊断过程</p>
+      <h1>从告警到证据，<br>重放一次诊断。</h1>
+      <p class="lead">选择内置故障案例，查看 Agent 与固定流程如何收集证据、形成结论。</p>
+      <div class="notice"><strong>合成重放 · 不代表根因准确率</strong><p>使用合成工具数据与脚本化模型响应，无云端调用。验证流程、契约和引用；语义结论与建议仍需人工复核。无真实处置能力。</p></div>
+    </section>
+    <section class="workspace" aria-label="案例重放工作区">
+      <aside class="panel cases-panel"><div class="section-title"><h2>故障案例</h2><span id="case-count">加载中</span></div><div id="cases" class="case-list"></div></aside>
+      <article class="panel run-panel">
+        <div class="case-heading"><p class="eyebrow" id="case-id">选择案例</p><h2 id="case-title">准备重放</h2><p id="case-description"></p></div>
+        <div class="controls"><label for="strategy">诊断策略</label><select id="strategy"><option value="agent">Agent · 按中间结果规划</option><option value="baseline">Baseline · 指标 → 日志 → 总结</option></select><button id="run" disabled>开始重放 <span aria-hidden="true">↗</span></button></div>
+        <p id="run-status" class="status" role="status" aria-live="polite">正在加载内置案例…</p>
+        <div id="result" hidden>
+          <div class="result-head"><h3>诊断结论（待人工复核）</h3><span id="outcome" class="pill"></span></div>
+          <p id="summary" class="summary"></p>
+          <div class="result-grid"><section><h3>观测事实与证据引用</h3><div id="observations"></div></section><section><h3>候选原因、支持与反证</h3><div id="hypotheses"></div></section></div>
+          <section class="trace-section"><div class="section-title"><h3>运行轨迹</h3><span>脚本调用 / 本机耗时</span></div><ol id="trace" class="trace"></ol></section>
+          <section class="limits"><h3>缺失证据与限制</h3><div id="limitations"></div></section>
+          <details><summary>结构化结果与原始报告</summary><pre id="raw-result"></pre></details>
+        </div>
+      </article>
+    </section>
+    <footer>12 个合成案例 · 仅本机回环访问 · 不使用真实凭据 · Ctrl+C 退出服务</footer>
+  </main>
+</body>
+</html>
