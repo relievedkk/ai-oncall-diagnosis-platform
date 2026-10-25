@@ -255,6 +255,8 @@ class AlertDiagnosisService:
             if job["status"] == "completed":
                 if completion is None or completion.get("attempt") != job.get("attempt_count"):
                     completion = {"type": "complete", "response": job.get("report", "")}
+                if job.get('diagnosis_result') is not None:
+                    completion['diagnosis_result'] = job['diagnosis_result']
                 yield redact_sensitive({**completion, "diagnosis_id": diagnosis_id,
                                         "_event_id": terminal_id})
                 return
@@ -263,6 +265,8 @@ class AlertDiagnosisService:
                     "type": "error", "stage": job["status"],
                     "message": job.get("error") or (latest_error or {}).get("message") or "诊断任务未完成",
                     "diagnosis_id": diagnosis_id,
+                    **({'diagnosis_result': job['diagnosis_result'], 'response': job.get('report', '')}
+                       if job.get('diagnosis_result') is not None else {}),
                     "_event_id": terminal_id,
                 })
                 return

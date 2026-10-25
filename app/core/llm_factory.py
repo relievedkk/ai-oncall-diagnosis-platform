@@ -10,12 +10,23 @@
 - 其他兼容 OpenAI API 的服务
 """
 
+import sys
+
 from langchain_openai import ChatOpenAI
 from pydantic import model_validator
 
 from app.config import config
 from app.core.data_safety import ModelInputRejected, model_input_bytes, redact_sensitive
 from app.core.model_protection import ModelObserver
+
+
+def _uses_shared_quota():
+    if not config.shared_model_quota_enabled:
+        return False
+    runtime_module = sys.modules.get("app.agent.aiops.runtime")
+    # Explicit isolated experiments use their bounded local meter, never the
+    # deployed quota database. Without an injected context, keep production rules.
+    return runtime_module is None or runtime_module.current_runtime().context == "production"
 
 
 class SafeChatOpenAI(ChatOpenAI):
@@ -40,25 +51,29 @@ class SafeChatOpenAI(ChatOpenAI):
         return payload
 
     async def _agenerate_with_cache(self, messages, stop=None, run_manager=None, **kwargs):
-        if not config.shared_model_quota_enabled:
-            return await super()._agenerate_with_cache(messages, stop=stop, run_manager=run_manager, **kwargs)
+        if not _uses_shared_quota():
+            return await super()._agenerate_with_cache(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
         from app.services.shared_model_quota import shared_transport
 
         size = model_input_bytes(self._get_request_payload(messages, stop=stop, **kwargs))
         async with shared_transport(self, size):
-            return await super()._agenerate_with_cache(messages, stop=stop, run_manager=run_manager, **kwargs)
+            return await super()._agenerate_with_cache(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
 
     async def astream(self, input, config=None, *, stop=None, **kwargs):
-        from app.config import config as settings
-
-        if not settings.shared_model_quota_enabled:
+        if not _uses_shared_quota():
             async for chunk in super().astream(input, config=config, stop=stop, **kwargs):
                 yield chunk
             return
         from app.services.shared_model_quota import shared_transport
 
         messages = self._convert_input(input).to_messages()
-        size = model_input_bytes(self._get_request_payload(messages, stop=stop, **{**kwargs, "stream": True}))
+        size = model_input_bytes(
+            self._get_request_payload(messages, stop=stop, **{**kwargs, "stream": True})
+        )
         async with shared_transport(self, size):
             iterator = super().astream(input, config=config, stop=stop, **kwargs)
             try:
@@ -68,7 +83,7 @@ class SafeChatOpenAI(ChatOpenAI):
                 await iterator.aclose()
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        if not config.shared_model_quota_enabled:
+        if not _uses_shared_quota():
             return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
         from app.services.shared_model_quota import shared_transport
 
@@ -77,13 +92,17 @@ class SafeChatOpenAI(ChatOpenAI):
             return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        if not config.shared_model_quota_enabled:
-            async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+        if not _uses_shared_quota():
+            async for chunk in super()._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
                 yield chunk
             return
         from app.services.shared_model_quota import shared_transport, track_provider_stream
 
-        size = model_input_bytes(self._get_request_payload(messages, stop=stop, **{**kwargs, "stream": True}))
+        size = model_input_bytes(
+            self._get_request_payload(messages, stop=stop, **{**kwargs, "stream": True})
+        )
         async with shared_transport(self, size):
             iterator = super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs)
             track_provider_stream(iterator)

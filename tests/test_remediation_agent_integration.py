@@ -98,7 +98,8 @@ async def test_invalid_structured_remediation_preserves_valid_model_report(monke
 
     result = await replanner._generate_response({"input": "diagnose", "past_steps": []}, FakeLLM())
 
-    assert result == {
+    assert result['diagnosis_result']['outcome'] == 'legacy_unverified'
+    assert {key: value for key, value in result.items() if key != 'diagnosis_result'} == {
         "response": "# Valid diagnosis report",
         "harness_error": "invalid_remediation_proposal",
     }

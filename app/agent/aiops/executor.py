@@ -4,16 +4,18 @@ Executor 节点：执行单个步骤
 """
 
 import json
+from uuid import uuid4
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 from loguru import logger
 
-from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
+from .runtime import get_mcp_client_with_retry, load_mcp_tools_safe
 from app.core.data_safety import bounded_tool_result, redact_sensitive, sanitize_tool_message
+from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
 from app.core.llm_factory import llm_factory
-from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
+from .runtime import DEFAULT_LOCAL_AGENT_TOOLS, create_model, resolve_tools, current_runtime
 
 from .state import PlanExecuteState
 
@@ -99,20 +101,17 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
     try:
         # 获取本地工具
-        local_tools = list(DEFAULT_LOCAL_AGENT_TOOLS)
+        async def default_tools():
+            client = await get_mcp_client_with_retry()
+            tools, warning = await load_mcp_tools_safe(client)
+            if warning:
+                logger.warning("部分 MCP 服务不可用: {}", warning)
+            return list(DEFAULT_LOCAL_AGENT_TOOLS) + tools
 
-        # 获取 MCP 工具
-        mcp_client = await get_mcp_client_with_retry()
-        mcp_tools, mcp_warning = await load_mcp_tools_safe(mcp_client)
-        if mcp_warning:
-            logger.warning(f"部分 MCP 服务不可用，执行将使用其余工具继续:\n{mcp_warning}")
-        logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
-
-        # 合并所有工具
-        all_tools = local_tools + mcp_tools
+        all_tools = await resolve_tools(default_tools)
 
         # 创建 LLM（绑定工具）
-        llm = llm_factory.create_chat_model(temperature=0, streaming=False)
+        llm = create_model(temperature=0, streaming=False)
         llm_with_tools = llm.bind_tools(all_tools)
 
         # 创建工具节点（自动执行工具调用）
@@ -120,8 +119,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
         # 当前步骤可依赖前一步发现的服务、时间范围或查询参数。
         messages = [
-            SystemMessage(
-                content="""你是一个能力强大的助手，负责执行具体的任务步骤。
+            SystemMessage(content="""你是一个能力强大的助手，负责执行具体的任务步骤。
 
 你可以使用各种工具来完成任务。对于每个步骤：
 1. 理解步骤的目标
@@ -134,8 +132,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 - 不要编造数据，只返回实际获取的信息
 - 工具参数必须来自原始任务、服务目录或真实工具结果，不得填入示例 ID 或猜测值
 - 执行结果要清晰、准确
-- 专注于当前步骤，不要考虑其他任务"""
-            ),
+- 专注于当前步骤，不要考虑其他任务"""),
         ]
         if state.get("input"):
             messages.append(
@@ -182,6 +179,8 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                 tool_evidence.append(
                     {
                         "evidence_type": classify_tool_evidence(tool_name),
+                        "evidence_ref": str(uuid4()),
+                        "task_scope": state.get("task_scope") or current_runtime().task_scope,
                         "source": tool_name,
                         "query": redact_sensitive(call.get("args", {})),
                         "result": content,
@@ -207,6 +206,8 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
                     tool_evidence.append(
                         {
                             "evidence_type": classify_tool_evidence(tool_name),
+                            "evidence_ref": str(uuid4()),
+                            "task_scope": state.get("task_scope") or current_runtime().task_scope,
                             "source": tool_name,
                             "query": redact_sensitive(call.get("args", {})),
                             "result": content,
@@ -243,6 +244,16 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             "execution_errors": execution_errors,
         }
 
+    except (ModelBudgetExceeded, ModelInputRejected) as e:
+        return {
+            "plan": [],
+            "past_steps": [(task, "诊断预算已耗尽")],
+            "evidence": tool_evidence,
+            "authority_outcome": "budget_exhausted",
+            "termination_reason": "model_budget_exhausted",
+            "skipped_steps": plan,
+            "execution_errors": [str(e)],
+        }
     except Exception as e:
         logger.error(f"执行步骤失败: {e}", exc_info=True)
         return {

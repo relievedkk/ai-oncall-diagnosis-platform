@@ -10,9 +10,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from app.agent.mcp_client import get_mcp_client_with_retry, load_mcp_tools_safe
+from .runtime import get_mcp_client_with_retry, load_mcp_tools_safe
 from app.core.llm_factory import llm_factory
-from app.tools import DEFAULT_LOCAL_AGENT_TOOLS, retrieve_knowledge
+from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
+from .runtime import DEFAULT_LOCAL_AGENT_TOOLS, retrieve_knowledge, create_model, resolve_tools
 
 from .state import PlanExecuteState
 from .utils import format_tools_description
@@ -93,17 +94,14 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
 
         # 步骤2: 获取可用工具列表
         # 获取本地工具
-        local_tools = list(DEFAULT_LOCAL_AGENT_TOOLS)
+        async def default_tools():
+            client = await get_mcp_client_with_retry()
+            tools, warning = await load_mcp_tools_safe(client)
+            if warning:
+                logger.warning("部分 MCP 服务不可用: {}", warning)
+            return list(DEFAULT_LOCAL_AGENT_TOOLS) + tools
 
-        # 获取 MCP 工具
-        mcp_client = await get_mcp_client_with_retry()
-        mcp_tools, mcp_warning = await load_mcp_tools_safe(mcp_client)
-        if mcp_warning:
-            logger.warning(f"部分 MCP 服务不可用，规划将使用其余工具继续:\n{mcp_warning}")
-
-        # 合并所有工具
-        all_tools = local_tools + mcp_tools
-        logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
+        all_tools = await resolve_tools(default_tools)
 
         # 格式化工具描述
         tools_description = format_tools_description(all_tools)
@@ -123,13 +121,11 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
             experience_context = ""
 
         # 步骤4: 创建 LLM 并生成计划
-        llm = llm_factory.create_chat_model(temperature=0, streaming=False)
+        llm = create_model(temperature=0, streaming=False)
 
         # DashScope's OpenAI-compatible endpoint handles Pydantic schemas
         # reliably through tool/function calling.
-        planner_chain = planner_prompt | llm.with_structured_output(
-            Plan, method="function_calling"
-        )
+        planner_chain = planner_prompt | llm.with_structured_output(Plan, method="function_calling")
 
         # 调用 LLM 生成计划
         plan_result = await planner_chain.ainvoke(
@@ -153,6 +149,13 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
 
         return {"plan": plan_steps}
 
+    except (ModelBudgetExceeded, ModelInputRejected) as e:
+        return {
+            "plan": [],
+            "authority_outcome": "budget_exhausted",
+            "termination_reason": "model_budget_exhausted",
+            "execution_errors": [str(e)],
+        }
     except Exception as e:
         logger.error(f"生成计划失败: {e}", exc_info=True)
         # 返回一个默认计划

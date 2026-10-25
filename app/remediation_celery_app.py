@@ -4,6 +4,7 @@ from celery import Celery
 from kombu import Exchange, Queue
 
 from app.config import config
+from app.utils import logger as _logging_setup  # noqa: F401
 from app.harness.gateway import validate_remediation_adapter
 
 validate_remediation_adapter()

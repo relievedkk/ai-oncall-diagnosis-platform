@@ -41,6 +41,7 @@ jobs:
       - run: uv run pip-audit --local --progress-spinner off
       - run: uv run alembic upgrade head
       - run: uv run pytest -q
+      - run: node --test tests/*.test.cjs
       - run: uv run alembic check
       - run: docker compose -f vector-database.yml config --quiet
       - run: docker compose -f monitoring.yml config --quiet

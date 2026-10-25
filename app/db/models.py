@@ -246,6 +246,7 @@ class DiagnosisReport(Base):
         ForeignKey("diagnosis_jobs.diagnosis_id", ondelete="CASCADE"), primary_key=True
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     format: Mapped[str] = mapped_column(String(32), nullable=False, default="markdown")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

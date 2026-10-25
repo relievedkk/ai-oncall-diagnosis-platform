@@ -21,4 +21,5 @@ if sys.platform == "win32":
 
 __version__ = "1.0.0"
 
-from app.utils import logger  # noqa: F401
+# Production entrypoints initialize logging explicitly. Importing a pure
+# contract or the offline demo must not read deployment configuration.

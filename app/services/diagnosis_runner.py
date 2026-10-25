@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import AsyncExitStack, aclosing
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,8 @@ from app.repositories.diagnosis import ClaimResult, DiagnosisLeaseLostError, Dia
 from app.services.aiops_service import aiops_service
 from app.services.remediation_service import RemediationService, remediation_service
 from app.services.service_catalog import service_catalog
+from app.agent.aiops.runtime import current_runtime, diagnosis_runtime
+from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
 
 
 class DiagnosisBusyError(RuntimeError):
@@ -117,6 +120,19 @@ class DiagnosisRunner:
         try:
             async with deadline, AsyncExitStack() as checkpoint_scope:
                 checkpoint_scope.enter_context(
+                    diagnosis_runtime(
+                        replace(
+                            current_runtime(),
+                            task_scope=f"aiops:{diagnosis_id}",
+                            target_service=(
+                                ""
+                                if job.get("service") == "manual"
+                                else str(job.get("service") or "")
+                            ),
+                        )
+                    )
+                )
+                checkpoint_scope.enter_context(
                     diagnosis_checkpoint_scope(self.repository, diagnosis_id, execution_token)
                 )
                 checkpoint_scope.enter_context(
@@ -196,6 +212,24 @@ class DiagnosisRunner:
                 else str(exc)
             )
             if not error_event_seen:
+                from app.agent.aiops.replanner import _partial_result
+
+                latest = await self.repository.get_job(diagnosis_id)
+                outcome = (
+                    "budget_exhausted"
+                    if isinstance(exc, (ModelBudgetExceeded, ModelInputRejected))
+                    or deadline.expired()
+                    else "dependency_failed"
+                )
+                partial = _partial_result(
+                    {
+                        "task_scope": f"aiops:{diagnosis_id}",
+                        "target_service": str(job.get("service") or ""),
+                        "evidence": _remediation_evidence(latest or {}),
+                    },
+                    outcome,
+                    "timeout" if deadline.expired() else "exception",
+                )
                 await self.repository.record_event(
                     diagnosis_id,
                     {
@@ -204,6 +238,7 @@ class DiagnosisRunner:
                         "message": error_message,
                         "diagnosis_id": diagnosis_id,
                         "attempt": job["attempt_count"],
+                        **partial,
                     },
                     execution_token=execution_token,
                 )
@@ -229,6 +264,8 @@ class DiagnosisRunner:
         event: dict[str, Any],
         execution_token: str,
     ) -> None:
+        if current_runtime().context != "production":
+            return
         try:
             intent = parse_action_intent(event.get("remediation"))
             job = await self.repository.get_job(diagnosis_id)

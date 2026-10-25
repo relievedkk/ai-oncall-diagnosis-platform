@@ -4,6 +4,7 @@
 """
 
 import os
+from app.utils import logger as _logging_setup  # noqa: F401
 from contextlib import asynccontextmanager
 from pathlib import Path
 

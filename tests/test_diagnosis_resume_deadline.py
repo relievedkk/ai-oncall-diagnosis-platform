@@ -131,7 +131,9 @@ async def test_runner_deadline_cancels_slow_work_and_records_failure(monkeypatch
     job = await repository.get_job(job_id)
     assert job["status"] == "failed"
     assert "deadline" in job["error"].casefold()
-    assert job["report"] == ""
+    assert job['diagnosis_result']['outcome'] == 'budget_exhausted'
+    assert job['diagnosis_result']['termination_reason'] == 'timeout'
+    assert 'late report' not in job['report']
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,10 @@ class PlanExecuteState(TypedDict):
 
     # 最终响应/报告
     response: str
+    diagnosis_result: NotRequired[dict[str, Any] | None]
+    task_scope: NotRequired[str]
+    target_service: NotRequired[str]
+    authority_outcome: NotRequired[str]
 
     # 模型可选的闭合处置提案；只供确定性 Harness 评估，不代表执行授权。
     remediation: NotRequired[dict[str, Any] | None]

@@ -15,6 +15,7 @@ from loguru import logger
 from app.agent.aiops import PlanExecuteState, executor, planner, replanner
 from app.core.checkpoint import checkpoint_manager
 from app.harness.contracts import parse_action_intent
+from app.agent.aiops.runtime import current_runtime
 from app.repositories.diagnosis import DiagnosisLeaseLostError
 
 # 节点名称常量
@@ -125,6 +126,10 @@ class AIOpsService:
                 "past_steps": Overwrite([]),
                 "evidence": Overwrite([]),
                 "response": "",
+                "diagnosis_result": None,
+                "task_scope": current_runtime().task_scope or session_id,
+                "target_service": current_runtime().target_service,
+                "authority_outcome": "",
                 "skipped_steps": [],
                 "termination_reason": "",
                 "remediation": None,
@@ -141,9 +146,9 @@ class AIOpsService:
                     initial_state = None
                     execution_errors = list(checkpoint.values.get("execution_errors", []))
 
-            async with aclosing(self.graph.astream(
-                input=initial_state, config=config_dict, stream_mode="updates"
-            )) as stream:
+            async with aclosing(
+                self.graph.astream(input=initial_state, config=config_dict, stream_mode="updates")
+            ) as stream:
                 async for event in stream:
                     # 解析事件
                     for node_name, node_output in event.items():
@@ -161,7 +166,8 @@ class AIOpsService:
                         elif node_name == NODE_REPLANNER:
                             report_state = (
                                 {**node_output, "execution_errors": execution_errors}
-                                if node_output else node_output
+                                if node_output
+                                else node_output
                             )
                             replanner_event = self._format_replanner_event(report_state)
                             yield replanner_event
@@ -190,6 +196,7 @@ class AIOpsService:
             # 安全地获取响应（处理 values 可能为 None 的情况）
             if final_state and final_state.values:
                 final_response = final_state.values.get("response", "")
+                diagnosis_result = final_state.values.get("diagnosis_result")
                 errors = final_state.values.get("execution_errors", [])
                 if errors:
                     yield {
@@ -198,6 +205,7 @@ class AIOpsService:
                         "message": "任务部分步骤执行失败，已保留收集到的证据和报告",
                         "errors": errors,
                         "response": final_response,
+                        "diagnosis_result": diagnosis_result,
                     }
                     return
             if not final_response:
@@ -209,6 +217,11 @@ class AIOpsService:
                 "stage": "complete",
                 "message": "任务执行完成",
                 "response": final_response,
+                "diagnosis_result": (
+                    final_state.values.get("diagnosis_result")
+                    if final_state and final_state.values
+                    else None
+                ),
             }
 
             logger.info(f"[会话 {session_id}] 任务执行完成")
@@ -217,7 +230,25 @@ class AIOpsService:
             raise
         except Exception as e:
             logger.error(f"[会话 {session_id}] 任务执行失败: {e}", exc_info=True)
-            yield {"type": "error", "stage": "error", "message": f"任务执行出错: {str(e)}"}
+            from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
+            from app.agent.aiops.replanner import _partial_result
+
+            outcome = (
+                "budget_exhausted"
+                if isinstance(e, (ModelBudgetExceeded, ModelInputRejected))
+                else "dependency_failed"
+            )
+            partial = _partial_result(
+                {"task_scope": current_runtime().task_scope or session_id},
+                outcome,
+                "execution_exception",
+            )
+            yield {
+                "type": "error",
+                "stage": "error",
+                "message": f"任务执行出错: {str(e)}",
+                **partial,
+            }
 
     async def diagnose(
         self, session_id: str = "default", *, resume: bool = False
@@ -234,7 +265,8 @@ class AIOpsService:
         # 使用固定的 AIOps 任务描述
         from textwrap import dedent
 
-        aiops_task = dedent("""诊断当前系统是否存在告警，如果存在告警请详细分析告警原因并生成诊断报告，诊断报告输出格式要求：
+        aiops_task = dedent(
+            """诊断当前系统是否存在告警，如果存在告警请详细分析告警原因并生成诊断报告，诊断报告输出格式要求：
                 ```
                 # 告警分析报告
 
@@ -306,7 +338,8 @@ class AIOpsService:
                 **重要提醒**：
                 - 最终输出必须是纯 Markdown 文本，不要包含 JSON 结构
                 - 所有内容必须基于工具查询的真实数据，严禁编造
-                - 如果某个步骤失败，在结论中如实说明，不要跳过""")
+                - 如果某个步骤失败，在结论中如实说明，不要跳过"""
+        )
 
         async with aclosing(self.execute(aiops_task, session_id, resume=resume)) as events:
             async for event in events:
@@ -318,6 +351,7 @@ class AIOpsService:
                         "stage": "diagnosis_complete",
                         "message": "诊断流程完成",
                         "diagnosis": {"status": "completed", "report": event.get("response", "")},
+                        "diagnosis_result": event.get("diagnosis_result"),
                     }
                 else:
                     yield event
@@ -385,8 +419,12 @@ class AIOpsService:
                 "skipped_steps": skipped_steps,
                 "termination_reason": termination_reason,
             }
+            if state.get("diagnosis_result") is not None:
+                event["diagnosis_result"] = state["diagnosis_result"]
             raw_remediation = (
-                state.get("remediation") if not state.get("execution_errors") else None
+                state.get("remediation")
+                if not state.get("execution_errors") and current_runtime().context == "production"
+                else None
             )
             if raw_remediation is not None:
                 try:

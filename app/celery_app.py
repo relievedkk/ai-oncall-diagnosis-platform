@@ -4,6 +4,7 @@ from celery import Celery
 from kombu import Exchange, Queue
 
 from app.config import config
+from app.utils import logger as _logging_setup  # noqa: F401
 
 celery_app = Celery(
     "ai_oncall_diagnosis",

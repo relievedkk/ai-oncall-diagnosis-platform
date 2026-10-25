@@ -10,6 +10,25 @@
 
 [快速开始](#快速开始) · [工程设计](#关键工程设计) · [验证记录](#质量与验证) · [运行手册](docs/windows-operations.md) · [接口与安全](docs/api-and-security.md)
 
+## 无凭据重放与方案对照
+
+想先检查项目行为，可在安装依赖后启动独立演示，无需模型密钥、云日志凭据或 Docker：
+
+```powershell
+uv sync --frozen
+uv run python -m app.demo --port 9911
+```
+
+打开 [本机重放演示](http://127.0.0.1:9911)，选择 12 个合成案例之一，查看 Agent 或固定“指标 → 日志 → 总结”流程的工具轨迹、证据引用和诊断边界。终端按 `Ctrl+C` 退出。
+
+```powershell
+uv run python -m app.evaluation.compare_cli --mode replay --output-dir .runtime/comparison
+```
+
+默认重放使用脚本化模型响应，只验证流程、结果契约与引用校验，**不是根因准确率测试，也不证明 Agent 优于固定流程**。案例期望独立保存，人工复核未完成时评分为空；真实模型实验需要显式选择 `live --allow-live`，会消耗配置供应商的模型额度，本次交付不自动运行。安装、案例口径、对照参数和输出解释见 [重放与对照说明](docs/replay-and-comparison.md)。
+
+诊断报告同时保留 Markdown 和结构化 `diagnosis_result`，区分待复核的诊断结论、证据不足、预算耗尽、依赖失败、无活跃告警及旧报告未校验。任务执行结束不代表根因已经确认。升级已有数据库前执行 `uv run alembic upgrade head`；本次新增的结果字段允许旧报告为空。
+
 > 当前交付包含 Windows 单机托管部署与隔离恢复演练。诊断可查询真实 Prometheus 与腾讯云 CLS；处置执行器仅支持 **Dry Run**，重启、扩容和回滚动作均为模拟执行。
 
 ## 解决什么问题

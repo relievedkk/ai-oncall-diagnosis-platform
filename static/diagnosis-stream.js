@@ -59,7 +59,8 @@
         });
     }
     function reduceProgress(progress, event) {
-        const next = {log: progress?.log || '', report: progress?.report || ''};
+        const next = {log: progress?.log || '', report: progress?.report || '', diagnosisResult: progress?.diagnosisResult || null};
+        if (event.diagnosis_result && typeof event.diagnosis_result === 'object') next.diagnosisResult = event.diagnosis_result;
         if (event.type === 'report') {
             next.report = event.report || next.report;
             const skipped = Array.isArray(event.skipped_steps) ? event.skipped_steps.length : 0;
@@ -71,12 +72,19 @@
         else if (event.type === 'step_complete') next.log += `\n✅ ${event.message || event.current_step || '步骤完成'}\n`;
         else if (event.type === 'evidence') next.log += `\n🔎 ${event.summary || event.message || '已采集诊断证据'}\n`;
         else if (event.type === 'status') next.log += `\n⏳ ${event.message || ''}\n`;
-        else if (event.type === 'error') next.log += `\n${event.message || event.data || '诊断任务未完成'}\n`;
+        else if (event.type === 'error') {
+            next.log += `\n${event.message || event.data || '诊断任务未完成'}\n`;
+            next.report = event.response || next.report;
+        }
         return next;
     }
     function progressText(state) {
         const progress = state?.progress || {};
-        return (progress.log || '') + (progress.report ? `\n\n## 🎯 诊断报告\n\n${progress.report}` : '');
+        const labels = {diagnosed: '诊断结论（待人工复核）', insufficient_evidence: '证据不足',
+            budget_exhausted: '诊断预算耗尽', dependency_failed: '诊断依赖失败',
+            no_active_alerts: '当前范围无活跃告警', legacy_unverified: '历史报告，未进行结构化校验'};
+        const label = labels[progress.diagnosisResult?.outcome] || labels.legacy_unverified;
+        return (progress.log || '') + (progress.report ? `\n\n## 🎯 诊断报告\n\n**${label}**\n\n${progress.report}` : '');
     }
 
     class DiagnosisClient {

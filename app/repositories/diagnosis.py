@@ -102,6 +102,8 @@ def _json_safe(value: Any) -> Any:
 def _event_report(event: dict[str, Any]) -> str:
     if event.get("type") == "report":
         return str(event.get("report", ""))
+    if event.get('type') == 'error' and event.get('diagnosis_result'):
+        return str(event.get('response', ''))
     if event.get("type") == "complete":
         if event.get("response"):
             return str(event["response"])
@@ -321,6 +323,7 @@ class InMemoryDiagnosisRepository:
                 ).isoformat(),
                 updated_at=now.isoformat(),
             )
+            job['diagnosis_result'] = None
             return "claimed"
 
     async def heartbeat(self, diagnosis_id: str, celery_task_id: str, *, execution_token: str | None = None) -> bool:
@@ -469,6 +472,7 @@ class InMemoryDiagnosisRepository:
             report = _event_report(event)
             if report:
                 job["report"] = report
+                job['diagnosis_result'] = copy.deepcopy(event.get('diagnosis_result'))
             job["updated_at"] = utc_now().isoformat()
 
     async def skip_remaining_steps(self, diagnosis_id: str, reason: str, *, execution_token: str | None = None) -> None:
@@ -587,6 +591,7 @@ class InMemoryDiagnosisRepository:
             # Copy only the requested page, never the accumulated transcript.
             pending = list(islice((item for item in job["evidence"] if item["id"] > after_id), limit + 1))
             return {**_summary(job), "error": job.get("error"), "report": job.get("report", ""),
+                    'diagnosis_result': copy.deepcopy(job.get('diagnosis_result')),
                     "evidence": copy.deepcopy(pending[:limit]), "has_more": len(pending) > limit}
 
     async def list_jobs(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
@@ -829,6 +834,9 @@ class SQLAlchemyDiagnosisRepository:
             job.error = None
             job.celery_task_id = celery_task_id
             job.execution_token = execution_token or uuid4().hex
+            previous_report = await session.get(DiagnosisReport, diagnosis_id)
+            if previous_report is not None:
+                previous_report.structured_result = None
             job.worker_name = worker_name
             job.attempt_count += 1
             job.started_at = job.started_at or now
@@ -1044,11 +1052,13 @@ class SQLAlchemyDiagnosisRepository:
                         DiagnosisReport(
                             diagnosis_id=diagnosis_id,
                             content=report_content,
+                            structured_result=event.get('diagnosis_result'),
                             format="markdown",
                         )
                     )
                 else:
                     report.content = report_content
+                    report.structured_result = event.get('diagnosis_result')
                     report.updated_at = now
             job.updated_at = now
 
@@ -1212,8 +1222,9 @@ class SQLAlchemyDiagnosisRepository:
             evidence = list((await session.scalars(select(DiagnosisEvidence).where(
                 DiagnosisEvidence.diagnosis_id == diagnosis_id, DiagnosisEvidence.id > after_id
             ).order_by(DiagnosisEvidence.id).limit(limit + 1))).all())
-            report = await session.scalar(select(DiagnosisReport.content).where(DiagnosisReport.diagnosis_id == diagnosis_id))
-            return {**_summary(job), "error": job.error, "report": report or "",
+            report = await session.get(DiagnosisReport, diagnosis_id)
+            return {**_summary(job), "error": job.error, "report": report.content if report else '',
+                    'diagnosis_result': report.structured_result if report else None,
                     "evidence": [_evidence_to_dict(item) for item in evidence[:limit]],
                     "has_more": len(evidence) > limit}
 
@@ -1359,6 +1370,7 @@ def _job_to_dict(job: DiagnosisJob) -> dict[str, Any]:
         "evidence": evidence,
         "events": [item["payload"] for item in evidence],
         "report": job.report.content if job.report else "",
+        'diagnosis_result': job.report.structured_result if job.report else None,
         "error": job.error,
         "celery_task_id": job.celery_task_id,
         "worker_name": job.worker_name,
