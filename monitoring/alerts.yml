@@ -5,6 +5,7 @@ groups:
         expr: up{job="ai-oncall-agent"} == 0
         for: 1m
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
@@ -69,6 +70,7 @@ groups:
       - alert: AIOpsDiagnosisFailure
         expr: oncall_diagnosis_recent_failures{job="ai-oncall-agent"} > 0
         labels:
+          oncall_route: operations
           severity: warning
           service: ai-oncall-agent
         annotations:
@@ -81,6 +83,7 @@ groups:
         expr: oncall_rabbitmq_queue_messages{queue="diagnosis.dead-letter",state="ready"} > 0
         for: 1m
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
@@ -91,6 +94,7 @@ groups:
         expr: oncall_rabbitmq_queue_consumers{queue=~"diagnosis.(critical|default)"} < 1
         for: 2m
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
@@ -101,6 +105,7 @@ groups:
         expr: oncall_outbox_oldest_pending_seconds > 60
         for: 2m
         labels:
+          oncall_route: operations
           severity: warning
           service: ai-oncall-agent
         annotations:
@@ -111,6 +116,7 @@ groups:
         expr: oncall_queue_observer_up == 0
         for: 2m
         labels:
+          oncall_route: operations
           severity: warning
           service: ai-oncall-agent
         annotations:
@@ -134,6 +140,7 @@ groups:
       - alert: RemediationExecutionFailed
         expr: oncall_remediation_actions{status="failed"} > 0
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
@@ -143,6 +150,7 @@ groups:
       - alert: RemediationRollbackCircuitBreaker
         expr: oncall_remediation_circuit_breaker_open == 1
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
@@ -153,6 +161,7 @@ groups:
         expr: oncall_remediation_oldest_awaiting_approval_seconds > 600
         for: 1m
         labels:
+          oncall_route: operations
           severity: warning
           service: ai-oncall-agent
         annotations:
@@ -163,8 +172,52 @@ groups:
         expr: oncall_rabbitmq_queue_consumers{queue="remediation.control"} < 1
         for: 2m
         labels:
+          oncall_route: operations
           severity: critical
           service: ai-oncall-agent
         annotations:
           summary: 生产处置队列没有可用 Worker
           description: remediation.control 连续 2 分钟没有消费者；已批准的处置不会被执行。
+
+  - name: ai-oncall-operational-backlog
+    rules:
+      - alert: DiagnosisCriticalQueueBacklog
+        expr: oncall_rabbitmq_queue_messages{queue="diagnosis.critical",state="ready"} > 10
+        for: 2m
+        labels:
+          oncall_route: operations
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 严重诊断队列积压
+          description: critical 队列待处理消息持续两分钟超过十条，检查供应商额度和 Worker。
+      - alert: DiagnosisDefaultQueueBacklog
+        expr: oncall_rabbitmq_queue_messages{queue="diagnosis.default",state="ready"} > 50
+        for: 5m
+        labels:
+          oncall_route: operations
+          severity: warning
+          service: ai-oncall-agent
+        annotations:
+          summary: 普通诊断队列积压
+          description: default 队列待处理消息持续五分钟超过五十条。
+      - alert: DiagnosisOldestWaiting
+        expr: oncall_diagnosis_oldest_waiting_seconds > 120
+        for: 2m
+        labels:
+          oncall_route: operations
+          severity: warning
+          service: ai-oncall-agent
+        annotations:
+          summary: 最老诊断任务等待过久
+          description: queued 或 retrying 任务已等待超过两分钟，持续两分钟仍未消除。
+      - alert: QueueMetricsStale
+        expr: (time() - oncall_queue_last_success_timestamp_seconds > 60) or absent(oncall_queue_last_success_timestamp_seconds)
+        for: 2m
+        labels:
+          oncall_route: operations
+          severity: critical
+          service: ai-oncall-agent
+        annotations:
+          summary: 队列指标缺失或过期
+          description: 最近完整采集时间超过六十秒或指标消失，不能依据旧值判定队列健康。

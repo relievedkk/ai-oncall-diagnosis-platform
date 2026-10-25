@@ -40,6 +40,13 @@ class AlertInfo(BaseModel):
     description: str | None = None
 
 
+class DiagnosisJobCreated(BaseModel):
+    """Durable task identity, independent of its current subscription."""
+
+    diagnosis_id: str
+    events_url: str
+
+
 class DiagnosisResponse(BaseModel):
     """诊断响应（非流式）"""
 

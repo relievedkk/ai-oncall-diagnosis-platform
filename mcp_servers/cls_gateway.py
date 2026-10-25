@@ -23,6 +23,7 @@ from fastmcp.server.middleware import Middleware
 from app.config import config
 from app.core.credentials import secrets_equal
 from app.services.service_catalog import service_catalog
+from mcp_servers.operations_health import register_operations_health
 
 _SEARCH_ARGUMENTS = frozenset({"Region", "TopicId", "Query", "From", "To", "Limit"})
 _MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000
@@ -149,6 +150,7 @@ def create_gateway(*, backend=None, token: str | None = None) -> FastMCP:
         auth=CLSTokenVerifier(token),
     )
     gateway.add_middleware(CatalogSearchPolicy())
+    register_operations_health(gateway, 'cls')
     return gateway
 
 

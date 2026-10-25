@@ -5,6 +5,7 @@
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from app.api import aiops, alerts, auth, chat, debug, feedback, file, health, me
 from app.config import config
 from app.core.auth import ApiKeyMiddleware, validate_security_configuration
 from app.core.checkpoint import checkpoint_manager
+from app.core.maintenance import MaintenanceMiddleware
 from app.core.metrics import prometheus_http_middleware
 from app.core.milvus_client import milvus_manager
 from app.core.model_protection import ModelAdmissionMiddleware
@@ -94,6 +96,7 @@ app.middleware("http")(prometheus_http_middleware)
 app.add_middleware(ModelAdmissionMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(MaintenanceMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     TrustedHostMiddleware,
@@ -133,7 +136,7 @@ app.include_router(remediation.router, prefix="/api", tags=["生产处置"])
 app.include_router(debug.router, prefix="/api", tags=["本地故障注入"])
 
 # 挂载静态文件
-static_dir = "static"
+static_dir = str(Path(__file__).resolve().parents[1] / "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 

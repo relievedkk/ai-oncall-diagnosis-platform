@@ -28,6 +28,7 @@ from app.core.llm_factory import llm_factory
 from app.core.tool_data_boundary import ToolDataBoundaryMiddleware
 from app.services.conversation_memory import SummaryMiddleware, TokenTrimMiddleware
 from app.services.health_inspection import inspect_registered_services, is_full_health_request
+from app.services.shared_model_quota import SharedQuotaExceeded, SharedQuotaUnavailable
 from app.tools import DEFAULT_LOCAL_AGENT_TOOLS
 
 # 阿里千问大模型和langchain集成参考： https://docs.langchain.com/oss/python/integrations/chat/qwen
@@ -53,6 +54,23 @@ def identity_response(question: str) -> str | None:
     """Return the stable product identity for direct identity questions."""
     normalized = re.sub(r"[\s?？!！,，.。:：]+", "", question).casefold()
     return ASSISTANT_IDENTITY if normalized in IDENTITY_QUESTIONS else None
+
+
+def shared_quota_error_event(error: SharedQuotaExceeded | SharedQuotaUnavailable) -> dict:
+    """Stable public fields; exception messages may contain private context."""
+    if isinstance(error, SharedQuotaExceeded):
+        return {
+            "type": "error",
+            "data": "共享模型额度已耗尽，请稍后重试",
+            "error_code": "shared_model_quota_exceeded",
+            "retry_after": error.retry_after,
+        }
+    return {
+        "type": "error",
+        "data": "共享模型额度服务不可用，请稍后重试",
+        "error_code": "shared_model_quota_unavailable",
+        "retry_after": 2,
+    }
 
 
 class RagAgentService:
@@ -260,6 +278,8 @@ class RagAgentService:
             logger.warning(f"[会话 {session_id}] Agent 返回结果为空")
             return ""
 
+        except (SharedQuotaExceeded, SharedQuotaUnavailable):
+            raise
         except Exception as e:
             logger.error(
                 f"[会话 {session_id}] RAG Agent 查询失败（非流式）: {format_exception_chain(e)}"
@@ -339,10 +359,12 @@ class RagAgentService:
             logger.info(f"[会话 {session_id}] RAG Agent 查询完成（流式）")
             yield {"type": "complete"}
 
+        except (SharedQuotaExceeded, SharedQuotaUnavailable) as error:
+            yield shared_quota_error_event(error)
         except Exception as e:
             detail = format_exception_chain(e)
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（流式）: {detail}")
-            yield {"type": "error", "data": detail}
+            yield {"type": "error", "data": "对话服务暂时不可用"}
 
     async def get_session_history(self, session_id: str) -> list:
         """

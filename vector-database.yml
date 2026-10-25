@@ -34,6 +34,14 @@ x-diagnosis-environment: &diagnosis-environment
   TOOL_RESULT_MAX_BYTES: ${TOOL_RESULT_MAX_BYTES:-16384}
   DIAGNOSIS_MAX_MODEL_CALLS: ${DIAGNOSIS_MAX_MODEL_CALLS:-24}
   DIAGNOSIS_MAX_MODEL_INPUT_BYTES: ${DIAGNOSIS_MAX_MODEL_INPUT_BYTES:-262144}
+  SHARED_MODEL_QUOTA_ENABLED: ${SHARED_MODEL_QUOTA_ENABLED:-false}
+  SHARED_MODEL_QUOTA_SCOPE: ${SHARED_MODEL_QUOTA_SCOPE:-provider-account}
+  SHARED_MODEL_QUOTA_CONCURRENCY: ${SHARED_MODEL_QUOTA_CONCURRENCY:-4}
+  SHARED_MODEL_QUOTA_CALLS_PER_MINUTE: ${SHARED_MODEL_QUOTA_CALLS_PER_MINUTE:-60}
+  SHARED_MODEL_QUOTA_INPUT_BYTES_PER_MINUTE: ${SHARED_MODEL_QUOTA_INPUT_BYTES_PER_MINUTE:-1048576}
+  SHARED_MODEL_QUOTA_LEASE_SECONDS: ${SHARED_MODEL_QUOTA_LEASE_SECONDS:-150}
+  SHARED_MODEL_QUOTA_RENEW_SECONDS: ${SHARED_MODEL_QUOTA_RENEW_SECONDS:-30}
+  ONCALL_CONFIG_ROOT: /app-config
   DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
   RAG_MODEL: ${RAG_MODEL:-qwen-max}
   MILVUS_HOST: standalone
@@ -44,7 +52,7 @@ x-diagnosis-environment: &diagnosis-environment
   MCP_CLS_TOKEN: ${MCP_CLS_TOKEN:-}
   MCP_MONITOR_TRANSPORT: ${MCP_MONITOR_TRANSPORT:-streamable-http}
   MCP_MONITOR_URL: http://host.docker.internal:8004/mcp
-  SERVICE_CATALOG_PATH: config/service_catalog.json
+  SERVICE_CATALOG_PATH: /app/config/service_catalog.json
   CLS_LOG_SPOOL_ENABLED: ${CLS_LOG_SPOOL_ENABLED:-false}
   LOG_SERVICE_NAME: ai-oncall-agent
   TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
@@ -53,17 +61,19 @@ x-diagnosis-environment: &diagnosis-environment
 
 x-remediation-environment: &remediation-environment
   <<: *remediation-policy
+  ONCALL_CONFIG_ROOT: /app-config
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
   DATABASE_AUTO_CREATE: "false"
   CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
   CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
-  SERVICE_CATALOG_PATH: config/service_catalog.json
+  SERVICE_CATALOG_PATH: /app/config/service_catalog.json
   PYTHONUTF8: "1"
 
 services:
   postgres:
     container_name: oncall-postgres
     image: postgres:16.4-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-oncall}
       POSTGRES_USER: ${POSTGRES_USER:-oncall}
@@ -81,6 +91,7 @@ services:
   rabbitmq:
     container_name: oncall-rabbitmq
     image: ai-oncall-rabbitmq:4.1-hardened
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.rabbitmq
@@ -99,7 +110,7 @@ services:
       retries: 20
 
   diagnosis-migrate:
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -111,7 +122,7 @@ services:
     restart: "no"
 
   queue-bootstrap:
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.queue_bootstrap"]
     environment: *diagnosis-environment
     depends_on:
@@ -123,7 +134,7 @@ services:
 
   diagnosis-critical-worker:
     container_name: oncall-diagnosis-critical-worker
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     command:
       - uv
       - run
@@ -148,7 +159,7 @@ services:
 
   diagnosis-default-worker:
     container_name: oncall-diagnosis-default-worker
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     command:
       - uv
       - run
@@ -173,7 +184,7 @@ services:
 
   remediation-worker:
     container_name: oncall-remediation-worker
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     command:
       - uv
       - run
@@ -196,7 +207,7 @@ services:
 
   outbox-publisher:
     container_name: oncall-outbox-publisher
-    image: ai-oncall-worker:local
+    image: ${ONCALL_WORKER_IMAGE:-ai-oncall-worker:local}
     command: ["uv", "run", "--no-sync", "python", "-m", "app.workers.outbox_publisher"]
     environment: *diagnosis-environment
     volumes:
@@ -209,6 +220,7 @@ services:
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -226,6 +238,7 @@ services:
   minio:
     container_name: milvus-minio
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    restart: unless-stopped
     environment:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
@@ -244,6 +257,7 @@ services:
   standalone:
     container_name: milvus-standalone
     image: milvusdb/milvus:v2.5.10
+    restart: unless-stopped
     command: ["milvus", "run", "standalone"]
     security_opt:
     - seccomp:unconfined
@@ -268,6 +282,7 @@ services:
   attu:
     container_name: milvus-attu
     image: zilliz/attu:v2.5
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${ATTU_PORT:-8001}:3000" # 8000 常被本地应用占用，默认改用 8001
     environment:

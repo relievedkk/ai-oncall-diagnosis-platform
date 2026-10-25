@@ -603,6 +603,8 @@ class InMemoryDiagnosisRepository:
                 job_counts[status] = job_counts.get(status, 0) + 1
             outbox_counts: dict[str, int] = {}
             pending_times: list[datetime] = []
+            waiting_times = [_parse_datetime(job["created_at"]) for job in self._jobs.values()
+                             if job["status"] in {"queued", "retrying"}]
             cutoff = utc_now() - timedelta(minutes=10)
             recent_failures = sum(
                 item["evidence_type"] == "error"
@@ -624,6 +626,7 @@ class InMemoryDiagnosisRepository:
             "outbox_counts": outbox_counts,
             "outbox_oldest_pending_seconds": oldest_age,
             "recent_failure_count": recent_failures,
+            "oldest_waiting_seconds": max(0.0, (utc_now() - min(waiting_times)).total_seconds()) if waiting_times else 0.0,
         }
 
 
@@ -1231,6 +1234,9 @@ class SQLAlchemyDiagnosisRepository:
 
     async def get_operational_metrics(self) -> dict[str, Any]:
         async with self._sessions() as session:
+            oldest_waiting = await session.scalar(select(func.min(DiagnosisJob.created_at)).where(
+                DiagnosisJob.status.in_(("queued", "retrying"))
+            ))
             recent_failures = await session.scalar(
                 select(func.count()).select_from(DiagnosisEvidence).where(
                     DiagnosisEvidence.evidence_type == "error",
@@ -1260,6 +1266,7 @@ class SQLAlchemyDiagnosisRepository:
             "recent_failure_count": int(recent_failures or 0),
             "outbox_counts": {str(status): int(count) for status, count in outbox_rows},
             "outbox_oldest_pending_seconds": oldest_age,
+            "oldest_waiting_seconds": max(0.0, (utc_now() - oldest_waiting).total_seconds()) if oldest_waiting else 0.0,
         }
 
     async def _load_job(self, diagnosis_id: str) -> dict[str, Any] | None:

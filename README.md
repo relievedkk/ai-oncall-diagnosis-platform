@@ -69,6 +69,8 @@ flowchart LR
 
 ## 快速开始
 
+Windows 需要进程守护、独立探针、冷备恢复演练和版本回滚时，请使用 [Windows 运行保障手册](docs/windows-operations.md) 的托管入口；实测范围见 [验证记录](docs/windows-operations-verification.md)。旧批处理默认仍用于开发启动。
+
 ### 环境要求
 
 - Python 3.11、3.12 或 3.13

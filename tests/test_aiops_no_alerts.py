@@ -180,6 +180,14 @@ async def test_stream_wraps_tool_evidence_in_readable_event():
 
 
 def test_frontend_handles_evidence_and_skipped_steps_without_raw_json():
-    source = open("static/app.js", encoding="utf-8").read()
-    assert "sseMessage.type === 'evidence'" in source
-    assert "sseMessage.skipped_steps" in source
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the actual diagnosis presentation regression")
+    result = subprocess.run(
+        [node, "--test", "--test-name-pattern=evidence and skipped steps", "tests/diagnosis_stream.test.cjs"],
+        capture_output=True, text=True, encoding="utf-8", timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

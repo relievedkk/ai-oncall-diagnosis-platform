@@ -1,0 +1,9 @@
+{
+  "timeout": 3,
+  "checks": [
+    {"name": "api-live", "url": "http://127.0.0.1:9900/live"},
+    {"name": "api-ready", "url": "http://127.0.0.1:9900/ready", "api_key_env": "API_KEY"},
+    {"name": "prometheus", "url": "http://127.0.0.1:9090/-/ready"},
+    {"name": "alertmanager", "url": "http://127.0.0.1:9093/-/ready"}
+  ]
+}

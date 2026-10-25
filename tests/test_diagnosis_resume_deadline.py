@@ -205,5 +205,6 @@ async def test_stream_emits_terminal_failure_even_without_error_evidence():
             "stage": "dead_lettered",
             "message": "retries exhausted",
             "diagnosis_id": "test",
+            "_event_id": "terminal:0:dead_lettered",
         }
     ]

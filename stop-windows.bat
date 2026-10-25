@@ -1,4 +1,8 @@
 @echo off
+if /I "%~1"=="--managed" (
+    powershell -NoProfile -File "%~dp0scripts\oncall-windows.ps1" stop
+    exit /b
+)
 setlocal enabledelayedexpansion
 set MONITORING_PROJECT=oncallagent-monitoring
 echo ====================================

@@ -43,6 +43,14 @@ DIAGNOSIS_RECENT_FAILURES = Gauge(
     "oncall_diagnosis_recent_failures",
     "Persisted diagnosis error events in the last ten minutes, across all workers.",
 )
+DIAGNOSIS_OLDEST_WAITING_SECONDS = Gauge(
+    "oncall_diagnosis_oldest_waiting_seconds",
+    "Age of the oldest queued or retrying durable diagnosis.",
+)
+QUEUE_LAST_SUCCESS_TIMESTAMP_SECONDS = Gauge(
+    "oncall_queue_last_success_timestamp_seconds",
+    "Unix timestamp of the last complete database and RabbitMQ collection.",
+)
 OUTBOX_EVENTS = Gauge(
     "oncall_outbox_events",
     "Transactional outbox events by current status.",

@@ -85,6 +85,7 @@ dmypy.json
 
 # Isolated feature worktrees
 .worktrees/
+.runtime/
 
 
 # Local test artifacts and execution notes

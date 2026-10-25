@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 
 from app.config import config
 from app.services.service_catalog import service_catalog
+from mcp_servers.operations_health import register_operations_health
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Monitor_MCP_Server")
 mcp = FastMCP("Monitor")
+register_operations_health(mcp, 'monitor')
 
 _SAFE_SERVICE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 ServiceMetric = Literal["cpu", "memory", "error_rate", "latency_p95", "up", "request_rate"]

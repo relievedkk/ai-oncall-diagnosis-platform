@@ -14,7 +14,8 @@ from app.agent.mcp_client import format_exception_chain
 from app.models.request import ChatRequest, ClearRequest
 from app.models.response import ApiResponse, SessionInfoResponse
 from app.services.conversation_memory import ContextBudgetExceeded
-from app.services.rag_agent_service import rag_agent_service
+from app.services.rag_agent_service import rag_agent_service, shared_quota_error_event
+from app.services.shared_model_quota import SharedQuotaExceeded, SharedQuotaUnavailable
 from app.services.usage_feedback import InteractionTracker
 
 router = APIRouter()
@@ -70,6 +71,24 @@ async def chat(request: ChatRequest, http_request: Request):
             },
         }
 
+    except (SharedQuotaExceeded, SharedQuotaUnavailable) as exc:
+        event = shared_quota_error_event(exc)
+        status = 429 if isinstance(exc, SharedQuotaExceeded) else 503
+        return JSONResponse(
+            status_code=status,
+            headers={"Retry-After": str(event["retry_after"])},
+            content={
+                "code": status,
+                "message": "error",
+                "data": {
+                    "success": False,
+                    "answer": None,
+                    "errorMessage": event["data"],
+                    "error_code": event["error_code"],
+                    "retry_after": event["retry_after"],
+                },
+            },
+        )
     except ContextBudgetExceeded as exc:
         return JSONResponse(
             status_code=413,
@@ -186,15 +205,28 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                         }
                     elif chunk_type == "error":
                         # 发送错误信息
+                        error_event = {"type": "error", "data": "对话服务暂时不可用"}
+                        if chunk.get("error_code") in {
+                            "shared_model_quota_exceeded", "shared_model_quota_unavailable"
+                        }:
+                            error_event = {
+                                "type": "error",
+                                "data": chunk_data,
+                                "error_code": chunk["error_code"],
+                                "retry_after": chunk["retry_after"],
+                            }
                         yield {
                             "event": "message",
-                            "data": json.dumps(
-                                {"type": "error", "data": "对话服务暂时不可用"}, ensure_ascii=False
-                            ),
+                            "data": json.dumps(error_event, ensure_ascii=False),
                         }
 
             logger.info(f"[会话 {request.id}] 流式对话完成")
 
+        except (SharedQuotaExceeded, SharedQuotaUnavailable) as exc:
+            yield {
+                "event": "message",
+                "data": json.dumps(shared_quota_error_event(exc), ensure_ascii=False),
+            }
         except Exception as e:
             logger.error(f"流式对话接口错误: {format_exception_chain(e)}")
             yield {

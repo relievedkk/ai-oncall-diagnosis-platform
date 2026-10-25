@@ -1,6 +1,7 @@
 """Liveness and dependency-aware readiness endpoints."""
 
 import asyncio
+import os
 from typing import Any
 
 import httpx
@@ -19,7 +20,10 @@ router = APIRouter()
 @router.get("/live")
 async def liveness() -> dict[str, str]:
     """Report that the API process is alive without probing dependencies."""
-    return {"status": "alive", "service": config.app_name, "version": config.app_version}
+    result = {"status": "alive", "service": config.app_name, "version": config.app_version}
+    if os.environ.get("ONCALL_OPERATIONS_RUN_ID"):
+        result["operations_run_id"] = os.environ["ONCALL_OPERATIONS_RUN_ID"]
+    return result
 
 
 async def _readiness_response() -> JSONResponse:

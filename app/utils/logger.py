@@ -48,7 +48,7 @@ def setup_logger():
 
     # 添加文件输出（按天轮转，自动压缩）
     logger.add(
-        "logs/app_{time:YYYY-MM-DD}.log",
+        str(config.resolve_data_path("logs") / f"app_{{time:YYYY-MM-DD}}_{os.getpid()}.log"),
         rotation="00:00",  # 每天0点自动切割新日志文件
         retention="7 days",  # 仅保留最近7天的日志
         compression="zip",  # 过期日志自动压缩为zip
@@ -76,7 +76,7 @@ def setup_logger():
             return True
 
         logger.add(
-            f"logs/cls-events/events-{{time:YYYY-MM-DD}}-{socket.gethostname()}-{os.getpid()}.jsonl",
+            str(config.resolve_data_path("logs/cls-events") / f"events-{{time:YYYY-MM-DD}}-{socket.gethostname()}-{os.getpid()}.jsonl"),
             format="{extra[cls_event]}",
             filter=event_filter,
             level="INFO",

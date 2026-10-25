@@ -3,9 +3,10 @@
 使用 Pydantic Settings 实现类型安全的配置管理
 """
 
+from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,16 @@ class Settings(BaseSettings):
     chat_max_waiting: int = Field(default=16, ge=0, le=1000)
     chat_queue_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     provider_cooldown_seconds: float = Field(default=30.0, gt=0, le=300)
+    # Shared provider-account quota. Scope is a public label, never a credential.
+    shared_model_quota_enabled: bool = False
+    shared_model_quota_scope: str = Field(default="provider-account", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+    shared_model_quota_concurrency: int = Field(default=4, ge=1, le=1000)
+    shared_model_quota_calls_per_minute: int = Field(default=60, ge=1, le=100000)
+    shared_model_quota_input_bytes_per_minute: int = Field(default=1048576, ge=1, le=1073741824)
+    shared_model_quota_lease_seconds: float = Field(default=150.0, gt=0, le=86400)
+    shared_model_quota_renew_seconds: float = Field(default=30.0, gt=0, le=3600)
+    oncall_data_root: str = ""
+    oncall_config_root: str = ""
     usage_tracking_enabled: bool = True
     usage_data_origin: str = Field(default="real", pattern="^(real|evaluation)$")
 
@@ -85,7 +96,7 @@ class Settings(BaseSettings):
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
     dashscope_model: str = "qwen-max"
-    llm_request_timeout: float = 120.0
+    llm_request_timeout: float = Field(default=120.0, gt=0, le=86370)
     dashscope_embedding_model: str = "text-embedding-v4"  # v4 支持多种维度（默认 1024）
 
     # Milvus 配置
@@ -160,6 +171,27 @@ class Settings(BaseSettings):
     cors_allowed_methods: str = "GET,POST,DELETE"
     # 允许的请求头（逗号分隔）；按最小权限只开实际需要的头
     cors_allowed_headers: str = "Content-Type,X-API-Key,X-CSRF-Token,Accept"
+
+    @model_validator(mode="after")
+    def validate_shared_quota(self):
+        if self.shared_model_quota_lease_seconds < self.llm_request_timeout + 30:
+            raise ValueError("shared model lease must cover request timeout plus 30 seconds")
+        if self.shared_model_quota_renew_seconds >= self.shared_model_quota_lease_seconds / 2:
+            raise ValueError("shared model renewal must be less than half the lease")
+        for value in (self.oncall_data_root, self.oncall_config_root):
+            if value and not Path(value).is_absolute():
+                raise ValueError("managed data/config roots must be absolute paths")
+        return self
+
+    def resolve_data_path(self, path: str | Path) -> Path:
+        return (Path(self.oncall_data_root or Path.cwd()) / path).resolve()
+
+    def resolve_config_path(self, path: str | Path) -> Path:
+        return (Path(self.oncall_config_root or Path.cwd()) / path).resolve()
+
+    @property
+    def upload_dir(self) -> Path:
+        return self.resolve_data_path("uploads")
 
     @property
     def cors_origin_list(self) -> list[str]:

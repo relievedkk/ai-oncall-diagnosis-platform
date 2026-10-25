@@ -25,6 +25,26 @@ class Base(DeclarativeBase):
     pass
 
 
+class ModelQuotaScope(Base):
+    """One durable serialization row per public provider-account identifier."""
+
+    __tablename__ = "model_quota_scopes"
+    scope: Mapped[str] = mapped_column(String(128), primary_key=True)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ModelQuotaLease(Base):
+    __tablename__ = "model_quota_leases"
+    call_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    scope: Mapped[str] = mapped_column(
+        ForeignKey("model_quota_scopes.scope", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class KnowledgeDocumentVersion(Base):
     """Shared authority for the searchable version, independent of Milvus cleanup."""
     __tablename__ = "knowledge_document_versions"

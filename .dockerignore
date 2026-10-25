@@ -1,6 +1,7 @@
 .git
 .worktrees
 .superpowers
+.runtime
 .coverage
 .venv
 tools/cls-uploader/.venv

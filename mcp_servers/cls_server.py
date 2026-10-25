@@ -12,6 +12,8 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from mcp_servers.operations_health import register_operations_health
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -19,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("CLS_MCP_Server")
 
 mcp = FastMCP("CLS")
+register_operations_health(mcp, 'cls')
 
 
 def log_tool_call(func):

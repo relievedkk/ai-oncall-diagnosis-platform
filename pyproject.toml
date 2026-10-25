@@ -66,7 +66,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "mcp_servers*", "oncall_logging*"]
+include = ["app*", "mcp_servers*", "oncall_logging*", "oncall_ops*"]
 
 
 

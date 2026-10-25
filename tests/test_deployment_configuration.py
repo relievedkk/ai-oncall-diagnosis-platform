@@ -5,6 +5,15 @@ import os
 import subprocess
 
 
+def render_services(**overrides):
+    environment = {**os.environ, **overrides}
+    result = subprocess.run(
+        ["docker", "compose", "-f", "vector-database.yml", "config", "--format", "json"],
+        env=environment, capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout)["services"]
+
+
 def test_diagnosis_policy_and_custom_queue_names_reach_consumers():
     environment = {
         **os.environ,
@@ -18,11 +27,7 @@ def test_diagnosis_policy_and_custom_queue_names_reach_consumers():
         "TENCENTCLOUD_SECRET_ID": "test-id",
         "TENCENTCLOUD_SECRET_KEY": "test-secret",
     }
-    result = subprocess.run(
-        ["docker", "compose", "-f", "vector-database.yml", "config", "--format", "json"],
-        env=environment, capture_output=True, text=True, check=True,
-    )
-    services = json.loads(result.stdout)["services"]
+    services = render_services(**environment)
     for name, queue in [("diagnosis-default-worker", "test.default"), ("diagnosis-critical-worker", "test.critical")]:
         worker = services[name]
         assert worker["environment"].get("REMEDIATION_MODE") == "assisted"
@@ -33,3 +38,17 @@ def test_diagnosis_policy_and_custom_queue_names_reach_consumers():
     for name in ("diagnosis-default-worker", "diagnosis-critical-worker", "remediation-worker"):
         assert services[name]["environment"]["REMEDIATION_EVIDENCE_MAX_AGE_SECONDS"] == "120"
         assert services[name]["environment"]["REMEDIATION_EVIDENCE_CLOCK_SKEW_SECONDS"] == "5"
+
+
+def test_workers_use_release_catalog_without_windows_config_bind_mount():
+    services = render_services(ONCALL_CONFIG_ROOT=r"D:\unshared-oncall-config")
+
+    for name in (
+        "diagnosis-default-worker",
+        "diagnosis-critical-worker",
+        "remediation-worker",
+        "outbox-publisher",
+    ):
+        worker = services[name]
+        assert worker["environment"]["SERVICE_CATALOG_PATH"] == "/app/config/service_catalog.json"
+        assert all(volume["target"] != "/app-config/config" for volume in worker.get("volumes", []))

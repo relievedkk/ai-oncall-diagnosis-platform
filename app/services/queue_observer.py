@@ -14,9 +14,11 @@ from loguru import logger
 from app.config import config
 from app.core.metrics import (
     DIAGNOSIS_JOBS,
+    DIAGNOSIS_OLDEST_WAITING_SECONDS,
     DIAGNOSIS_RECENT_FAILURES,
     OUTBOX_EVENTS,
     OUTBOX_OLDEST_PENDING_SECONDS,
+    QUEUE_LAST_SUCCESS_TIMESTAMP_SECONDS,
     QUEUE_OBSERVER_UP,
     RABBITMQ_QUEUE_CONSUMERS,
     RABBITMQ_QUEUE_MESSAGES,
@@ -78,6 +80,7 @@ class QueueObserver:
     async def collect_once(self) -> dict[str, Any]:
         database = await self.repository.get_operational_metrics()
         DIAGNOSIS_RECENT_FAILURES.set(database.get("recent_failure_count", 0))
+        DIAGNOSIS_OLDEST_WAITING_SECONDS.set(database.get("oldest_waiting_seconds", 0))
         for status in (
             "queued",
             "running",
@@ -148,6 +151,7 @@ class QueueObserver:
             )
             RABBITMQ_QUEUE_CONSUMERS.labels(queue=name).set(values["consumers"])
         QUEUE_OBSERVER_UP.set(1)
+        QUEUE_LAST_SUCCESS_TIMESTAMP_SECONDS.set(self._now().timestamp())
         self.last_snapshot = {
             "database": database,
             "remediation": remediation,

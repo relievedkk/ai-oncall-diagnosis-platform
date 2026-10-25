@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: monitoring/Dockerfile
     image: oncallagent-prometheus:local
+    restart: unless-stopped
     container_name: prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -25,6 +26,7 @@ services:
       context: .
       dockerfile: monitoring/Alertmanager.Dockerfile
     image: oncallagent-alertmanager:local
+    restart: unless-stopped
     container_name: alertmanager
     ports:
       - "127.0.0.1:9093:9093"
@@ -38,6 +40,7 @@ services:
 
   node-exporter:
     image: prom/node-exporter@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+    restart: unless-stopped
     container_name: node-exporter
     command:
       - --path.rootfs=/host
@@ -46,6 +49,7 @@ services:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57
+    restart: unless-stopped
     container_name: cadvisor
     privileged: true
     devices:

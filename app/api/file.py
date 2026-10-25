@@ -20,7 +20,7 @@ from app.services.vector_store_manager import IndexCommitUncertain
 router = APIRouter()
 
 # 文件上传后存储的路径
-UPLOAD_DIR = Path("./uploads")
+UPLOAD_DIR = config.upload_dir
 # 支持的文件类型
 ALLOWED_EXTENSIONS = ("txt", "md", "pdf", "docx")
 UPLOAD_CHUNK_SIZE = 1024 * 1024
@@ -167,7 +167,7 @@ async def index_directory(
         JSONResponse: 索引结果
     """
     try:
-        target = directory_path if directory_path else "uploads"
+        target = directory_path if directory_path else str(UPLOAD_DIR)
 
         if not is_path_allowed(target) or is_internal_upload_path(target):
             logger.warning(f"索引目录被拒绝（不在白名单内）: {target}")

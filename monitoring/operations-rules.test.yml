@@ -1,0 +1,71 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'oncall_rabbitmq_queue_messages{queue="diagnosis.critical",state="ready"}'
+        values: '11 11 11 0 0'
+      - series: 'oncall_queue_last_success_timestamp_seconds'
+        values: '0 60 120 180 240'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DiagnosisCriticalQueueBacklog
+        exp_alerts:
+          - exp_labels:
+              queue: diagnosis.critical
+              state: ready
+              oncall_route: operations
+              severity: critical
+              service: ai-oncall-agent
+            exp_annotations:
+              summary: 严重诊断队列积压
+              description: critical 队列待处理消息持续两分钟超过十条，检查供应商额度和 Worker。
+      - eval_time: 3m
+        alertname: DiagnosisCriticalQueueBacklog
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: QueueMetricsStale
+        exp_alerts: []
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: QueueMetricsStale
+        exp_alerts:
+          - exp_labels:
+              oncall_route: operations
+              severity: critical
+              service: ai-oncall-agent
+            exp_annotations:
+              summary: 队列指标缺失或过期
+              description: 最近完整采集时间超过六十秒或指标消失，不能依据旧值判定队列健康。
+  - interval: 1m
+    input_series:
+      - series: 'oncall_diagnosis_oldest_waiting_seconds'
+        values: '121 121 121 0'
+      - series: 'oncall_rabbitmq_queue_messages{queue="diagnosis.default",state="ready"}'
+        values: '51 51 51 51 51 51 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DiagnosisOldestWaiting
+        exp_alerts:
+          - exp_labels:
+              oncall_route: operations
+              severity: warning
+              service: ai-oncall-agent
+            exp_annotations:
+              summary: 最老诊断任务等待过久
+              description: queued 或 retrying 任务已等待超过两分钟，持续两分钟仍未消除。
+      - eval_time: 5m
+        alertname: DiagnosisDefaultQueueBacklog
+        exp_alerts:
+          - exp_labels:
+              queue: diagnosis.default
+              state: ready
+              oncall_route: operations
+              severity: warning
+              service: ai-oncall-agent
+            exp_annotations:
+              summary: 普通诊断队列积压
+              description: default 队列待处理消息持续五分钟超过五十条。

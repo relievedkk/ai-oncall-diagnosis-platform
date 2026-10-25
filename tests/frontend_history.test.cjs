@@ -14,6 +14,7 @@ function loadApp(history, storage = new Map(), fetchOverride = null) {
         console,
         TextDecoder,
         AbortController,
+        DiagnosisStream: require('../static/diagnosis-stream.js'),
         window: {addEventListener(name, callback) {listeners[name] = callback;}, location: {replace() {}}},
         localStorage: { getItem(key) { return storage.get(key) ?? null; },
             setItem(key, value) { storage.set(key, value); },
@@ -33,13 +34,20 @@ function loadApp(history, storage = new Map(), fetchOverride = null) {
 
 function diagnosisStream(chunks) {
     let position = 0;
-    const app = loadApp([], new Map(), async () => ({ok: true, body: {getReader: () => ({
+    const app = loadApp([], new Map(), async (_url, options) => options.method === 'POST'
+        ? {ok: true, json: async () => ({diagnosis_id: 'test-task', events_url: '/api/aiops/jobs/test-task/events'})}
+        : ({ok: true, body: {getReader: () => ({
         async read() { return position < chunks.length
-            ? {done: false, value: new TextEncoder().encode(chunks[position++])} : {done: true}; },
+            ? {done: false, value: new TextEncoder().encode(chunks[position++].replace(/^data:/gm, `id: ${position}\ndata:`))} : {done: true}; },
+        async cancel() {},
         releaseLock() {},
     })}}));
-    Object.assign(app, {getRequestHeaders: value => value, ensureAuthenticated() {},
+    Object.assign(app, {currentUser: {id: 'test'}, apiBaseUrl: '/api', getRequestHeaders: (value = {}) => value, ensureAuthenticated() {},
         updateAIOpsMessage() {}, updateAIOpsStreamContent() {}});
+    app.diagnosisClient = app.createDiagnosisClient();
+    // One retry is observed by dedicated reconnect tests; this legacy fixture
+    // stops at disconnection so it can assert that EOF never means success.
+    app.diagnosisClient.sleep = async () => { throw new Error('连接已中断'); };
     return app;
 }
 

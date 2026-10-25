@@ -21,7 +21,7 @@ _DISABLED_REMEDIATION = {"enabled": False, "allowed_actions": []}
 
 class ServiceCatalog:
     def __init__(self, path: str | None = None):
-        self.path = Path(path or config.service_catalog_path)
+        self.path = Path(path) if path is not None else config.resolve_config_path(config.service_catalog_path)
         self._services: dict[str, dict[str, Any]] = {}
         self.reload()
 

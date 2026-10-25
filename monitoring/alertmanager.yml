@@ -7,8 +7,15 @@ route:
   group_wait: 2s
   group_interval: 30s
   repeat_interval: 4h
+  routes:
+    - receiver: operations-local
+      matchers:
+        - 'oncall_route="operations"'
 
 receivers:
+  # Local Alertmanager UI retains operational alerts. Configure an independent
+  # receiver before claiming off-host delivery; do not route them back to the API.
+  - name: operations-local
   - name: oncall-agent
     webhook_configs:
       - url: http://host.docker.internal:9900/api/alerts/webhook

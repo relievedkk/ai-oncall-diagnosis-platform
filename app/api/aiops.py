@@ -2,16 +2,78 @@
 AIOps 智能运维接口
 """
 
+import hashlib
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from loguru import logger
 from sse_starlette.sse import EventSourceResponse
 
-from app.models.aiops import AIOpsRequest
-from app.services.alert_diagnosis_service import alert_diagnosis_service
+from app.config import config
+from app.models.aiops import AIOpsRequest, DiagnosisJobCreated
+from app.services.alert_diagnosis_service import (
+    IdempotencyConflictError,
+    alert_diagnosis_service,
+    parse_stream_cursor,
+)
 
 router = APIRouter()
+
+
+def _actor(request: Request) -> tuple[str, bool]:
+    principal = getattr(request.state, "principal", None)
+    if principal is not None:
+        return f"user:{principal.user_id}", principal.role == "admin"
+    if getattr(request.state, "auth_kind", None) == "api_key":
+        # The trusted team machine credential is one principal; never persist the secret.
+        return "api-key:" + hashlib.sha256(config.api_key.encode()).hexdigest(), True
+    if not config.auth_enabled:
+        return "local-development", True
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+
+@router.post("/aiops/jobs", status_code=202, response_model=DiagnosisJobCreated)
+async def create_diagnosis_job(
+    payload: AIOpsRequest, request: Request,
+    idempotency_key: str = Header(min_length=1, max_length=200),
+):
+    owner, _ = _actor(request)
+    try:
+        diagnosis_id = await alert_diagnosis_service.enqueue_manual(
+            payload.session_id or "default", owner=owner, idempotency_key=idempotency_key,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"diagnosis_id": diagnosis_id, "events_url": f"/api/aiops/jobs/{diagnosis_id}/events"}
+
+
+@router.get("/aiops/jobs/{diagnosis_id}/events")
+async def diagnosis_job_events(
+    diagnosis_id: str, request: Request, after_id: str | None = Query(default=None),
+    last_event_id: str | None = Header(default=None),
+):
+    owner, admin = _actor(request)
+    job = await alert_diagnosis_service.repository.get_job(diagnosis_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Diagnosis job not found")
+    if job.get("trigger") == "manual":
+        creator = job.get("alert", {}).get("owner")
+        if (creator is not None and creator != owner) or (creator is None and not admin):
+            raise HTTPException(status_code=403, detail="Diagnosis subscription is not permitted")
+    try:
+        cursor = parse_stream_cursor(after_id if after_id is not None else last_event_id or 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    async def events():
+        async for event in alert_diagnosis_service.stream_job(diagnosis_id, after_id=cursor):
+            public = dict(event)
+            event_id = public.pop("_event_id", None)
+            if event_id is not None:
+                public["event_id"] = event_id
+            yield {"id": event_id, "event": "message", "data": json.dumps(public, ensure_ascii=False)}
+
+    return EventSourceResponse(events())
 
 
 @router.post("/aiops")

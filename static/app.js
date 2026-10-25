@@ -18,6 +18,7 @@ class AIOnCallApp {
         this.initMarkdown();
         this.checkAndSetCentered();
         this.renderChatHistory();
+        this.resumePendingDiagnosis();
     }
 
     // 初始化Markdown配置
@@ -124,8 +125,15 @@ class AIOnCallApp {
         if (this.currentUser?.role === 'admin' && this.logoutBtn?.parentNode) {
             const usageButton = document.createElement('button');
             usageButton.type = 'button';
-            usageButton.className = this.logoutBtn.className;
-            usageButton.textContent = '使用统计';
+            usageButton.className = 'usage-summary-btn';
+            usageButton.innerHTML = `
+                <svg class="usage-summary-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 4v16h16M9 15v-4m5 4V7m5 8v-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>使用统计</span>
+                <svg class="usage-summary-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>`;
             usageButton.onclick = () => this.showUsageSummary();
             this.logoutBtn.parentNode.insertBefore(usageButton, this.logoutBtn);
         }
@@ -252,7 +260,17 @@ class AIOnCallApp {
         this.activeReaders = new Set();
         try {
             let state = localStorage.getItem('aiOnCallAuthState');
-            if (!state || JSON.parse(state).userId !== this.currentUser.id) {
+            const previousUser = state ? JSON.parse(state).userId : null;
+            // Login may already have published the next account's identity.
+            // Remove other accounts' task state even when no previous tab is open.
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+                const key = localStorage.key(i);
+                if (key?.startsWith('oncallDiagnosis:user:') && key !== `oncallDiagnosis:user:${this.currentUser.id}`) {
+                    localStorage.removeItem(key);
+                }
+            }
+            if (!state || previousUser !== this.currentUser.id) {
+                if (previousUser != null) localStorage.removeItem(`oncallDiagnosis:user:${previousUser}`);
                 state = JSON.stringify({userId: this.currentUser.id, version: `${Date.now()}-${Math.random()}`});
                 localStorage.setItem('aiOnCallAuthState', state);
             }
@@ -288,6 +306,7 @@ class AIOnCallApp {
 
     invalidateIdentity(redirect = true) {
         this.identityInvalidated = true;
+        this.diagnosisClient?.stop(true);
         for (const controller of this.requestControllers || []) controller.abort();
         this.requestControllers?.clear();
         for (const reader of this.activeReaders || []) {
@@ -604,15 +623,20 @@ class AIOnCallApp {
             historyItem.dataset.historyId = history.id;
             
             historyItem.innerHTML = `
-                <div class="history-item-content">
+                <button type="button" class="history-item-content">
+                    <svg class="history-item-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-6.5A7.5 7.5 0 0 1 11.5 4h1a7.5 7.5 0 0 1 7.5 7.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M8 9h8M8 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
                     <span class="history-item-title">${this.escapeHtml(history.title)}</span>
-                </div>
+                </button>
                 <button class="history-item-delete" data-history-id="${history.id}" title="删除">
                     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
                 </button>
             `;
+            historyItem.querySelector('.history-item-content').title = history.title;
             
             // 点击历史项加载对话
             historyItem.addEventListener('click', (e) => {
@@ -1474,228 +1498,68 @@ class AIOnCallApp {
         return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
     }
 
-    // 发送智能运维请求（SSE 流式模式）
-    async sendAIOpsRequest(loadingMessageElement) {
+    createDiagnosisClient() {
+        let storage;
+        try { storage = localStorage; } catch (error) { /* Optional cache. */ }
+        return new DiagnosisStream.DiagnosisClient({
+            userId: this.currentUser.id,
+            baseUrl: this.apiBaseUrl,
+            storage,
+            fetch: (url, options) => fetch(url, options),
+            headers: () => this.getRequestHeaders(),
+            isCurrent: () => this.isIdentityCurrent()
+        });
+    }
+
+    // 恢复订阅只读取原任务；断开连接不会停止后台诊断。
+    async resumePendingDiagnosis() {
+        if (typeof DiagnosisStream === 'undefined' || !this.isIdentityCurrent()) return;
+        this.diagnosisClient = this.createDiagnosisClient();
+        const saved = this.diagnosisClient.state;
+        if (!saved || saved.done) return;
+        this.sessionId = saved.payload?.session_id || this.sessionId;
+        const history = this.chatHistories.find(item => item.id === this.sessionId);
+        this.currentChatHistory = history ? [...history.messages] : [];
+        const element = this.addLoadingMessage('正在恢复后台诊断任务...');
+        this.isStreaming = true;
+        this.updateUI();
         try {
-            const response = await this.authFetch(`${this.apiBaseUrl}/aiops`, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: this.getRequestHeaders({
-                    'Content-Type': 'application/json',
-                }),
-                body: JSON.stringify({
-                    session_id: this.sessionId
-                })
-            });
-            this.ensureAuthenticated(response);
-
-            if (!response.ok) {
-                throw new Error(`HTTP错误: ${response.status}`);
-            }
-
-            let fullResponse = '';
-
-            // 处理 SSE 流式响应
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let currentEvent = 'message'; // 默认事件类型为 message
-
-            try {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    
-                    if (done) {
-                        // Only an explicit terminal event confirms completion.
-                        if (fullResponse) {
-                            console.log('AI Ops 流结束，更新最终内容，长度:', fullResponse.length);
-                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
-                        }
-                        throw new Error('诊断连接已中断，任务可能仍在后台运行，请查看任务状态');
-                    }
-
-                    // 解码数据并添加到缓冲区
-                    buffer += decoder.decode(value, { stream: true });
-                    
-                    // 按行分割处理
-                    const lines = buffer.split('\n');
-                    // 保留最后一行（可能不完整）
-                    buffer = lines.pop() || '';
-                    
-                    for (const line of lines) {
-                        if (line.trim() === '') continue;
-                        
-                        console.log('[AI Ops SSE] 收到行:', line);
-                        
-                        // 解析 SSE 格式
-                        if (line.startsWith('id:')) {
-                            continue;
-                        } else if (line.startsWith('event:')) {
-                            currentEvent = line.substring(6).trim();
-                            console.log('[AI Ops SSE] 事件类型:', currentEvent);
-                            continue;
-                        } else if (line.startsWith('data:')) {
-                            const rawData = line.substring(5).trim();
-                            console.log('[AI Ops SSE] 数据:', rawData, ', currentEvent:', currentEvent);
-                            
-                            // 解析可能包含多个JSON对象的数据
-                            const processJsonMessages = (data) => {
-                                const jsonPattern = /\{"type"\s*:\s*"[^"]+"\s*,\s*"data"\s*:\s*(?:"[^"]*"|null)\}/g;
-                                const matches = data.match(jsonPattern);
-                                
-                                if (matches && matches.length > 0) {
-                                    console.log('[AI Ops SSE] 匹配到', matches.length, '个JSON对象');
-                                    for (const jsonStr of matches) {
-                                        try {
-                                            const sseMessage = JSON.parse(jsonStr);
-                                            if (sseMessage.type === 'content') {
-                                                fullResponse += sseMessage.data || '';
-                                            } else if (sseMessage.type === 'plan') {
-                                                // 处理计划创建事件
-                                                const planText = `\n\n## 📋 执行计划\n${sseMessage.message}\n\n`;
-                                                fullResponse += planText;
-                                            } else if (sseMessage.type === 'step_complete') {
-                                                // 处理步骤完成事件
-                                                const stepText = `\n✅ ${sseMessage.message}\n`;
-                                                fullResponse += stepText;
-                                            } else if (sseMessage.type === 'evidence') {
-                                                const evidenceText = `\n🔎 ${sseMessage.summary || sseMessage.message || '已采集诊断证据'}\n`;
-                                                fullResponse += evidenceText;
-                                            } else if (sseMessage.type === 'status') {
-                                                // 处理状态更新事件
-                                                const statusText = `\n⏳ ${sseMessage.message}\n`;
-                                                fullResponse += statusText;
-                                            } else if (sseMessage.type === 'report') {
-                                                // 处理最终报告事件 - 流式输出
-                                                console.log('AI Ops 最终报告生成');
-                                                const skippedCount = Array.isArray(sseMessage.skipped_steps) ? sseMessage.skipped_steps.length : 0;
-                                                const skippedText = skippedCount > 0
-                                                    ? `\n⏭️ 当前场景无需执行其余 ${skippedCount} 个步骤，已标记为跳过。\n`
-                                                    : '';
-                                                const reportText = `${skippedText}\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
-                                                fullResponse += reportText;
-                                            } else if (sseMessage.type === 'complete') {
-                                                // 处理完成事件
-                                                console.log('AI Ops 诊断完成');
-                                                if (sseMessage.response) {
-                                                    fullResponse += `\n\n${sseMessage.response}`;
-                                                }
-                                                this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
-                                                return true;
-                                            } else if (sseMessage.type === 'done') {
-                                                console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
-                                                this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
-                                                return true;
-                                            } else if (sseMessage.type === 'error') {
-                                                throw new Error(sseMessage.data || sseMessage.message || '智能运维分析失败');
-                                            }
-                                        } catch (e) {
-                                            if (!(e instanceof SyntaxError)) throw e;
-                                            console.log('[AI Ops SSE] 单个JSON解析失败:', jsonStr);
-                                        }
-                                    }
-                                    if (loadingMessageElement) {
-                                        this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                    }
-                                    return false;
-                                }
-                                return null;
-                            };
-                            
-                            const result = processJsonMessages(rawData);
-                            if (result === true) {
-                                return; // 流结束
-                            } else if (result === null) {
-                                // 没有匹配到多个JSON，尝试单个JSON解析
-                                try {
-                                    const sseMessage = JSON.parse(rawData);
-                                    if (sseMessage && sseMessage.type) {
-                                        if (sseMessage.type === 'content') {
-                                            fullResponse += sseMessage.data || '';
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'plan') {
-                                            // 处理计划创建事件
-                                            const planText = `\n\n## 📋 执行计划\n${sseMessage.message}\n\n`;
-                                            fullResponse += planText;
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'step_complete') {
-                                            // 处理步骤完成事件
-                                            const stepText = `\n✅ ${sseMessage.message}\n`;
-                                            fullResponse += stepText;
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'evidence') {
-                                            const evidenceText = `\n🔎 ${sseMessage.summary || sseMessage.message || '已采集诊断证据'}\n`;
-                                            fullResponse += evidenceText;
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'status') {
-                                            // 处理状态更新事件
-                                            const statusText = `\n⏳ ${sseMessage.message}\n`;
-                                            fullResponse += statusText;
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'report') {
-                                            // 处理最终报告事件 - 这是关键！
-                                            console.log('AI Ops 最终报告生成，流式输出中...');
-                                            const skippedCount = Array.isArray(sseMessage.skipped_steps) ? sseMessage.skipped_steps.length : 0;
-                                            const skippedText = skippedCount > 0
-                                                ? `\n⏭️ 当前场景无需执行其余 ${skippedCount} 个步骤，已标记为跳过。\n`
-                                                : '';
-                                            const reportText = `${skippedText}\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
-                                            fullResponse += reportText;
-                                            if (loadingMessageElement) {
-                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                            }
-                                        } else if (sseMessage.type === 'complete') {
-                                            // 处理完成事件
-                                            console.log('AI Ops 诊断完成，最终内容长度:', fullResponse.length);
-                                            if (sseMessage.response) {
-                                                fullResponse += `\n\n${sseMessage.response}`;
-                                            }
-                                            // 使用最终的完整内容更新消息
-                                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
-                                            return;
-                                        } else if (sseMessage.type === 'done') {
-                                            console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
-                                            this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
-                                            return;
-                                        } else if (sseMessage.type === 'error') {
-                                            throw new Error(sseMessage.data || sseMessage.message || '智能运维分析失败');
-                                        }
-                                    } else {
-                                        fullResponse += rawData;
-                                        if (loadingMessageElement) {
-                                            this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                        }
-                                    }
-                                } catch (e) {
-                                    if (!(e instanceof SyntaxError)) throw e;
-                                    // 非 JSON 格式，直接追加原始数据
-                                    fullResponse += rawData;
-                                    if (loadingMessageElement) {
-                                        this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } finally {
-                reader.releaseLock();
-            }
+            await this.sendAIOpsRequest(element, true);
         } catch (error) {
-            throw error;
+            if (this.isIdentityCurrent() && error.name !== 'AbortError') {
+                this.updateAIOpsStreamContent(element, error.message);
+            }
+        } finally {
+            this.isStreaming = false;
+            this.updateUI();
         }
     }
 
+    // 先持久创建任务，再订阅可恢复的 SSE；首次创建结果不确定时复用幂等键。
+    async sendAIOpsRequest(loadingMessageElement, resume = false) {
+        const client = this.diagnosisClient || (this.diagnosisClient = this.createDiagnosisClient());
+        client.onUpdate = (state) => {
+            if (!this.isIdentityCurrent()) return;
+            const content = DiagnosisStream.progressText(state);
+            if (state.done) this.updateAIOpsMessage(loadingMessageElement, content, [], state.diagnosisId);
+            else this.updateAIOpsStreamContent(loadingMessageElement, content);
+        };
+        client.onRetry = delay => {
+            if (!this.isIdentityCurrent()) return;
+            this.updateAIOpsStreamContent(loadingMessageElement, DiagnosisStream.progressText(client.state) +
+                `\n\n连接中断，后台任务继续运行；${delay / 1000} 秒后自动重连。`);
+        };
+        if (resume && client.state) {
+            this.updateAIOpsStreamContent(loadingMessageElement, DiagnosisStream.progressText(client.state));
+        }
+        try {
+            const state = await (resume ? client.resume() : client.start({session_id: this.sessionId}));
+            if (state?.error) throw new Error(state.error);
+        } catch (error) {
+            if (error.status === 401) this.invalidateIdentity();
+            throw error;
+        }
+    }
     // 更新智能运维流式内容（实时显示）
     updateAIOpsStreamContent(messageElement, content) {
         if (!this.isIdentityCurrent()) return;
@@ -1719,7 +1583,7 @@ class AIOnCallApp {
     }
 
     // 更新智能运维消息（带折叠详情）
-    updateAIOpsMessage(messageElement, response, details) {
+    updateAIOpsMessage(messageElement, response, details, diagnosisId = null) {
         if (!this.isIdentityCurrent()) return;
         console.log('updateAIOpsMessage 被调用');
         console.log('messageElement:', messageElement);
@@ -1813,11 +1677,12 @@ class AIOnCallApp {
         console.log('代码块高亮完成');
         
         // 保存到历史记录
-        this.currentChatHistory.push({
-            type: 'assistant',
-            content: response,
-            timestamp: new Date().toISOString()
-        });
+        if (!diagnosisId || !this.currentChatHistory.some(item => item.diagnosisId === diagnosisId)) {
+            this.currentChatHistory.push({
+                type: 'assistant', content: response, diagnosisId,
+                timestamp: new Date().toISOString()
+            });
+        }
         this.updateCurrentChatHistory();
         
         this.scrollToBottom();
