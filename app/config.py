@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # 应用配置
-    app_name: str = "AI 智能运维与 OnCall 诊断平台"
+    app_name: str = "AI OnCall 智能运维诊断平台"
     app_version: str = "1.2.1"
     debug: bool = False
     host: str = "127.0.0.1"

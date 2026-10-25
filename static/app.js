@@ -1,4 +1,4 @@
-// AI 智能运维与 OnCall 诊断平台前端应用
+// AI OnCall 智能运维诊断平台前端应用
 class AIOnCallApp {
     constructor(currentUser) {
         this.apiBaseUrl = '/api';
@@ -866,7 +866,7 @@ class AIOnCallApp {
         // 更新输入框状态
         if (this.messageInput) {
             this.messageInput.disabled = this.isStreaming;
-            this.messageInput.placeholder = '问问智能OnCall助手';
+            this.messageInput.placeholder = '向 AI OnCall 描述你的运维问题';
         }
     }
 

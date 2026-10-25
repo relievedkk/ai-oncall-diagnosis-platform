@@ -1,7 +1,7 @@
 [project]
 name = "ai-oncall-diagnosis-platform"
 version = "1.2.1"
-description = "融合 RAG、MCP、Prometheus 与 Alertmanager 的 AI OnCall 诊断平台"
+description = "AI OnCall 智能运维诊断平台，融合 RAG、MCP 与可观测数据的故障诊断和受控处置"
 authors = [{name = "relievedkk"}]
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

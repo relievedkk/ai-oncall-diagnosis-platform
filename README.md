@@ -1,526 +1,160 @@
-# AI 智能运维与 OnCall 诊断平台
+# AI OnCall
 
-一个面向研发与运维场景的 AI 故障诊断原型。系统将运维知识库、Prometheus 指标与告警、腾讯云 CLS 日志查询统一到自然语言入口，并通过 Plan-Execute-Replan 工作流生成可追踪的诊断过程和处置建议。
+智能运维诊断平台
 
-> **处置安全边界：当前版本只有 `dry_run` 适配器。** 重启、扩容和回滚会经过确定性 Policy、人工审批、审计状态机与隔离队列，但只做模拟执行和模拟验证；仓库不包含 Kubernetes/云厂商生产适配器，也不向 Agent、API 或 Dry Run Worker 提供基础设施写凭证。任何其他 `REMEDIATION_ADAPTER` 值都会使应用拒绝启动。
+面向研发与运维团队的故障诊断系统，将 **告警、指标、日志与知识库** 串联到同一条可追踪的排障流程中，支持从告警触发、异步诊断到报告留存与受控处置提案。
 
-[![Python](https://img.shields.io/badge/Python-3.11--3.13-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688.svg)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+项目围绕长任务可靠执行、证据可信性、模型权限与部署恢复设计：诊断在独立 Worker 中运行，状态与检查点持久化，浏览器断线后可继续查看同一任务。
 
-## 核心能力
+**技术栈：** Python 3.11–3.13 · FastAPI · LangGraph · PostgreSQL · RabbitMQ / Celery · Milvus · MCP · Prometheus / Alertmanager
 
-- **智能对话**：基于 LangChain/LangGraph 的工具调用对话，支持普通响应和 SSE 流式响应。
-- **RAG 知识库**：上传 Markdown 或文本文件，完成分块、向量化、Milvus 存储和 Top-K 检索。
-- **AIOps 诊断**：通过 Planner、Executor、Replanner 自动规划排障步骤并生成诊断报告。
-- **真实可观测数据**：FastAPI 暴露请求量、错误率、延迟、CPU、内存及诊断任务指标。
-- **自动告警闭环**：Prometheus 触发规则后由 Alertmanager 回调应用，并自动创建诊断任务。
-- **确定性处置 Harness**：单 Agent 只可提出结构化的重启、扩容或回滚意图；Policy、审批、执行、验证和一次性回滚由非模型代码控制，默认仅 Dry Run。
-- **独立任务队列**：诊断任务通过 PostgreSQL Transactional Outbox 可靠投递到 RabbitMQ，由隔离的 critical/default Celery Worker 执行，支持重试、心跳、执行租约和死信队列。
-- **持久化工作流**：LangGraph 对话和诊断检查点写入 PostgreSQL，API 或 Worker 重启后仍可恢复状态。
-- **B 端账号登录**：运维人员使用账号密码登录，密码以 Argon2id 哈希保存，会话可撤销，并带有登录限流、失败锁定与 CSRF 防护。
-- **质量评测**：使用固定诊断案例对根因命中、证据完整性、报告完整性和无依据结论进行离线回归评分。
-- **MCP 工具接入**：Monitor MCP 查询真实 Prometheus 数据；CLS MCP 可连接腾讯云日志或使用本地示例数据。
+[快速开始](#快速开始) · [工程设计](#关键工程设计) · [验证记录](#质量与验证) · [运行手册](docs/windows-operations.md) · [接口与安全](docs/api-and-security.md)
+
+> 当前交付包含 Windows 单机托管部署与隔离恢复演练。诊断可查询真实 Prometheus 与腾讯云 CLS；处置执行器仅支持 **Dry Run**，重启、扩容和回滚动作均为模拟执行。
+
+## 解决什么问题
+
+故障排查通常需要在监控、日志和文档之间切换；一次模型回答也难以覆盖任务中断、重复告警、证据缺失与操作授权等问题。本项目将排障过程组织为可恢复的后台任务，并把需要确定性保证的控制逻辑放在模型之外。
+
+- **统一排障入口**：自然语言对话、手动诊断与 Alertmanager 自动诊断；通过 MCP 查询指标与日志，支持 Markdown、TXT、PDF、DOCX 知识文档的分块、向量化与 RAG 检索。
+- **持续诊断流程**：Planner 制定计划，Executor 查询证据，Replanner 根据结果调整步骤，最终保存报告、步骤和证据。
+- **持久任务与实时进度**：高低优先级队列隔离，支持重试、死信重放、SSE 游标重连与页面刷新恢复。
+- **受控处置提案**：模型只提交结构化意图，策略校验、审批、执行与验证由确定性状态机控制。
+- **可维护的本机部署**：进程守护、独立探针、积压告警、共享模型额度、冷备恢复演练及应用版本回滚。
 
 ## 系统架构
 
+Windows 托管模式下，API 与 MCP 运行在宿主机，数据服务、任务 Worker 和监控组件运行在 Docker 中。
+
 ```mermaid
-flowchart LR
-    User[用户 / OnCall 工程师] --> Web[Web 与 FastAPI]
-    Docs[运维文档] --> RAG[RAG 索引服务]
-    RAG --> Milvus[(Milvus)]
-    Web -->|任务 + Outbox 原子写入| PostgreSQL[(PostgreSQL)]
-    Web --> Agent[对话 Agent / AIOps Agent]
-    Agent --> Milvus
-    Agent --> Monitor[Monitor MCP]
-    Agent --> CLS[CLS MCP]
-    Web -->|/metrics| Prometheus[Prometheus]
-    Prometheus -->|告警规则| Alertmanager[Alertmanager]
-    Alertmanager -->|Webhook| Web
-    PostgreSQL --> Publisher[Outbox Publisher]
-    Publisher --> RabbitMQ[(RabbitMQ)]
-    RabbitMQ --> CriticalWorker[Critical Worker]
-    RabbitMQ --> DefaultWorker[Default Worker]
-    RabbitMQ --> RemediationWorker[Remediation Worker / Dry Run]
-    RabbitMQ --> DLQ[Dead-letter Queue]
-    CriticalWorker --> Agent
-    DefaultWorker --> Agent
-    CriticalWorker --> PostgreSQL
-    DefaultWorker --> PostgreSQL
-    Agent -->|仅提出 ActionIntent| Harness[Deterministic Policy Harness]
-    Harness -->|审批与审计| PostgreSQL
-    RemediationWorker --> Harness
-    Monitor --> Prometheus
-    CLS --> Logs[腾讯云 CLS / 本地示例日志]
+flowchart TB
+    User["Web / OnCall 工程师"] --> API["FastAPI"]
+    AM["Prometheus / Alertmanager"]
+    AM -->|Webhook| API
+    API -->|任务与 Outbox 同事务写入| PG[("PostgreSQL")]
+    PG --> Pub["Outbox Publisher"]
+    Pub --> Workers["RabbitMQ / Critical · Default Worker"]
+    Workers --> Agent["LangGraph 诊断工作流"]
+    Agent --> MCP["MCP · 指标与日志"]
+    Agent --> RAG["RAG / Milvus · 运维知识"]
+    Agent -->|步骤 / 证据 / 报告 / 检查点| PG
+    API -->|读取持久事件 / SSE| User
+    Agent -->|ActionIntent| Policy["Policy / 审批 / 审计"]
+    Policy --> PG
+    Policy -->|授权动作经独立队列投递| DryRun["Remediation Worker / Dry Run"]
 ```
 
-一次自动诊断的基本流程：
+**一次自动诊断：** Prometheus 告警经 Alertmanager 进入 API，任务与 Outbox 先落库；Publisher 投递消息后，Worker 领取执行租约并运行诊断。过程事件持续写入 PostgreSQL，前端按游标订阅。暂时失败进入重试，耗尽重试进入死信；处置提案独立经过证据与授权检查。
 
-1. FastAPI 持续暴露应用运行指标。
-2. Prometheus 每 15 秒采集指标并计算告警规则。
-3. 告警进入 `firing` 后，Alertmanager 调用 `/api/alerts/webhook`。
-4. FastAPI 在同一数据库事务内创建诊断任务和 Outbox 事件，然后立即响应。
-5. Outbox Publisher 将事件可靠发布到 RabbitMQ；严重告警进入高优先级队列。
-6. critical/default 独立 Celery Worker 领取任务，通过租约与心跳避免重复执行，再查询 Prometheus、CLS 和 Milvus。
-7. Planner、Executor、Replanner 迭代执行，任务状态、步骤输出与证据实时写入 PostgreSQL。
-8. 最终 Markdown 报告和 LangGraph 检查点持久化；临时失败自动重试，耗尽重试后任务标记为 `dead_lettered` 并进入死信队列。
+## 关键工程设计
 
-若诊断报告同时给出合法处置意图，Harness 会冻结最小证据摘要并执行确定性策略。模型不能调用执行器，也不能创建任意命令。符合策略的 Dry Run 动作进入独立的 `remediation.control` quorum 队列；需要审批的动作只接受带 CSRF 的浏览器会话决定，机器 API Key 不能批准。执行器按 `prepare → execute → observe/verify → 最多一次 rollback` 推进持久化状态机。
+| 工程问题 | 实现与取舍 | 代码入口 |
+| --- | --- | --- |
+| 数据库写入成功，但消息未投递 | Transactional Outbox 将任务与待发布事件原子写入；发布失败退避重试，消费者按持久状态幂等处理。采用至少一次投递语义 | [任务仓储](app/repositories/diagnosis.py)、[Publisher](app/workers/outbox_publisher.py) |
+| Worker 重启或租约过期后，旧执行者继续写入 | 每次领取生成独立 `execution_token`；步骤、报告与检查点写入验证当前所有权，诊断检查点在同一数据库事务内加锁 | [执行器](app/services/diagnosis_runner.py)、[检查点栅栏](app/core/checkpoint_fencing.py) |
+| 检索到旧版本文档，或并发替换破坏索引 | PostgreSQL 协调跨进程读写，版本记录限定可检索内容；先写入并 flush 新版本，再删除旧向量。跨库一致性通过协调协议维护 | [向量管理](app/services/vector_store_manager.py) |
+| 模型建议越权，或把缺失证据当作结论 | 服务目录约束工具范围；敏感数据脱敏并限制大小；处置检查服务归属、实例、时效和证据来源，Policy 默认拒绝不满足条件的动作 | [证据校验](app/core/remediation_evidence.py)、[Policy](app/harness/policy.py) |
+| 多进程争用模型额度，重试绕过预算 | PostgreSQL 共享并发租约、分钟调用次数与输入字节配额；单次诊断另有持久预算，重试不重置。当前不提供精确 Token 或金额计费 | [共享额度](app/services/shared_model_quota.py)、[数据边界](app/core/data_safety.py) |
+| 浏览器断线后重复创建任务或丢失进度 | `Idempotency-Key` 创建任务，`Last-Event-ID / after_id` 恢复订阅；前端事件去重、终态防回退、账号切换清理状态 | [任务 API](app/api/aiops.py)、[前端重连](static/diagnosis-stream.js) |
+| 停机、备份与发布时仍有任务写入 | 维护准入与排空后再停写；冷备恢复使用新建隔离资源；应用发布绑定不可变代码包和 Worker 镜像，回滚前检查 schema 兼容性 | [运行保障](oncall_ops/)、[操作手册](docs/windows-operations.md) |
+
+处置控制链为 `意图 → 证据冻结 → Policy → 按模式审批 → 执行 → 验证 → 必要时最多一次回滚`。Agent 不持有基础设施写凭证，机器 API Key 不能批准处置；当前所有执行与验证均由 Dry Run adapter 模拟。
 
 ## 快速开始
 
-Windows 需要进程守护、独立探针、冷备恢复演练和版本回滚时，请使用 [Windows 运行保障手册](docs/windows-operations.md) 的托管入口；实测范围见 [验证记录](docs/windows-operations-verification.md)。旧批处理默认仍用于开发启动。
+**前置条件：** Python 3.11–3.13、uv、已运行的 Docker Desktop，以及有效的 DashScope API Key。接入官方腾讯云 CLS 还需要 Node.js/npm 与日志查询凭证；未配置云凭证时使用本地示例日志。
 
-### 环境要求
-
-- Python 3.11、3.12 或 3.13
-- Docker Desktop 或兼容的 Docker Engine
-- 阿里云 DashScope API Key（[获取地址](https://dashscope.aliyun.com/)）
-- Git
-- Node.js 18+（可选；只有接入官方腾讯云 CLS MCP 时需要）
-
-### Windows
+在 Windows PowerShell 中执行：
 
 ```powershell
-# 1. 克隆项目
 git clone https://github.com/relievedkk/ai-oncall-diagnosis-platform.git
 cd ai-oncall-diagnosis-platform
 
-# 2. 创建本地配置
+uv sync --frozen
 Copy-Item .env.example .env
 notepad .env
+# 填写 DASHSCOPE_API_KEY 后，生成独立的本地认证凭据：
+uv run python app/local_env.py --env-file .env
 
-# 3. 至少把 DASHSCOPE_API_KEY 修改为真实值，然后一键启动
-.\start-windows.bat
+.\scripts\oncall-windows.ps1 start
+.\scripts\oncall-windows.ps1 status
 ```
 
-启动脚本会依次完成：
+登录 [http://localhost:9900](http://localhost:9900)，使用 `.env` 中的 `ADMIN_USERNAME` 与首次生成的 `ADMIN_PASSWORD`。凭据生成命令不会输出密钥内容；首次配置时才复制模板，已有 `.env` 不要覆盖。
 
-- 创建或同步 `.venv`
-- 构建诊断 Worker，并启动 PostgreSQL、RabbitMQ、Milvus、MinIO 和 Attu
-- 执行数据库迁移，启动 Celery Worker 与 Outbox Publisher
-- 启动 Prometheus、Alertmanager、Node Exporter 和 cAdvisor
-- 启动 CLS MCP 与 Monitor MCP
-- 启动 FastAPI
-- 上传 `aiops-docs` 中的示例知识文档
+托管入口会启动数据服务、执行首次迁移、启动 Worker/Publisher、监控栈和原生 API/MCP，并检查就绪状态。运行后可上传 `aiops-docs/` 中的示例文档；为业务服务配置指标与日志映射时，编辑 [服务目录](config/service_catalog.json)。
 
-停止全部服务并保留数据卷：
+| 入口 | 地址 / 命令 |
+| --- | --- |
+| Web / 登录 | [localhost:9900](http://localhost:9900) / [/login](http://localhost:9900/login) |
+| 存活 / 就绪 | `/live` 公开；`/ready` 需要认证 |
+| Prometheus / Alertmanager | [localhost:9090](http://localhost:9090) / [localhost:9093](http://localhost:9093) |
+| RabbitMQ / Milvus 管理 | [localhost:15672](http://localhost:15672) / [localhost:8001](http://localhost:8001) |
+| 独立探测 | `.\scripts\oncall-windows.ps1 probe -Once` |
+| 停止托管 API/MCP | `.\scripts\oncall-windows.ps1 stop`；Docker 数据服务与 Worker 保留运行 |
 
-```powershell
-.\stop-windows.bat
-```
+Linux/macOS 开发启动、单组件排查及测试环境准备见 [开发指南](docs/development.md)；备份、隔离恢复、发布回滚和登录启动任务见 [Windows 运行手册](docs/windows-operations.md)。完整配置以 [.env.example](.env.example) 为准，API 文档默认关闭。
 
-### Linux/macOS
+## 质量与验证
+
+以下为 **2026-10-25 本地验收快照**，用于说明验证范围；GitHub Actions 的最新执行结果见 [CI](https://github.com/relievedkk/ai-oncall-diagnosis-platform/actions)。
+
+| 验证项 | 结果与范围 |
+| --- | --- |
+| Python 自动化回归 | **858 passed / 4 skipped**；Windows、Python 3.13、完成 Alembic 迁移的独立 PostgreSQL 测试库；4 项为显式外部集成门控 |
+| 前端回归 | **28 passed**；覆盖 SSE 分帧、断线恢复、幂等创建、刷新恢复、终态与账号隔离 |
+| Docker 隔离冷备恢复 | 合成 PostgreSQL / RabbitMQ / Milvus 数据及上传文件内容比对通过，详见 [验收记录](docs/windows-operations-verification.md) |
+| Windows 托管与镜像 | API / 两个 MCP 就绪、原生服务无即时重启、业务队列消费者及 Worker 镜像内服务目录检查通过 |
+| 持续集成 | 配置 Ruff、Bandit、依赖审计、迁移检查、PostgreSQL 回归与 Compose 校验；具体状态以 CI 为准 |
 
 ```bash
-# 1. 克隆项目
-git clone https://github.com/relievedkk/ai-oncall-diagnosis-platform.git
-cd ai-oncall-diagnosis-platform
-
-# 2. 安装 uv 并同步依赖
-python3 -m pip install uv
-uv sync
-
-# 3. 创建本地配置并填写 DASHSCOPE_API_KEY
-cp .env.example .env
-vim .env
-
-# 4. 启动完整系统、等待就绪并上传示例文档
-make init
+uv sync --frozen --extra dev
+uv run pytest -q
+node --test tests/*.test.cjs
 ```
 
-后续可使用：
+PostgreSQL 集成测试需要先在独立测试库执行迁移并设置 `TEST_DATABASE_URL`，Docker/本地依赖测试需要显式开启门控，步骤见 [测试说明](docs/development.md#测试与质量检查)。
 
-```bash
-make start       # 启动数据库、RabbitMQ、Worker、监控栈、MCP 和 FastAPI
-make stop        # 停止全部服务，保留 Docker 数据卷
-make restart     # 重启全部服务
-make check       # 检查 FastAPI 健康状态
-make status-mcp  # 查看 MCP 服务状态
-```
+诊断质量另外使用固定案例进行**关键词与证据存在性门禁**，检查根因词组、证据类型、报告结构与禁用结论；不将其解释为真实故障根因准确率。用户反馈、样本数与覆盖率单独统计，评测流量不计入真实使用数据，口径见 [使用反馈](docs/usage-feedback.md)。
 
-## 服务入口
-
-| 服务 | 地址 | 用途 |
-|---|---|---|
-| Web 应用 | http://localhost:9900 | 对话、上传知识文档、启动 AIOps 诊断 |
-| 登录页 | http://localhost:9900/login | 运维人员账号登录；首次启动默认账号为 `admin` |
-| API 文档 | http://localhost:9900/docs | 查看并调试 FastAPI 接口 |
-| 应用指标 | http://localhost:9900/metrics | 查看 Prometheus 格式的原始指标 |
-| Prometheus | http://localhost:9090 | 查询指标、目标状态和告警规则 |
-| Alertmanager | http://localhost:9093 | 查看正在触发或已恢复的告警 |
-| Attu | http://localhost:8001 | 查看和管理 Milvus 中的向量数据 |
-| RabbitMQ 管理界面 | http://localhost:15672 | 查看诊断队列、消息速率和消费者；本地默认 `oncall/oncall` |
-| PostgreSQL | `localhost:5432` | 持久化诊断任务、步骤、证据和报告；无 Web 页面 |
-
-## 配置
-
-先复制模板：
-
-```bash
-cp .env.example .env
-```
-
-至少需要填写模型密钥；本地启动脚本会自动生成独立的机器 API Key、Webhook Token 和管理员初始密码：
-
-```dotenv
-DASHSCOPE_API_KEY=你的真实密钥
-AUTH_ENABLED=true
-API_KEY=一个独立的64位十六进制随机值
-ALERTMANAGER_WEBHOOK_TOKEN=另一个独立的64位十六进制随机值
-WEB_LOGIN_ENABLED=true
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=管理员初始强密码
-```
-
-Windows 一键启动脚本和 Linux/macOS 的 `make start` 会执行 `python -m app.local_env`：如果本地 API Key、Webhook Token 或管理员密码仍为空、过短或是模板占位符，会自动生成随机值，但不会输出密钥内容。生成后可在本机 `.env` 中查看 `ADMIN_PASSWORD`；该文件不会提交到 Git。
-
-常用配置：
-
-```dotenv
-# 默认开启认证；完整 Compose 栈需要监听 Docker 可访问的宿主机接口
-HOST=0.0.0.0
-DEBUG=false
-AUTH_ENABLED=true
-API_KEY=请替换为强随机值
-ALERTMANAGER_WEBHOOK_TOKEN=请替换为另一个强随机值
-WEB_LOGIN_ENABLED=true
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=请替换为管理员初始强密码
-SESSION_COOKIE_SECURE=false
-
-# MCP
-MCP_CLS_TRANSPORT=streamable-http
-MCP_CLS_URL=http://127.0.0.1:8003/mcp
-MCP_MONITOR_TRANSPORT=streamable-http
-MCP_MONITOR_URL=http://127.0.0.1:8004/mcp
-
-# Prometheus 与服务映射
-PROMETHEUS_BASE_URL=http://127.0.0.1:9090
-SERVICE_CATALOG_PATH=config/service_catalog.json
-
-# PostgreSQL 诊断存储
-DATABASE_URL=postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall
-DATABASE_AUTO_CREATE=true
-
-# RabbitMQ / Celery 独立任务队列
-CELERY_BROKER_URL=amqp://oncall:oncall@127.0.0.1:5672//
-CELERY_DEFAULT_QUEUE=diagnosis.default
-CELERY_CRITICAL_QUEUE=diagnosis.critical
-CELERY_DEAD_LETTER_QUEUE=diagnosis.dead-letter
-CELERY_REMEDIATION_QUEUE=remediation.control
-CELERY_TASK_MAX_RETRIES=5
-RABBITMQ_MANAGEMENT_URL=http://127.0.0.1:15672
-
-# 生产处置 Harness：此版本只支持 dry_run
-REMEDIATION_MODE=dry_run
-REMEDIATION_ADAPTER=dry_run
-REMEDIATION_APPROVAL_EXPIRY_SECONDS=900
-REMEDIATION_DEFAULT_COOLDOWN_SECONDS=900
-REMEDIATION_MAX_ACTIONS_PER_DIAGNOSIS=2
-REMEDIATION_GLOBAL_ACTIVE_LIMIT=5
-REMEDIATION_WORKER_LEASE_SECONDS=300
-
-# LangGraph 检查点（留空时从 DATABASE_URL 推导）
-LANGGRAPH_CHECKPOINT_ENABLED=true
-LANGGRAPH_CHECKPOINT_DATABASE_URL=
-
-# 默认禁止故障注入
-FAULT_INJECTION_ENABLED=false
-```
-
-`REMEDIATION_MODE` 的语义：`off` 禁止创建处置；`dry_run` 运行完整控制链但不写生产；`assisted` 要求允许的动作经过人工审批；`guarded_auto` 只允许 Policy 明确放行的低风险动作自动执行。后两种模式仍不会绕过 adapter 校验；当前构建只有 `dry_run` adapter，因此不存在真实生产写入能力。服务未在 `config/service_catalog.json` 中显式启用、动作不在 allowlist、证据不足、超过预算、处于冷却期或已有活动动作时一律拒绝。
-
-完整字段及安全说明见 [.env.example](.env.example)。`.env` 已加入 `.gitignore`，不要把真实密钥提交到仓库。
-
-本地首次启动时会自动执行 Alembic 数据库迁移。生产环境建议设置 `DATABASE_AUTO_CREATE=false`，在发布阶段单独执行：
-
-```bash
-uv run alembic upgrade head
-```
-
-更新本轮修复时，需先升级到 `20261015_0007`，再重启 API、Monitor MCP 和 Worker。该迁移为每次任务领取增加独立的 `execution_token`；证据、报告、重试和处置提案都验证执行所有权。Worker 重试仅恢复尚有待执行节点的检查点；已终止的失败工作流重新开始。异步诊断使用现有 Celery soft/hard 时间限制中较小的正值作为执行期限。
-
-聊天检查点按账户隔离，诊断检查点按 `diagnosis_id` 隔离。原有未命名空间的聊天记录保留在数据库中，升级后不会自动显示到新账户会话中。页面渲染依赖随应用静态资源发布，无需浏览器访问外部 CDN。
-
-### 登录与 API 认证
-
-只有服务绑定到回环地址时，才允许临时关闭认证：
-
-```dotenv
-HOST=127.0.0.1
-AUTH_ENABLED=false
-```
-
-完整本地监控栈、局域网或公网环境必须启用认证：
-
-```dotenv
-AUTH_ENABLED=true
-API_KEY=请替换为足够长的随机值
-WEB_LOGIN_ENABLED=true
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=请替换为管理员初始强密码
-```
-
-启用后：
-
-- 浏览器访问首页时会跳转到 `/login`，登录成功后使用 HttpOnly Cookie 会话，不再要求用户粘贴 API Key。
-- 密码使用 Argon2id 哈希存入 PostgreSQL；服务端仅保存会话令牌和 CSRF 令牌的 SHA-256 摘要。
-- 普通会话默认 8 小时；勾选“保持登录”后为 7 天。连续失败 5 次会锁定账号 15 分钟。
-- `ADMIN_PASSWORD` 只在数据库不存在该账号时用于创建初始管理员；以后修改 `.env` 不会覆盖数据库中的密码。
-- Prometheus、命令行和其他机器客户端继续通过 `X-API-Key` 请求头发送机器密钥。
-- Windows 启动脚本和 Makefile 上传命令会从 `.env` 读取 API Key。
-- HTTPS 部署必须设置 `SESSION_COOKIE_SECURE=true`。
-
-### Alertmanager Webhook 认证
-
-`ALERTMANAGER_WEBHOOK_TOKEN` 是必填项。Compose 会把它作为 Docker Secret 挂载给 Alertmanager，再使用 Bearer Token 调用 Webhook；不要把真实 Token 写进仓库。Token 缺失或过短时应用会拒绝启动。
-
-## 手动启动与排查
-
-一键脚本失败时，可以分别启动组件。以下 PowerShell 命令使用不同终端窗口执行。
-
-```powershell
-# 终端 1：Docker 依赖、数据库迁移与诊断 Worker
-docker compose -f vector-database.yml up -d --build
-docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
-
-# 终端 2：本地 CLS MCP
-.\.venv\Scripts\python.exe mcp_servers\cls_server.py
-
-# 终端 3：Monitor MCP
-.\.venv\Scripts\python.exe mcp_servers\monitor_server.py
-
-# 终端 4：FastAPI（该入口会自动处理 Windows 事件循环兼容性）
-.\.venv\Scripts\python.exe -m app.server
-```
-
-文档可以在登录后的 Web 页面直接上传。
-
-## API
-
-| 功能 | 方法 | 路径 | 认证 |
-|---|---|---|---|
-| 登录页 | GET | `/login` | 否 |
-| 账号登录 | POST | `/api/auth/login` | 否（限流） |
-| 当前账户 | GET | `/api/auth/me` | 浏览器会话 |
-| 退出登录 | POST | `/api/auth/logout` | 浏览器会话 + CSRF |
-| 首页 | GET | `/` | 是 |
-| 存活检查 | GET | `/live` | 否 |
-| 就绪检查 | GET | `/ready` | 是 |
-| 兼容健康检查 | GET | `/health` | 是 |
-| 应用指标 | GET | `/metrics` | 是（Prometheus 使用 Docker Secret） |
-| 普通对话 | POST | `/api/chat` | 是 |
-| 流式对话 | POST | `/api/chat_stream` | 是 |
-| 清空会话 | POST | `/api/chat/clear` | 是 |
-| 会话历史 | GET | `/api/chat/session/{session_id}` | 是 |
-| 上传并索引文件 | POST | `/api/upload` | 是 |
-| 索引允许目录 | POST | `/api/index_directory` | 是 |
-| 手动 AIOps 诊断 | POST | `/api/aiops` | 是 |
-| 自动诊断任务列表 | GET | `/api/aiops/jobs` | 是 |
-| 自动诊断任务详情 | GET | `/api/aiops/jobs/{diagnosis_id}` | 是 |
-| 处置列表（可按 `status` 过滤，`limit` 1–100） | GET | `/api/remediations` | 浏览器会话或机器 API Key |
-| 处置详情（意图、策略、证据摘要、结果与验证） | GET | `/api/remediations/{action_id}` | 浏览器会话或机器 API Key |
-| 批准或拒绝处置 | POST | `/api/remediations/{action_id}/decision` | 仅浏览器会话 + CSRF |
-| Alertmanager 回调 | POST | `/api/alerts/webhook` | 独立 Bearer Token |
-| 本地故障注入 | POST | `/api/debug/fault/{state}` | 是，且默认关闭 |
-
-API 文档默认关闭；如需本地调试，可临时设置 `EXPOSE_API_DOCS=true`。关闭认证时必须同时使用 `HOST=127.0.0.1`。
-
-任务详情会返回 `steps`、`evidence` 和 `report`：步骤保存执行状态与完整输出，证据保存每个 Planner、Executor、Replanner 事件的来源、时间和原始载荷，报告则作为独立记录保存。手动 `/api/aiops` 与 Alertmanager 自动触发的诊断都会先可靠入队，再由独立 Worker 写入同一套表。浏览器断开或 FastAPI 重启不会中断已经入队的诊断。
-
-处置 API 没有公开的创建、执行、重试或回滚入口。详情只返回冻结且有长度上限的证据摘要，并移除 prepared payload、rollback token、Worker 标识、幂等键及 credential/token/password 等执行器字段。审批请求体为 `{"decision":"approve"}` 或 `{"decision":"reject"}`；过期、缺失和状态冲突分别返回 410、404 和 409。
-
-### 请求示例
-
-```bash
-API_KEY="从 .env 读取，不要提交"
-
-curl -X POST "http://localhost:9900/api/chat" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_KEY}" \
-  -d '{"Id":"session-123","Question":"当前系统有哪些告警？"}'
-
-curl -N -X POST "http://localhost:9900/api/aiops" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_KEY}" \
-  -d '{"session_id":"session-123"}'
-```
-
-## 本地端到端告警测试
-
-故障注入接口默认关闭，只能在隔离的本地测试环境临时启用。
-
-1. 在 `.env` 中设置 `FAULT_INJECTION_ENABLED=true`。
-2. 重启 FastAPI。
-3. 触发故障并等待 Prometheus 和 Alertmanager 完成一次规则计算与转发。
-
-```powershell
-$headers = @{"X-API-Key" = "your-api-key"}
-
-Invoke-RestMethod -Method Post -Headers $headers http://localhost:9900/api/debug/fault/active
-Start-Sleep -Seconds 30
-Invoke-RestMethod -Headers $headers http://localhost:9900/api/aiops/jobs
-
-# 测试完成后恢复
-Invoke-RestMethod -Method Post -Headers $headers http://localhost:9900/api/debug/fault/resolved
-```
-
-测试结束后将 `FAULT_INJECTION_ENABLED=false` 并重启应用。
-
-## 项目结构
+## 项目导航
 
 ```text
-ai-oncall-diagnosis-platform/
-├── app/
-│   ├── agent/aiops/                 # Planner、Executor、Replanner
-│   ├── api/                         # 对话、文件、告警、处置、指标和调试接口
-│   ├── core/                        # 配置、认证、LLM、Milvus、指标
-│   ├── db/                          # PostgreSQL 会话与诊断数据模型
-│   ├── evaluation/                  # 诊断质量评分与命令行入口
-│   ├── models/                      # API 与告警数据模型
-│   ├── harness/                     # 处置契约、确定性 Policy 与受控 Gateway
-│   ├── repositories/                # 诊断与处置持久化 Repository
-│   ├── services/                    # RAG、向量库、诊断/处置编排与服务目录
-│   ├── tasks/                       # Celery 诊断与处置任务
-│   ├── tools/                       # 知识库、时间和 Prometheus 工具
-│   ├── workers/                     # Transactional Outbox 发布进程
-│   ├── celery_app.py                # Celery、交换机和队列配置
-│   └── main.py                      # FastAPI 入口
-├── aiops-docs/                      # 示例运维知识文档
-├── config/service_catalog.json      # 服务、Prometheus 和 CLS 映射
-├── evals/diagnosis_cases.json        # 固定诊断质量评测案例
-├── mcp_servers/                     # CLS MCP 与 Monitor MCP
-├── monitoring/                      # Prometheus 与 Alertmanager 配置
-├── migrations/                      # Alembic 数据库迁移
-├── static/                          # Web 前端
-├── tests/                           # 自动化测试
-├── .env.example                     # 安全配置模板
-├── monitoring.yml                   # 监控栈 Docker Compose
-├── Dockerfile.worker                # Celery Worker / Publisher 镜像
-├── vector-database.yml              # 数据库、RabbitMQ、Milvus 与 Worker Compose
-├── start-windows.bat                # Windows 一键启动
-├── stop-windows.bat                 # Windows 一键停止
-├── Makefile                         # Linux/macOS 管理命令
-└── pyproject.toml                   # Python 项目与依赖配置
+app/
+├── agent/aiops/       # Plan-Execute-Replan 诊断工作流
+├── api/               # 对话、任务、告警、处置与认证
+├── harness/           # 结构化意图、Policy 与受控 Gateway
+├── repositories/      # 诊断、处置与配额持久化
+├── services/          # RAG、编排、模型额度与服务目录
+├── tasks/             # Celery 诊断 / 处置任务
+└── core/              # 认证、证据、检查点与模型数据边界
+oncall_ops/            # 守护、探针、冷备恢复、发布回滚
+mcp_servers/           # Prometheus 与 CLS 工具服务
+migrations/           # Alembic 数据库迁移
+monitoring/           # 指标采集与告警规则
+static/               # Web 界面及 SSE 重连
+tests/                # Python 与 Node 回归
 ```
 
-## 开发与测试
+| 深入阅读 | 内容 |
+| --- | --- |
+| [开发指南](docs/development.md) | 跨平台启动、依赖与端口、测试、故障注入、常见排查 |
+| [接口与安全约束](docs/api-and-security.md) | API 索引、认证、任务重连、处置授权与数据边界 |
+| [Windows 运行手册](docs/windows-operations.md) | 部署、探测、备份恢复、共享额度、发布回滚 |
+| [运行保障验收](docs/windows-operations-verification.md) | 已验证能力、演练内容与上线前待验收项 |
+| [MCP 接入说明](mcp_servers/README.md) | 新服务映射、官方 CLS 网关、持续日志上传 |
+| [使用反馈与统计口径](docs/usage-feedback.md) | 反馈解决率、覆盖率、耗时与模型用量 |
 
-```bash
-# 同步开发依赖
-uv sync --extra dev
+## 交付范围与后续工作
 
-# 运行测试
-uv run pytest -q
+当前交付为 **Windows 单机运行与演练方案**：已具备持久任务、控制边界和运行保障，尚无跨主机高可用、生产规模容量与 SLO 验收，也未提供 Kubernetes / 云平台真实写入 adapter。
 
-# 校验迁移和 Compose 配置
-uv run alembic check
-docker compose -f vector-database.yml config --quiet
-docker compose -f monitoring.yml config --quiet
+- **生产接入**：完成真实处置 adapter 的最小权限、威胁模型及回滚验收；在此前保持 Dry Run。
+- **运行环境**：接入异机故障通知、异地加密备份与高可用组件；在脱敏业务数据副本上验证恢复与 schema 兼容。
+- **容量与质量**：按实际工作负载压测、制定 SLO，积累人工标注的真实故障样本。当前没有宣称生产使用规模、MTTR 改善或根因准确率。
 
-# 对保存的真实诊断结果做质量门禁（结果文件为 case_id/report/evidence 数组）
-uv run python -m app.evaluation.cli \
-  --cases evals/diagnosis_cases.json \
-  --results path/to/diagnosis_results.json
-
-```
-
-## 安全与生产部署说明
-
-仓库内的 Compose 文件面向本地开发，不能原样暴露到公网：
-
-- MinIO 使用本地默认凭证，并映射了管理端口。
-- PostgreSQL 使用本地开发凭证并映射了端口，生产环境必须更换密码并限制网络访问。
-- RabbitMQ 使用本地开发凭证，管理界面和 AMQP 端口仅绑定到回环地址；生产环境仍必须更换密码并启用 TLS。
-- Prometheus、Alertmanager、Milvus 和 Attu 默认映射到宿主机端口。
-- cAdvisor 使用特权模式并读取 Docker/宿主机相关目录。
-- `/metrics`、`/health` 与业务 API 均受认证保护；API 文档默认关闭。
-- Milvus collection 的向量维度不匹配时应用会拒绝启动，不会自动删除已有向量；请通过新 collection 重建并显式切换。
-- FastAPI 监听 `0.0.0.0`，以便 Docker 内的 Prometheus 通过 `host.docker.internal` 抓取指标；请使用主机防火墙限制外部访问。
-- 本地示例 CLS 返回演示数据，不代表真实生产日志。
-- 当前 `remediation-worker` 只运行 Dry Run adapter，既没有 Kubernetes 客户端也没有生产凭证；在另行完成适配器威胁模型、最小权限和回滚演练前，不要把模拟成功解释为生产变更成功。
-
-生产环境至少应完成：网络隔离、TLS、强认证、密钥管理、最小权限、固定镜像版本、数据备份、审计日志和高可用部署。
-
-## 常见问题
-
-### Web 可以打开，但聊天或上传返回 503
-
-机器调用出现 401/503 时，通常是 API Key 未配置或长度不足。浏览器用户无需填写 Key，应访问 `/login`，使用 `.env` 中的 `ADMIN_USERNAME` 和首次启动时生成的 `ADMIN_PASSWORD` 登录。只有 `HOST=127.0.0.1` 时才允许关闭认证。
-
-### Milvus 连接失败
-
-```bash
-docker compose -f vector-database.yml ps
-docker compose -f vector-database.yml restart standalone
-```
-
-### 诊断任务一直处于 queued / retrying
-
-```bash
-docker compose -f vector-database.yml ps
-docker compose -f vector-database.yml logs --tail=100 rabbitmq diagnosis-critical-worker diagnosis-default-worker outbox-publisher
-```
-
-在 RabbitMQ 管理界面检查 `diagnosis.critical` 和 `diagnosis.default` 是否各有消费者。`diagnosis.dead-letter` 中出现消息表示任务已耗尽自动重试，需要结合数据库任务的 `error`、`evidence` 和 `dead_lettered_at` 人工处理。数据库中的 Outbox 事件会在发布失败后退避重试；Worker 异常退出后，执行租约到期的任务可被再次领取。
-
-### 处置一直等待审批或没有执行
-
-先确认动作是否为 `awaiting_approval`、审批窗口是否已过期，以及浏览器请求是否同时携带会话 Cookie 与 `X-CSRF-Token`；机器 API Key 按设计只能查询，不能审批。再检查 `remediation.control` 是否有消费者：
-
-```bash
-docker compose -f vector-database.yml ps remediation-worker
-docker compose -f vector-database.yml logs --tail=100 remediation-worker outbox-publisher rabbitmq
-```
-
-`RemediationApprovalStale` 在待审批超过 10 分钟且持续 1 分钟时告警，早于默认 15 分钟过期窗口。`RemediationQueueHasNoConsumer` 表示隔离队列无 Worker，`RemediationExecutionFailed` 或 `RemediationRollbackCircuitBreaker` 要求人工检查审计记录。当前所有执行/验证结果都应明确来自 Dry Run；如果配置了其他 adapter，应用应在启动时失败，而不是降级运行。
-
-### Prometheus 没有数据
-
-1. 使用 `X-API-Key` 请求头确认 http://localhost:9900/metrics 可以访问。
-2. 在 Prometheus 的 `Status → Targets` 检查 `ai-oncall-agent` 是否为 `UP`。
-3. Docker Desktop 环境需支持通过 `host.docker.internal` 访问宿主机。
-
-### 端口被占用
-
-```powershell
-netstat -ano | findstr :9900
-taskkill /F /PID <PID>
-```
-
-主要端口：`9900`、`5432`、`5672`、`15672`、`8001`、`8003`、`8004`、`9090`、`9093`、`19530`。
-
-## 参考资源
-
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [LangChain](https://python.langchain.com/)
-- [LangGraph](https://langchain-ai.github.io/langgraph/)
-- [Milvus](https://milvus.io/)
-- [Prometheus](https://prometheus.io/)
-- [Celery](https://docs.celeryq.dev/)
-- [RabbitMQ](https://www.rabbitmq.com/)
-- [Model Context Protocol](https://modelcontextprotocol.io/)
-- [阿里云 DashScope](https://dashscope.aliyun.com/)
+本地 Compose 使用开发凭据，API 为便于容器抓取指标监听宿主机接口；外部部署需配置网络隔离、TLS、密钥轮换与访问控制，具体检查项见运行手册。
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。
-
-
-### Remediation evidence and checkpoint ownership
-
-Remediation requires successful, non-demo observations attributed to the requested service. Restart evidence must also identify the exact instance; service aggregates alone cannot authorize an instance restart. Collection and observation timestamps must be fresh and timezone-aware. `REMEDIATION_EVIDENCE_MAX_AGE_SECONDS` defaults to 600 and `REMEDIATION_EVIDENCE_CLOCK_SKEW_SECONDS` to 30. Apply the same settings to the API and all workers.
-
-Approval expires at the earlier of its configured deadline and the frozen evidence deadline. Approval and initial execution claims recheck frozen evidence under the action lock. Legacy snapshots without validation metadata cannot authorize execution; obtain fresh evidence and submit a new proposal. Recovery of an already-started action remains available after evidence expires. Replica counts come only from validated target metrics; conflicting counts deny scaling.
-
-Diagnosis checkpoint writes require a live execution token and lock the diagnosis job in the same PostgreSQL transaction as the checkpoint mutation. The checkpoint database and business database must be the same actual PostgreSQL database and resolve the same `diagnosis_jobs` table. Different databases or shadow ownership tables fail closed. Chat checkpoints may still use a separate database. This protection adds no new schema migration.
-
-
-### Dead-letter replay and index coordination
-
-Replay a dead-lettered diagnosis explicitly with `python -m app.tasks.replay_dead_letter DIAGNOSIS_ID` using the deployment's database configuration. The command atomically resets the terminal state and adds one durable outbox event; the outbox publisher and diagnosis workers must be running. Duplicate replay requests do not enqueue twice. Ordinary broker redelivery of a dead-lettered diagnosis is acknowledged without another retry loop. Previously completed remediation actions remain protected by their existing idempotency keys.
-
-Milvus reads and index mutations through the manager now share a PostgreSQL transaction advisory lock across processes. All workers sharing the `biz` collection must use the same `DATABASE_URL` coordinator; failure to acquire the lock prevents mutation. Index replacement still inserts and flushes the new version before deleting and flushing old IDs. This is serialization of cooperating workers, not a cross-database transaction with Milvus. Direct external Milvus writers must follow the same coordination protocol.
-
-New chat messages are saved to the current user's local history immediately, including completed streaming replies. Switching to another chat is no longer required before refresh. This browser history remains local to the browser and user storage namespace.
+[MIT License](LICENSE)
