@@ -1,4 +1,5 @@
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -197,6 +198,7 @@ def test_protected_write_never_exposes_new_secret_when_acl_hardening_fails(
                    for item in tmp_path.iterdir() if item.is_file())
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell ACL invocation")
 def test_protect_env_file_uses_constant_script_and_never_passes_secret(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -216,6 +218,17 @@ def test_protect_env_file_uses_constant_script_and_never_passes_secret(
     assert "top-secret-value" not in " ".join(arguments)
     assert kwargs["env"]["ONCALL_PRIVATE_ENV_FILE"] == str(env_file.resolve())
     assert kwargs["capture_output"] is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file mode behavior")
+def test_protect_env_file_applies_owner_only_posix_mode(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("API_KEY=posix-mode-test-only\n", encoding="utf-8")
+    env_file.chmod(0o644)
+
+    protect_env_file(env_file)
+
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACL behavior")

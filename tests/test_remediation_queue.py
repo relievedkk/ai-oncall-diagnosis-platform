@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -283,10 +284,23 @@ async def test_worker_rejects_frozen_evidence_before_any_adapter_call(tmp_path, 
     assert adapter.prepare_calls == adapter.execute_calls == adapter.observe_calls == 0
 
 
-def test_remediation_worker_has_minimal_environment_and_runtime_controls():
+def test_remediation_worker_has_minimal_environment_and_runtime_controls(tmp_path):
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "POSTGRES_PASSWORD": "postgres-test-02468ace13579bdf" * 2,
+        "RABBITMQ_DEFAULT_PASS": "rabbit-test-13579bdf02468ace" * 2,
+        "MINIO_ACCESS_KEY": "minio-test-02468ace",
+        "MINIO_SECRET_KEY": "minio-secret-test-13579bdf02468ace" * 2,
+    }
     compose = json.loads(
         __import__("subprocess").check_output(  # nosec B404,B603 - test-only compose parser
-            ["docker", "compose", "-f", "vector-database.yml", "config", "--format", "json"],
+            [
+                "docker", "compose", "--env-file", str(empty_env),
+                "-f", "vector-database.yml", "config", "--format", "json",
+            ],
+            env=environment,
             text=True,
         )
     )

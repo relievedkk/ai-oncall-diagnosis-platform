@@ -44,4 +44,9 @@ jobs:
       - run: node --test tests/*.test.cjs
       - run: uv run alembic check
       - run: docker compose -f vector-database.yml config --quiet
+        env:
+          POSTGRES_PASSWORD: "ci-postgres-02468ace13579bdf02468ace"
+          RABBITMQ_DEFAULT_PASS: "ci-rabbit-13579bdf02468ace13579bdf"
+          MINIO_ACCESS_KEY: "ci-minio-02468ace"
+          MINIO_SECRET_KEY: "ci-minio-secret-13579bdf02468ace"
       - run: docker compose -f monitoring.yml config --quiet
