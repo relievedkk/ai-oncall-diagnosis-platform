@@ -6,7 +6,7 @@
 
 **Goal:** Remove the confirmed local P0 secret-boundary, default-credential, and vulnerable-dependency risks without losing existing data.
 
-**Architecture:** Pure configuration helpers generate and validate independent credentials; an explicit Windows/local rotation command coordinates live services and atomically updates `.env`. Startup and Compose fail closed when unsafe credentials remain.
+**Architecture:** Pure configuration helpers generate and validate independent credentials. Startup and Compose fail closed when unsafe credentials remain. The former online rotation design is rejected; the safe merge plan supersedes it.
 
 **Tech Stack:** Python 3.13, pytest, Docker Compose, PostgreSQL, RabbitMQ, MinIO/Milvus, uv.
 
@@ -55,19 +55,12 @@
 - [ ] Enforce validation, remove Compose credential fallbacks, and pass MinIO credentials to Milvus.
 - [ ] Run focused tests to GREEN.
 
-### Task 3: Data-preserving local credential rotation
+### Task 3: REJECTED — online credential rotation
 
-**Files:**
-- Create: `oncall_ops/local_security.py`
-- Create: `tests/test_local_security.py`
-- Modify: `oncall_ops/cli.py`
-- Modify: `scripts/oncall-windows.ps1`
-
-- [ ] Write failing orchestration tests for ordering, rollback, secret-free errors, and health verification.
-- [ ] Run them to establish RED.
-- [ ] Implement the explicit rotate-local-credentials operation.
-- [ ] Run focused tests to GREEN.
-- [ ] Execute the operation against the current local stack and verify service health.
+This task must not be implemented from this historical plan. Review proved that the
+operation was not crash-recoverable and left native credential consumers stale.
+Legacy volumes require a separately specified, journaled offline migration after a
+service stop and cold backup. See the 2026-11-01 merge-review design and plan.
 
 ### Task 4: Dependency security floors
 

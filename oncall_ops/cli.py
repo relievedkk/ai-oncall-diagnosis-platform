@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import Request
 
-from app.local_env import validate_strong_credentials
+from app.local_env import protect_env_file, validate_strong_credentials
 from oncall_ops.common import atomic_json, read_env
 from oncall_ops.native_health import native_ready, open_http
 from oncall_ops.runtime import ManagedRuntime
@@ -41,6 +41,8 @@ def build_environment(root: Path, data_root: Path, config_root: Path) -> dict:
     env_file = Path(config_root) / '.env'
     if not env_file.is_file():
         raise ValueError('Configuration .env is missing; configure the project before starting')
+    # Protect before reading so a managed operation never accepts a broadly readable secret file.
+    protect_env_file(env_file)
     environment = {**read_env(env_file), **os.environ}
     environment.update({
         'ONCALL_DATA_ROOT': str(Path(data_root).resolve()),

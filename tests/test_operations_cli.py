@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +64,43 @@ def test_managed_environment_uses_stable_roots_and_shared_quota(tmp_path):
     assert values['SHARED_MODEL_QUOTA_ENABLED'] == 'true'
     assert values['ONCALL_DATA_ROOT'] == str((tmp_path / 'data').resolve())
     assert str((tmp_path / 'data' / 'uploads').resolve()) in values['ALLOWED_INDEX_ROOTS']
+
+
+def test_managed_environment_protects_env_before_reading_it(tmp_path, monkeypatch):
+    from oncall_ops import cli
+
+    env_file = tmp_path / '.env'
+    env_file.write_text('API_KEY=local-secret\n')
+    events = []
+
+    monkeypatch.setattr(cli, 'protect_env_file',
+                        lambda path: events.append(('protect', Path(path))))
+    monkeypatch.setattr(cli, 'read_env',
+                        lambda path: events.append(('read', Path(path))) or {})
+
+    build_environment(tmp_path, tmp_path / 'data', tmp_path)
+
+    assert events == [('protect', env_file), ('read', env_file)]
+
+
+def test_managed_environment_fails_closed_before_read_when_acl_hardening_fails(
+        tmp_path, monkeypatch):
+    from oncall_ops import cli
+
+    env_file = tmp_path / '.env'
+    env_file.write_text('API_KEY=local-secret\n')
+    read_attempts = []
+
+    def reject_acl(_path):
+        raise RuntimeError('acl unavailable')
+
+    monkeypatch.setattr(cli, 'protect_env_file', reject_acl)
+    monkeypatch.setattr(cli, 'read_env', lambda path: read_attempts.append(path) or {})
+
+    with pytest.raises(RuntimeError, match='acl unavailable'):
+        build_environment(tmp_path, tmp_path / 'data', tmp_path)
+
+    assert read_attempts == []
 
 
 def test_resume_refreshes_native_release_without_changing_shared_data(tmp_path):
@@ -354,6 +392,8 @@ def test_cli_rejects_unrecoverable_online_credential_rotation():
         {"POSTGRES_PASSWORD": "x" * 32},
         {"API_KEY": "y" * 64},
         {"API_KEY": "pg-13579bdf02468ace" * 2},
+        {"POSTGRES_PASSWORD": "reserved@:/credential-02468ace13579bdf"},
+        {"RABBITMQ_DEFAULT_PASS": "reserved@:/credential-13579bdf02468ace"},
     ],
 )
 def test_managed_start_rejects_low_diversity_or_reused_credentials(overrides):

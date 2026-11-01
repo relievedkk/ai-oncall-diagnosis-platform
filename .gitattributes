@@ -1,0 +1,2 @@
+# Vendored browser assets are integrity-checked byte-for-byte. Never rewrite them.
+static/vendor/** -text

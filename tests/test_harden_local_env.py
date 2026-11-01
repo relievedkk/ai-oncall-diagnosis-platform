@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -215,3 +216,40 @@ def test_protect_env_file_uses_constant_script_and_never_passes_secret(
     assert "top-secret-value" not in " ".join(arguments)
     assert kwargs["env"]["ONCALL_PRIVATE_ENV_FILE"] == str(env_file.resolve())
     assert kwargs["capture_output"] is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL behavior")
+def test_protect_env_file_applies_a_real_owner_system_admin_dacl(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("API_KEY=real-dacl-test-only\n", encoding="utf-8")
+
+    protect_env_file(env_file)
+
+    powershell = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    script = (
+        "$acl=([IO.FileInfo]::new($env:ONCALL_PRIVATE_ENV_FILE)).GetAccessControl();"
+        "if(-not $acl.AreAccessRulesProtected){exit 2};"
+        "$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+        "$expected=@($owner,'S-1-5-18','S-1-5-32-544');"
+        "$rules=@($acl.GetAccessRules($true,$true,"
+        "[Security.Principal.SecurityIdentifier]));"
+        "if($rules.Count -ne 3){exit 3};"
+        "foreach($rule in $rules){"
+        "if($rule.AccessControlType -ne 'Allow' -or "
+        "$rule.IdentityReference.Value -notin $expected){exit 4}};"
+        "foreach($sid in $expected){"
+        "if($sid -notin $rules.IdentityReference.Value){exit 5}}"
+    )
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+        env={**os.environ, "ONCALL_PRIVATE_ENV_FILE": str(env_file.resolve())},
+        capture_output=True,
+        timeout=15,
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")

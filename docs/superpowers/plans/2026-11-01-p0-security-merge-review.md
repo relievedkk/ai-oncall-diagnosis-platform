@@ -23,6 +23,8 @@
 - An ACL failure must occur before new secret bytes reach a temporary or final file.
 - The unsupported rotation command must be rejected without mutating state.
 - SRI must be derived from Git artifact bytes, not newline-converted working-tree assumptions.
+- Managed operations must protect `.env` before any read, including a separate ConfigRoot.
+- Raw Compose URL passwords must be restricted to URI-safe ASCII.
 - Fresh provisioning must still synchronize encoded database and broker URLs.
 
 ---

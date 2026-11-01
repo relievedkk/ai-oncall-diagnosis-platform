@@ -27,6 +27,10 @@ leave native credential consumers stale.
   infrastructure credentials.
 - Secret-bearing files are protected before secret bytes are written and are
   replaced atomically.
+- Every managed operation protects the active `.env` before reading it and fails
+  closed if its platform permissions cannot be tightened.
+- PostgreSQL and RabbitMQ passwords accepted for raw Compose URLs use only URI-safe
+  ASCII characters.
 - The vulnerable dependency versions remain upgraded.
 - Static-resource SRI values match the exact Git artifact bytes.
 - No supported command claims to rotate live credentials until crash recovery and

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import string
 
 # subprocess is limited to a constant PowerShell ACL script; the path is passed via the environment.
 import subprocess  # nosec B404
@@ -47,6 +48,11 @@ MANAGED_CREDENTIAL_MINIMUM_LENGTHS = {
     **INFRASTRUCTURE_MINIMUM_LENGTHS,
 }
 
+URI_SAFE_CREDENTIAL_KEYS = {"POSTGRES_PASSWORD", "RABBITMQ_DEFAULT_PASS"}
+URI_SAFE_CREDENTIAL_CHARACTERS = frozenset(
+    string.ascii_letters + string.digits + "._~-"
+)
+
 
 def validate_strong_credentials(
     values: dict[str, str], keys: tuple[str, ...] | None = None
@@ -63,6 +69,10 @@ def validate_strong_credentials(
             or value.lower() in insecure
             or value.startswith("replace-with-")
             or len(set(value)) < 8
+            or (
+                key in URI_SAFE_CREDENTIAL_KEYS
+                and not set(value) <= URI_SAFE_CREDENTIAL_CHARACTERS
+            )
         ):
             raise ValueError("Configuration requires independent strong credentials")
         credentials.append(value)
