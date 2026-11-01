@@ -8,6 +8,7 @@ import secrets
 
 # subprocess is limited to a constant PowerShell ACL script; the path is passed via the environment.
 import subprocess  # nosec B404
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,10 +20,10 @@ PLACEHOLDERS = {
 }
 
 INFRASTRUCTURE_PLACEHOLDERS = {
-    "POSTGRES_PASSWORD": "replace-with-random-postgres-password",
-    "RABBITMQ_DEFAULT_PASS": "replace-with-random-rabbitmq-password",
+    "POSTGRES_PASSWORD": "replace-with-random-postgres-password",  # nosec B105
+    "RABBITMQ_DEFAULT_PASS": "replace-with-random-rabbitmq-password",  # nosec B105
     "MINIO_ACCESS_KEY": "replace-with-random-minio-access-key",
-    "MINIO_SECRET_KEY": "replace-with-random-minio-secret-key",
+    "MINIO_SECRET_KEY": "replace-with-random-minio-secret-key",  # nosec B105
 }
 
 INSECURE_INFRASTRUCTURE_VALUES = {
@@ -33,11 +34,40 @@ INSECURE_INFRASTRUCTURE_VALUES = {
 }
 
 INFRASTRUCTURE_MINIMUM_LENGTHS = {
-    "POSTGRES_PASSWORD": 32,
-    "RABBITMQ_DEFAULT_PASS": 32,
+    "POSTGRES_PASSWORD": 32,  # nosec B105
+    "RABBITMQ_DEFAULT_PASS": 32,  # nosec B105
     "MINIO_ACCESS_KEY": 16,
-    "MINIO_SECRET_KEY": 32,
+    "MINIO_SECRET_KEY": 32,  # nosec B105
 }
+
+MANAGED_CREDENTIAL_MINIMUM_LENGTHS = {
+    "API_KEY": 32,
+    "ALERTMANAGER_WEBHOOK_TOKEN": 32,  # nosec B105
+    "MCP_CLS_TOKEN": 32,  # nosec B105
+    **INFRASTRUCTURE_MINIMUM_LENGTHS,
+}
+
+
+def validate_strong_credentials(
+    values: dict[str, str], keys: tuple[str, ...] | None = None
+) -> None:
+    """Reject defaults, placeholders, low-diversity values, and credential reuse."""
+    selected = keys or tuple(MANAGED_CREDENTIAL_MINIMUM_LENGTHS)
+    credentials: list[str] = []
+    for key in selected:
+        value = values.get(key, "")
+        minimum = MANAGED_CREDENTIAL_MINIMUM_LENGTHS[key]
+        insecure = INSECURE_INFRASTRUCTURE_VALUES.get(key, set())
+        if (
+            len(value) < minimum
+            or value.lower() in insecure
+            or value.startswith("replace-with-")
+            or len(set(value)) < 8
+        ):
+            raise ValueError("Configuration requires independent strong credentials")
+        credentials.append(value)
+    if len(set(credentials)) != len(credentials):
+        raise ValueError("Configuration requires independent strong credentials")
 
 
 def _load(lines: list[str]) -> dict[str, str]:
@@ -105,12 +135,30 @@ def protect_env_file(path: Path) -> None:
 
 
 def _write_protected(path: Path, lines: list[str]) -> None:
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    protect_env_file(path)
+    path = Path(path)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary)
+    try:
+        # Tighten the empty file first. No secret bytes exist if this fails.
+        protect_env_file(temporary_path)
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as output:
+            output.write("\n".join(lines) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+        protect_env_file(path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def provision_infrastructure_credentials(path: Path) -> list[str]:
-    """Provision a new stack; existing default credentials require live rotation."""
+    """Provision a new stack; existing defaults require a separate offline migration."""
     if not path.exists():
         raise FileNotFoundError(f"Environment file not found: {path}")
 
@@ -133,17 +181,10 @@ def provision_infrastructure_credentials(path: Path) -> list[str]:
             generated.append(key)
         elif current in INSECURE_INFRASTRUCTURE_VALUES[key]:
             raise ValueError(
-                "Existing or missing default credentials require explicit live credential rotation"
+                "Existing or missing default credentials require an explicit offline migration"
             )
 
-    credentials = []
-    for key, minimum in INFRASTRUCTURE_MINIMUM_LENGTHS.items():
-        value = values.get(key, "")
-        if len(value) < minimum or value.startswith("replace-with-"):
-            raise ValueError("Configuration requires independent strong infrastructure credentials")
-        credentials.append(value)
-    if len(set(credentials)) != len(credentials):
-        raise ValueError("Configuration requires independent strong infrastructure credentials")
+    validate_strong_credentials(values, tuple(INFRASTRUCTURE_MINIMUM_LENGTHS))
 
     postgres_user = values.get("POSTGRES_USER", "oncall")
     postgres_db = values.get("POSTGRES_DB", "oncall")

@@ -5,20 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from oncall_ops.cli import build_environment, main, refresh_release_services
+from oncall_ops.cli import build_environment, main, parser, refresh_release_services
 from oncall_ops.supervisor import ServiceSpec
 
 
 def secure_environment(**overrides):
     return {
         'AUTH_ENABLED': 'true',
-        'API_KEY': 'a' * 64,
-        'ALERTMANAGER_WEBHOOK_TOKEN': 'b' * 64,
-        'MCP_CLS_TOKEN': 'c' * 64,
-        'POSTGRES_PASSWORD': 'p' * 32,
-        'RABBITMQ_DEFAULT_PASS': 'r' * 32,
-        'MINIO_ACCESS_KEY': 'oncall-test-access',
-        'MINIO_SECRET_KEY': 'm' * 40,
+        'API_KEY': 'api-0123456789abcdef' * 4,
+        'ALERTMANAGER_WEBHOOK_TOKEN': 'alert-fedcba9876543210' * 4,
+        'MCP_CLS_TOKEN': 'cls-02468ace13579bdf' * 4,
+        'POSTGRES_PASSWORD': 'pg-13579bdf02468ace' * 2,
+        'RABBITMQ_DEFAULT_PASS': 'mq-abcdef0123456789' * 2,
+        'MINIO_ACCESS_KEY': 'minio-02468ace1357',
+        'MINIO_SECRET_KEY': 'minio-secret-13579bdf02468ace' * 2,
         **overrides,
     }
 
@@ -339,3 +339,25 @@ def test_managed_start_rejects_unsafe_infrastructure_credentials(key, value):
 
     with pytest.raises(ValueError, match="infrastructure credentials"):
         cli.validate_infrastructure_credentials(environment)
+
+
+def test_cli_rejects_unrecoverable_online_credential_rotation():
+    with pytest.raises(SystemExit) as exc_info:
+        parser().parse_args(["rotate-credentials"])
+
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"POSTGRES_PASSWORD": "x" * 32},
+        {"API_KEY": "y" * 64},
+        {"API_KEY": "pg-13579bdf02468ace" * 2},
+    ],
+)
+def test_managed_start_rejects_low_diversity_or_reused_credentials(overrides):
+    from oncall_ops import cli
+
+    with pytest.raises(ValueError, match="independent strong"):
+        cli.validate_managed_credentials(secure_environment(**overrides))

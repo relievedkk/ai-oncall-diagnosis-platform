@@ -1,5 +1,7 @@
 # P0 Local Security Hardening Implementation Plan
 
+> Merge-review update: the online rotation task was removed because it was not crash-recoverable and did not restart every credential consumer. See `2026-11-01-p0-security-merge-review.md` for the safe merge delta.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove the confirmed local P0 secret-boundary, default-credential, and vulnerable-dependency risks without losing existing data.

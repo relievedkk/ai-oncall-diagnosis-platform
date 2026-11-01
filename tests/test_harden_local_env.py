@@ -37,7 +37,11 @@ def test_harden_env_generates_secrets_without_replacing_valid_values(
     assert len(first_api_key) == 64
     assert len(values["ADMIN_PASSWORD"]) >= 32
     assert values["ALLOW_WEAK_ADMIN_PASSWORD"] == "false"
-    assert protected == [env_file]
+    assert len(protected) == 2
+    assert protected[0].parent == env_file.parent
+    assert protected[0] != env_file
+    assert protected[1] == env_file
+    assert not protected[0].exists()
 
     assert harden_env(env_file) == []
     second_content = env_file.read_text(encoding="utf-8")
@@ -112,7 +116,7 @@ def test_provision_infrastructure_credentials_updates_urls_and_uses_independent_
     )
 
 
-def test_provision_refuses_missing_or_live_default_credentials(
+def test_provision_refuses_missing_or_legacy_default_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(local_env, "protect_env_file", lambda _path: None)
@@ -122,7 +126,7 @@ def test_provision_refuses_missing_or_live_default_credentials(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="live credential rotation"):
+    with pytest.raises(ValueError, match="offline migration"):
         provision_infrastructure_credentials(env_file)
 
 
@@ -153,6 +157,43 @@ def test_provision_refuses_short_or_reused_existing_credentials(
     with pytest.raises(ValueError, match="independent strong"):
         provision_infrastructure_credentials(env_file)
     assert env_file.read_text(encoding="utf-8") == original
+
+
+def test_provision_refuses_low_diversity_existing_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(local_env, "protect_env_file", lambda _path: None)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "POSTGRES_PASSWORD=" + "p" * 32 + "\n"
+        "RABBITMQ_DEFAULT_PASS=mq-abcdef0123456789mq-abcdef0123456789\n"
+        "MINIO_ACCESS_KEY=minio-02468ace1357\n"
+        "MINIO_SECRET_KEY=minio-secret-13579bdf02468ace13579bdf\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="independent strong"):
+        provision_infrastructure_credentials(env_file)
+
+
+def test_protected_write_never_exposes_new_secret_when_acl_hardening_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / ".env"
+    original = "API_KEY=previous-protected-value\n"
+    env_file.write_text(original, encoding="utf-8")
+
+    def reject_acl(_path: Path) -> None:
+        raise RuntimeError("acl unavailable")
+
+    monkeypatch.setattr(local_env, "protect_env_file", reject_acl)
+
+    with pytest.raises(RuntimeError, match="acl unavailable"):
+        local_env._write_protected(env_file, ["API_KEY=new-secret-must-not-appear"])
+
+    assert env_file.read_text(encoding="utf-8") == original
+    assert not any("new-secret-must-not-appear" in item.read_text(encoding="utf-8")
+                   for item in tmp_path.iterdir() if item.is_file())
 
 
 def test_protect_env_file_uses_constant_script_and_never_passes_secret(

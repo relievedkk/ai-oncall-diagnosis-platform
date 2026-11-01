@@ -19,12 +19,12 @@ def test_startup_reports_success_only_after_health_check(tmp_path, health_failur
         'raise RuntimeError("application must not be imported during bootstrap")', encoding="utf-8"
     )
     (tmp_path / ".env").write_text(
-        "DASHSCOPE_API_KEY=test-value\nAPI_KEY=" + "a" * 64 + "\n"
-        "ALERTMANAGER_WEBHOOK_TOKEN=" + "b" * 64 + "\n"
+        "DASHSCOPE_API_KEY=test-value\nAPI_KEY=" + "api-0123456789abcdef" * 4 + "\n"
+        "ALERTMANAGER_WEBHOOK_TOKEN=" + "alert-fedcba9876543210" * 4 + "\n"
         "ADMIN_PASSWORD=test-password-12345\nAUTH_ENABLED=true\n"
-        "POSTGRES_USER=oncall\nPOSTGRES_PASSWORD=" + "c" * 32 + "\n"
-        "RABBITMQ_DEFAULT_USER=oncall\nRABBITMQ_DEFAULT_PASS=" + "d" * 32 + "\n"
-        "MINIO_ACCESS_KEY=oncall-minio-test\nMINIO_SECRET_KEY=" + "e" * 32 + "\n"
+        "POSTGRES_USER=oncall\nPOSTGRES_PASSWORD=" + "pg-13579bdf02468ace" * 2 + "\n"
+        "RABBITMQ_DEFAULT_USER=oncall\nRABBITMQ_DEFAULT_PASS=" + "mq-abcdef0123456789" * 2 + "\n"
+        "MINIO_ACCESS_KEY=oncall-minio-test\nMINIO_SECRET_KEY=" + "minio-secret-13579bdf02468ace" * 2 + "\n"
         "TENCENTCLOUD_SECRET_ID=fake-test-id\nTENCENTCLOUD_SECRET_KEY=fake-test-key\n",
         encoding="utf-8",
     )

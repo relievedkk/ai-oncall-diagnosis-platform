@@ -101,7 +101,7 @@ uv run python app/local_env.py --env-file .env --provision-infrastructure
 
 登录 [http://localhost:9900](http://localhost:9900)，使用 `.env` 中的 `ADMIN_USERNAME` 与首次生成的 `ADMIN_PASSWORD`。凭据生成命令不会输出密钥内容；首次配置时才复制模板，已有 `.env` 不要覆盖。
 
-旧版本地环境若仍使用 PostgreSQL、RabbitMQ 或 MinIO 默认凭据，不要直接改 `.env`；在服务运行时执行 `.\scripts\oncall-windows.ps1 rotate-credentials`。该命令会保留数据卷、同步轮换服务端凭据、重置本地管理员密码并使旧 Web 会话失效；新密码仍只保存在受当前 Windows 用户保护的 `.env` 中。
+旧版本地环境若仍使用 PostgreSQL、RabbitMQ 或 MinIO 默认凭据，不要直接改 `.env`，也不要启动托管服务。先冷备数据卷，再按对应服务的恢复流程离线迁移凭据；当前版本会拒绝弱凭据启动，且不提供无法保证掉电恢复的在线轮换命令。
 
 托管入口会启动数据服务、执行首次迁移、启动 Worker/Publisher、监控栈和原生 API/MCP，并检查就绪状态。运行后可上传 `aiops-docs/` 中的示例文档；为业务服务配置指标与日志映射时，编辑 [服务目录](config/service_catalog.json)。
 
