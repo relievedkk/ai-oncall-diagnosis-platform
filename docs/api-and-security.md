@@ -13,11 +13,11 @@
 | Alertmanager | 独立 `Authorization: Bearer ...` | 仅告警 Webhook，使用 `ALERTMANAGER_WEBHOOK_TOKEN` |
 | 官方 CLS HTTP 网关客户端 | 独立 Bearer Token | 服务目录约束下的日志查询，使用 `MCP_CLS_TOKEN` |
 
-API、Webhook、CLS 凭据须分别配置。`app/local_env.py` 会为本地占位符/过短配置生成独立随机值，不输出密钥内容；`.env` 不进入 Git 或 Worker 镜像。
+API、Webhook、CLS 及 PostgreSQL/RabbitMQ/MinIO 凭据须分别配置。`app/local_env.py --provision-infrastructure` 只为新的占位符配置生成独立随机值，不输出密钥内容；`.env` 不进入 Git 或 Worker 镜像，并在 Windows 上移除继承权限，仅保留当前用户、SYSTEM 与 Administrators。
 
 浏览器密码使用 Argon2id 哈希，会话与 CSRF 令牌仅保存摘要。普通会话默认 8 小时，保持登录默认 7 天；连续登录失败 5 次锁定 15 分钟。密码计算使用有界线程池，避免阻塞异步服务。
 
-`ADMIN_PASSWORD` 仅在数据库中不存在该账号时用于创建管理员，修改 `.env` 不会重置已有密码。HTTPS 部署设置 `SESSION_COOKIE_SECURE=true`。只有 API 绑定回环地址时才允许关闭认证；完整本地监控栈需要保留强认证。
+`ADMIN_PASSWORD` 通常只在数据库中不存在该账号时用于创建管理员，手工修改 `.env` 不会重置已有密码。显式执行 `oncall-windows.ps1 rotate-credentials` 时会同步重置已有本地管理员密码并删除旧 Web 会话。HTTPS 部署设置 `SESSION_COOKIE_SECURE=true`。只有 API 绑定回环地址时才允许关闭认证；完整本地监控栈需要保留强认证。
 
 ## API 索引
 

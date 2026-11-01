@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     expose_api_docs: bool = False
 
     # PostgreSQL：持久化诊断任务、步骤、证据和报告
-    database_url: str = "postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall"
+    database_url: str = "postgresql+asyncpg://invalid:invalid@127.0.0.1:5432/oncall"
     database_auto_create: bool = True
     database_connect_retries: int = 15
     database_connect_retry_seconds: float = 2.0
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     usage_data_origin: str = Field(default="real", pattern="^(real|evaluation)$")
 
     # Celery / RabbitMQ 独立诊断队列
-    celery_broker_url: str = "amqp://oncall:oncall@127.0.0.1:5672//"
+    celery_broker_url: str = "amqp://invalid:invalid@127.0.0.1:5672//"
     celery_default_queue: str = "diagnosis.default"
     celery_critical_queue: str = "diagnosis.critical"
     celery_dead_letter_queue: str = "diagnosis.dead-letter"
@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     outbox_poll_interval_seconds: float = 1.0
     rabbitmq_management_url: str = "http://127.0.0.1:15672"
     rabbitmq_default_user: str = "oncall"
-    rabbitmq_default_pass: str = "oncall"
+    rabbitmq_default_pass: str = ""
     queue_observer_interval_seconds: float = 15.0
 
     # Production remediation Harness. This release supports Dry Run only.

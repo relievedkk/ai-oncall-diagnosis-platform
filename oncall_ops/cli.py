@@ -20,6 +20,24 @@ from oncall_ops.runtime import ManagedRuntime
 from oncall_ops.supervisor import ServiceSpec, Supervisor, lock_is_available
 
 
+def validate_infrastructure_credentials(environment: dict) -> None:
+    """Reject missing, default, short, or reused local infrastructure credentials."""
+    requirements = {
+        'POSTGRES_PASSWORD': (32, {'oncall', 'postgres'}),
+        'RABBITMQ_DEFAULT_PASS': (32, {'oncall', 'guest'}),
+        'MINIO_ACCESS_KEY': (16, {'minioadmin'}),
+        'MINIO_SECRET_KEY': (32, {'minioadmin'}),
+    }
+    credentials = []
+    for key, (minimum, defaults) in requirements.items():
+        value = environment.get(key, '')
+        if len(value) < minimum or value.lower() in defaults or value.startswith('replace-with-'):
+            raise ValueError('Configuration requires independent strong infrastructure credentials')
+        credentials.append(value)
+    if len(set(credentials)) != len(credentials):
+        raise ValueError('Configuration requires independent strong infrastructure credentials')
+
+
 def build_environment(root: Path, data_root: Path, config_root: Path) -> dict:
     env_file = Path(config_root) / '.env'
     if not env_file.is_file():
@@ -131,6 +149,7 @@ def _start(args, root, data, configuration, state, environment):
     for key in ('API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'):
         if len(environment.get(key, '')) < 32 or environment[key].startswith('replace-with-'):
             raise ValueError('Configuration needs independent strong API/Webhook/CLS credentials')
+    validate_infrastructure_credentials(environment)
     if environment.get('AUTH_ENABLED', '').lower() != 'true':
         raise ValueError('Managed configuration requires AUTH_ENABLED=true')
     if not Path(args.python).is_file():
@@ -238,6 +257,8 @@ def parser():
     deploy.add_argument('release', type=Path)
     deploy.add_argument('--bootstrap', action='store_true')
     commands.add_parser('rollback')
+    rotate = commands.add_parser('rotate-credentials')
+    rotate.add_argument('--compose-project', default='oncallagent')
     return result
 
 
@@ -265,6 +286,22 @@ def main(argv=None):
             return _supervise(args, root, data, configuration, state, environment)
         if args.command == 'start':
             return _start(args, root, data, configuration, state, environment)
+        if args.command == 'rotate-credentials':
+            from oncall_ops.local_security import (
+                DockerLocalSecurityBackend,
+                rotate_local_credentials,
+            )
+
+            env_file = configuration / '.env'
+            backend = DockerLocalSecurityBackend(
+                root,
+                env_file,
+                docker_executable=args.docker,
+                project_name=args.compose_project,
+            )
+            rotate_local_credentials(env_file, backend)
+            print(json.dumps({'status': 'rotated'}, ensure_ascii=False))
+            return 0
         if args.command == 'probe':
             from oncall_ops.probe import run_once
 

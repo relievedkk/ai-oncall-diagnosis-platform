@@ -93,13 +93,15 @@ uv sync --frozen
 Copy-Item .env.example .env
 notepad .env
 # 填写 DASHSCOPE_API_KEY 后，生成独立的本地认证凭据：
-uv run python app/local_env.py --env-file .env
+uv run python app/local_env.py --env-file .env --provision-infrastructure
 
 .\scripts\oncall-windows.ps1 start
 .\scripts\oncall-windows.ps1 status
 ```
 
 登录 [http://localhost:9900](http://localhost:9900)，使用 `.env` 中的 `ADMIN_USERNAME` 与首次生成的 `ADMIN_PASSWORD`。凭据生成命令不会输出密钥内容；首次配置时才复制模板，已有 `.env` 不要覆盖。
+
+旧版本地环境若仍使用 PostgreSQL、RabbitMQ 或 MinIO 默认凭据，不要直接改 `.env`；在服务运行时执行 `.\scripts\oncall-windows.ps1 rotate-credentials`。该命令会保留数据卷、同步轮换服务端凭据、重置本地管理员密码并使旧 Web 会话失效；新密码仍只保存在受当前 Windows 用户保护的 `.env` 中。
 
 托管入口会启动数据服务、执行首次迁移、启动 Worker/Publisher、监控栈和原生 API/MCP，并检查就绪状态。运行后可上传 `aiops-docs/` 中的示例文档；为业务服务配置指标与日志映射时，编辑 [服务目录](config/service_catalog.json)。
 
@@ -172,7 +174,7 @@ tests/                # Python 与 Node 回归
 - **运行环境**：接入异机故障通知、异地加密备份与高可用组件；在脱敏业务数据副本上验证恢复与 schema 兼容。
 - **容量与质量**：按实际工作负载压测、制定 SLO，积累人工标注的真实故障样本。当前没有宣称生产使用规模、MTTR 改善或根因准确率。
 
-本地 Compose 使用开发凭据，API 为便于容器抓取指标监听宿主机接口；外部部署需配置网络隔离、TLS、密钥轮换与访问控制，具体检查项见运行手册。
+本地 Compose 使用首次配置时生成的独立随机凭据，端口仅发布到回环地址；API 为便于容器抓取指标监听宿主机接口。外部部署仍需配置网络隔离、TLS、组织级密钥托管与轮换、访问控制，具体检查项见运行手册。
 
 ## 许可证
 

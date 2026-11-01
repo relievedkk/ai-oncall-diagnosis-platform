@@ -9,6 +9,20 @@ from oncall_ops.cli import build_environment, main, refresh_release_services
 from oncall_ops.supervisor import ServiceSpec
 
 
+def secure_environment(**overrides):
+    return {
+        'AUTH_ENABLED': 'true',
+        'API_KEY': 'a' * 64,
+        'ALERTMANAGER_WEBHOOK_TOKEN': 'b' * 64,
+        'MCP_CLS_TOKEN': 'c' * 64,
+        'POSTGRES_PASSWORD': 'p' * 32,
+        'RABBITMQ_DEFAULT_PASS': 'r' * 32,
+        'MINIO_ACCESS_KEY': 'oncall-test-access',
+        'MINIO_SECRET_KEY': 'm' * 40,
+        **overrides,
+    }
+
+
 def test_managed_restart_keeps_active_release_worker_image_and_never_rebuilds(tmp_path, monkeypatch):
     from oncall_ops import cli, docker
     from oncall_ops.releases import package_release
@@ -34,8 +48,7 @@ def test_managed_restart_keeps_active_release_worker_image_and_never_rebuilds(tm
 
     monkeypatch.setattr(docker, 'DockerRunner', FakeDocker)
     monkeypatch.setattr(cli, '_supervise', lambda *args: 0)
-    environment = {'AUTH_ENABLED': 'true', **dict.fromkeys((
-        'API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'), 'a' * 64)}
+    environment = secure_environment()
     args = SimpleNamespace(python=str(python), docker='docker', foreground=True)
     assert cli._start(args, tmp_path, tmp_path, tmp_path, state, environment) == 0
     assert environments[0]['ONCALL_WORKER_IMAGE'] == record['worker_image']
@@ -136,8 +149,7 @@ def test_start_never_reports_ready_for_failed_mcp_or_foreign_supervisor(tmp_path
         return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(cli.subprocess, 'Popen', launch)
-    environment = {'AUTH_ENABLED': 'true', **dict.fromkeys((
-        'API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'), 'a' * 64)}
+    environment = secure_environment()
     args = SimpleNamespace(python=str(python), docker='docker', foreground=False)
     with pytest.raises(RuntimeError, match='readiness timed out'):
         cli._start(args, tmp_path, tmp_path, tmp_path, state, environment)
@@ -187,10 +199,7 @@ def test_start_timeout_targets_a_previously_observed_owned_run(tmp_path, monkeyp
         lambda *_args, **_kwargs: SimpleNamespace(run=lambda *_a, **_k: ''),
     )
     monkeypatch.setattr(cli.subprocess, 'Popen', launch)
-    environment = {
-        'AUTH_ENABLED': 'true',
-        **dict.fromkeys(('API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'), 'a' * 64),
-    }
+    environment = secure_environment()
     args = SimpleNamespace(python=str(python), docker='docker', foreground=False)
 
     with pytest.raises(RuntimeError, match='readiness timed out'):
@@ -247,10 +256,7 @@ def test_background_start_allows_cold_mcp_protocol_initialization(tmp_path, monk
         'Popen',
         launch,
     )
-    environment = {
-        'AUTH_ENABLED': 'true',
-        **dict.fromkeys(('API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'), 'a' * 64),
-    }
+    environment = secure_environment()
     args = SimpleNamespace(python=str(python), docker='docker', foreground=False)
 
     assert cli._start(args, tmp_path, tmp_path, tmp_path, state, environment) == 0
@@ -306,10 +312,7 @@ def test_background_start_rejects_readiness_that_finishes_after_deadline(tmp_pat
         lambda *_args, **_kwargs: SimpleNamespace(run=lambda *_a, **_k: ''),
     )
     monkeypatch.setattr(cli.subprocess, 'Popen', launch)
-    environment = {
-        'AUTH_ENABLED': 'true',
-        **dict.fromkeys(('API_KEY', 'ALERTMANAGER_WEBHOOK_TOKEN', 'MCP_CLS_TOKEN'), 'a' * 64),
-    }
+    environment = secure_environment()
     args = SimpleNamespace(python=str(python), docker='docker', foreground=False)
 
     with pytest.raises(RuntimeError, match='readiness timed out'):
@@ -318,3 +321,21 @@ def test_background_start_rejects_readiness_that_finishes_after_deadline(tmp_pat
         'run_id': launched_environment['ONCALL_SUPERVISOR_RUN_ID'],
         'shutdown': True,
     }
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("POSTGRES_PASSWORD", "oncall"),
+        ("RABBITMQ_DEFAULT_PASS", "guest"),
+        ("MINIO_ACCESS_KEY", "minioadmin"),
+        ("MINIO_SECRET_KEY", ""),
+    ],
+)
+def test_managed_start_rejects_unsafe_infrastructure_credentials(key, value):
+    from oncall_ops import cli
+
+    environment = secure_environment(**{key: value})
+
+    with pytest.raises(ValueError, match="infrastructure credentials"):
+        cli.validate_infrastructure_credentials(environment)

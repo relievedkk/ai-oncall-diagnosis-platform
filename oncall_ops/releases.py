@@ -178,7 +178,10 @@ def activate_release(package, state, *, driver, bootstrap=False) -> dict:
         if schema not in manifest['compatible_schemas']:
             raise ReleaseError('Current schema is incompatible with this release')
         if previous:
-            old = validate_release(Path(previous['path']))
+            try:
+                old = validate_release(Path(previous['path']))
+            except ReleaseError as exc:
+                raise ReleaseError('Rollback pointer integrity validation failed') from exc
             if old['version'] != previous['version']:
                 raise ReleaseError('Rollback pointer does not match package version')
             if schema not in old['compatible_schemas']:

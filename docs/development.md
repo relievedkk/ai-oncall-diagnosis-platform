@@ -70,8 +70,8 @@ docker compose -p oncallagent-monitoring -f monitoring.yml up -d --build
 | API 文档 | `http://localhost:9900/docs` | 默认关闭，本地调试可设置 `EXPOSE_API_DOCS=true` |
 | 健康与指标 | `/live`、`/ready`、`/health`、`/metrics` | 仅 `/live` 公开；其余需要认证 |
 | Prometheus / Alertmanager | `localhost:9090` / `localhost:9093` | 查询指标、采集状态与告警 |
-| RabbitMQ | `localhost:5672`、管理页 `http://localhost:15672` | 本地开发凭据默认为 `oncall/oncall` |
-| PostgreSQL | `localhost:5432` | 本地开发库、账号及密码默认为 `oncall` |
+| RabbitMQ | `localhost:5672`、管理页 `http://localhost:15672` | 用户名与随机密码来自受保护的 `.env` |
+| PostgreSQL | `localhost:5432` | 数据库、用户名与随机密码来自受保护的 `.env` |
 | Milvus / Attu | `localhost:19530` / `http://localhost:8001` | 向量服务与管理界面 |
 | CLS / Monitor MCP | `localhost:8003/mcp` / `localhost:8004/mcp` | 本地示例 CLS；官方 CLS 网关使用 3000 端口 |
 
@@ -91,11 +91,16 @@ node --test tests/*.test.cjs
 
 ### PostgreSQL 集成测试
 
-使用专用测试终端和独立测试数据库。以下示例使用本地 Compose PostgreSQL 默认开发账号；如修改过凭据，请同步调整连接地址。首次创建测试库后先执行迁移，再启动套件：
+使用专用测试终端和独立测试数据库。以下示例从本机 `.env` 读取已生成的 PostgreSQL 配置，不在命令或文档中复制密码。首次创建测试库后先执行迁移，再启动套件：
 
 ```powershell
-docker exec oncall-postgres createdb -U oncall oncall_test
-$env:DATABASE_URL = 'postgresql+asyncpg://oncall:oncall@127.0.0.1:5432/oncall_test'
+$localConfig = @{}
+Get-Content .env | Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_]*=' } | ForEach-Object {
+    $name, $value = $_ -split '=', 2
+    $localConfig[$name] = $value
+}
+docker exec oncall-postgres createdb -U $localConfig.POSTGRES_USER oncall_test
+$env:DATABASE_URL = $localConfig.DATABASE_URL -replace '/[^/]+$', '/oncall_test'
 $env:TEST_DATABASE_URL = $env:DATABASE_URL
 uv run alembic upgrade head
 uv run pytest -q

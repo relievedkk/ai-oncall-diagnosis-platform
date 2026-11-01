@@ -13,9 +13,9 @@ x-remediation-policy: &remediation-policy
 
 x-diagnosis-environment: &diagnosis-environment
   <<: *remediation-policy
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-oncall}
   DATABASE_AUTO_CREATE: "false"
-  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
+  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}@rabbitmq:5672//
   CELERY_DEFAULT_QUEUE: ${CELERY_DEFAULT_QUEUE:-diagnosis.default}
   CELERY_CRITICAL_QUEUE: ${CELERY_CRITICAL_QUEUE:-diagnosis.critical}
   CELERY_DEAD_LETTER_QUEUE: ${CELERY_DEAD_LETTER_QUEUE:-diagnosis.dead-letter}
@@ -62,9 +62,9 @@ x-diagnosis-environment: &diagnosis-environment
 x-remediation-environment: &remediation-environment
   <<: *remediation-policy
   ONCALL_CONFIG_ROOT: /app-config
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:-oncall}@postgres:5432/${POSTGRES_DB:-oncall}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-oncall}
   DATABASE_AUTO_CREATE: "false"
-  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:-oncall}@rabbitmq:5672//
+  CELERY_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-oncall}:${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}@rabbitmq:5672//
   CELERY_REMEDIATION_QUEUE: ${CELERY_REMEDIATION_QUEUE:-remediation.control}
   SERVICE_CATALOG_PATH: /app/config/service_catalog.json
   PYTHONUTF8: "1"
@@ -77,7 +77,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-oncall}
       POSTGRES_USER: ${POSTGRES_USER:-oncall}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oncall}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -97,7 +97,7 @@ services:
       dockerfile: Dockerfile.rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-oncall}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-oncall}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
@@ -240,8 +240,8 @@ services:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     restart: unless-stopped
     environment:
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
     ports:
       - "127.0.0.1:9001:9001"
       - "127.0.0.1:9000:9000"
@@ -264,6 +264,8 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
     volumes:
       - milvus_data:/var/lib/milvus
     healthcheck:

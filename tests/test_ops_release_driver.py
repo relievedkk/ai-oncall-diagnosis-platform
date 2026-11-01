@@ -64,6 +64,11 @@ def setup(tmp_path, monkeypatch, **kwargs):
         path.mkdir()
     (config / '.env').write_text('API_KEY=private-test-key\nPOSTGRES_PASSWORD=secret')
     monkeypatch.setenv('API_KEY', 'private-test-key')
+    for name in (
+        'POSTGRES_USER', 'POSTGRES_PASSWORD', 'RABBITMQ_DEFAULT_USER',
+        'RABBITMQ_DEFAULT_PASS', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY',
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv('TENCENTCLOUD_SECRET_ID', raising=False)
     monkeypatch.delenv('TENCENTCLOUD_SECRET_KEY', raising=False)
     runner, runtime = Runner(), Runtime()

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0)]
-    [ValidateSet('start','stop','status','probe','backup','restore','drill','package','deploy','rollback')]
+    [ValidateSet('start','stop','status','probe','backup','restore','drill','package','deploy','rollback','rotate-credentials')]
     [string]$Command = 'status',
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$DataRoot,

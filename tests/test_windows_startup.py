@@ -22,6 +22,9 @@ def test_startup_reports_success_only_after_health_check(tmp_path, health_failur
         "DASHSCOPE_API_KEY=test-value\nAPI_KEY=" + "a" * 64 + "\n"
         "ALERTMANAGER_WEBHOOK_TOKEN=" + "b" * 64 + "\n"
         "ADMIN_PASSWORD=test-password-12345\nAUTH_ENABLED=true\n"
+        "POSTGRES_USER=oncall\nPOSTGRES_PASSWORD=" + "c" * 32 + "\n"
+        "RABBITMQ_DEFAULT_USER=oncall\nRABBITMQ_DEFAULT_PASS=" + "d" * 32 + "\n"
+        "MINIO_ACCESS_KEY=oncall-minio-test\nMINIO_SECRET_KEY=" + "e" * 32 + "\n"
         "TENCENTCLOUD_SECRET_ID=fake-test-id\nTENCENTCLOUD_SECRET_KEY=fake-test-key\n",
         encoding="utf-8",
     )

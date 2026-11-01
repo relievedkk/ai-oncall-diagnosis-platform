@@ -4,14 +4,46 @@ import json
 import os
 import subprocess
 
+SAFE_INFRASTRUCTURE = {
+    "POSTGRES_PASSWORD": "p" * 32,
+    "RABBITMQ_DEFAULT_PASS": "r" * 32,
+    "MINIO_ACCESS_KEY": "oncall-test-access",
+    "MINIO_SECRET_KEY": "m" * 40,
+}
+
 
 def render_services(**overrides):
-    environment = {**os.environ, **overrides}
+    environment = {**os.environ, **SAFE_INFRASTRUCTURE, **overrides}
     result = subprocess.run(
         ["docker", "compose", "-f", "vector-database.yml", "config", "--format", "json"],
         env=environment, capture_output=True, text=True, check=True,
     )
     return json.loads(result.stdout)["services"]
+
+
+def test_compose_refuses_missing_infrastructure_credentials():
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in SAFE_INFRASTRUCTURE
+    }
+    result = subprocess.run(
+        ["docker", "compose", "-f", "vector-database.yml", "config"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "required" in result.stderr.lower()
+
+
+def test_milvus_receives_the_configured_minio_credentials():
+    services = render_services()
+
+    assert services["standalone"]["environment"]["MINIO_ACCESS_KEY_ID"] == SAFE_INFRASTRUCTURE["MINIO_ACCESS_KEY"]
+    assert services["standalone"]["environment"]["MINIO_SECRET_ACCESS_KEY"] == SAFE_INFRASTRUCTURE["MINIO_SECRET_KEY"]
 
 
 def test_diagnosis_policy_and_custom_queue_names_reach_consumers():

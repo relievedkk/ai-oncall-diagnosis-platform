@@ -40,9 +40,9 @@ if not exist .env (
 
 REM Run the stdlib-only bootstrap without importing app/__init__.py.
 if exist .venv\Scripts\python.exe (
-    .venv\Scripts\python.exe app\local_env.py --env-file .env
+    .venv\Scripts\python.exe app\local_env.py --env-file .env --provision-infrastructure
 ) else (
-    python app\local_env.py --env-file .env
+    python app\local_env.py --env-file .env --provision-infrastructure
 )
 if errorlevel 1 (
     echo [ERROR] Failed to generate secure local API credentials.
@@ -317,7 +317,7 @@ echo  CLS upload and per-service readiness require separate verification.
 echo ====================================
 echo Web UI:   http://localhost:9900
 echo API docs: disabled by default ^(set EXPOSE_API_DOCS=true only for local debugging^)
-echo RabbitMQ: http://localhost:15672 ^(oncall/oncall for local development^)
+echo RabbitMQ: http://localhost:15672 ^(credentials are stored in protected .env^)
 echo.
 echo View logs:
 echo   - FastAPI: logs\app_*.log (Loguru, auto-rotated)
