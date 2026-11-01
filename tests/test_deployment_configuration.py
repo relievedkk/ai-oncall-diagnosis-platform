@@ -21,14 +21,19 @@ def render_services(**overrides):
     return json.loads(result.stdout)["services"]
 
 
-def test_compose_refuses_missing_infrastructure_credentials():
+def test_compose_refuses_missing_infrastructure_credentials(tmp_path):
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
     environment = {
         key: value
         for key, value in os.environ.items()
         if key not in SAFE_INFRASTRUCTURE
     }
     result = subprocess.run(
-        ["docker", "compose", "-f", "vector-database.yml", "config"],
+        [
+            "docker", "compose", "--env-file", str(empty_env),
+            "-f", "vector-database.yml", "config",
+        ],
         env=environment,
         capture_output=True,
         text=True,
