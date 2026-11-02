@@ -148,6 +148,7 @@ async def _apply_policy(
     followup: SerializedEvidenceBundle | None,
 ) -> DiagnosisResult:
     if isinstance(policy, DiagnosisEvidencePolicy):
+        policy = DiagnosisEvidencePolicy.from_bundles(initial, followup)
         payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
         evidence = []
         case_id = str(payloads[0].get("case_id", "bundle-diagnosis"))

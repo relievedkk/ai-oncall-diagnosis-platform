@@ -534,6 +534,103 @@ def test_case_054_cpu_is_direct_and_delay_is_symptom():
     assert auth["mechanism_profiles"]["delay"]["state"] == "possible_symptom"
 
 
+@pytest.mark.asyncio
+async def test_runner_builds_initial_bundle_once_and_shares_exact_bytes(recorded_case, monkeypatch):
+    from app.agent.aiops.two_stage import CoordinatorResult
+    from app.core.diagnosis_result import DiagnosisResult
+    from app.evaluation import rcaeval_evidence
+    from app.evaluation.rcaeval import run_protocol_v3_case
+
+    original = rcaeval_evidence.build_initial_evidence
+    builds = []
+    seen = []
+
+    def counted(view, *, max_bytes):
+        builds.append(view.case_id)
+        return original(view, max_bytes=max_bytes)
+
+    async def single(task, initial, **kwargs):
+        seen.append(("single_stage", initial.text, initial.sha256))
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="single_stage_complete",
+        )
+
+    async def agent(task, initial, **kwargs):
+        seen.append(("agent", initial.text, initial.sha256))
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="direct_diagnosis",
+        )
+
+    monkeypatch.setattr(rcaeval_evidence, "build_initial_evidence", counted)
+    result = await run_protocol_v3_case(
+        recorded_case,
+        {"task": "diagnose"},
+        model_factory_for=lambda _strategy: lambda **_kwargs: None,
+        truth_loader=lambda _case_id: {"root_cause_service": "orders", "fault": "cpu"},
+        single_runner=single,
+        agent_runner=agent,
+    )
+
+    assert builds == ["case-001"]
+    assert seen[0][1:] == seen[1][1:]
+    assert result["parity"] is True
+    assert all(item["protocol_version"] == 3 for item in result["runs"])
+
+
+@pytest.mark.asyncio
+async def test_truth_is_loaded_only_after_both_predictions(recorded_case):
+    from app.agent.aiops.two_stage import CoordinatorResult
+    from app.core.diagnosis_result import DiagnosisResult
+    from app.evaluation.rcaeval import run_protocol_v3_case
+
+    events = []
+
+    async def single(task, initial, **kwargs):
+        events.append("single_stage")
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="single_stage_complete",
+        )
+
+    async def agent(task, initial, **kwargs):
+        events.append("agent")
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="direct_diagnosis",
+        )
+
+    def truth(_case_id):
+        events.append("truth")
+        return {"root_cause_service": "orders", "fault": "cpu"}
+
+    await run_protocol_v3_case(
+        recorded_case,
+        {"task": "diagnose"},
+        model_factory_for=lambda _strategy: lambda **_kwargs: None,
+        truth_loader=truth,
+        single_runner=single,
+        agent_runner=agent,
+    )
+    assert events == ["single_stage", "agent", "truth"]
+
+
+def test_legacy_baseline_alias_is_explicit_not_silent():
+    from app.evaluation.rcaeval import canonical_strategy
+
+    assert canonical_strategy("baseline") == ("single_stage", "baseline")
+    assert canonical_strategy("single_stage") == ("single_stage", None)
+
+
 def test_candidate_context_keeps_relative_rank_and_inbound_callers(recorded_case):
     import pandas as pd
 

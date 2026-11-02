@@ -620,6 +620,108 @@ def validate(pilot):
     }
 
 
+def canonical_strategy(value: str) -> tuple[str, str | None]:
+    if value == "baseline":
+        return "single_stage", "baseline"
+    if value in {"single_stage", "agent"}:
+        return value, None
+    raise ValueError("strategy must be single_stage, agent, or explicit legacy alias baseline")
+
+
+async def run_protocol_v3_case(
+    view,
+    task: dict,
+    *,
+    model_factory_for,
+    truth_loader,
+    max_bytes: int = 65_536,
+    single_runner=None,
+    agent_runner=None,
+):
+    """Run both strategies from one frozen bundle before loading ground truth."""
+    import inspect
+
+    from app.agent.aiops.two_stage import run_single_stage, run_two_stage
+    from app.core.diagnostic_evidence import DiagnosisEvidencePolicy, SerializedEvidenceBundle
+    from app.evaluation.rcaeval_evidence import build_followup_evidence, build_initial_evidence
+    from app.evaluation.rcaeval_scoring import assess_run
+
+    single_runner = single_runner or run_single_stage
+    agent_runner = agent_runner or run_two_stage
+    initial = build_initial_evidence(view, max_bytes=max_bytes)
+
+    def frozen_copy():
+        return SerializedEvidenceBundle(
+            text=initial.text,
+            sha256=initial.sha256,
+            byte_length=initial.byte_length,
+        )
+
+    async def followup_loader(request):
+        return build_followup_evidence(view, request, max_bytes=max_bytes)
+
+    policy = DiagnosisEvidencePolicy.from_bundles(initial)
+    single = await single_runner(
+        task,
+        frozen_copy(),
+        model_factory=model_factory_for("single_stage"),
+        policy=policy,
+    )
+    agent = await agent_runner(
+        task,
+        frozen_copy(),
+        model_factory=model_factory_for("agent"),
+        followup_loader=followup_loader,
+        policy=policy,
+    )
+    truth = truth_loader(view.case_id)
+    if inspect.isawaitable(truth):
+        truth = await truth
+    initial_payload = initial.payload
+    initial_candidates = [item["service"] for item in initial_payload["candidates"]]
+    records = []
+    for strategy, outcome in (("single_stage", single), ("agent", agent)):
+        expanded = sorted(
+            set(initial_candidates)
+            | (set(outcome.request.services) if outcome.request is not None else set())
+        )
+        item = {
+            "protocol_version": 3,
+            "scoring_version": 3,
+            "case_id": view.case_id,
+            "strategy": strategy,
+            "prediction": {
+                "service": outcome.result.root_cause_service,
+                "fault": outcome.result.fault_type,
+            },
+            "diagnosis_result": outcome.result.model_dump(),
+            "errors": list(outcome.errors),
+            "termination_reason": outcome.termination_reason,
+            "initial_hash": outcome.initial_hash,
+            "initial_bytes": initial.byte_length,
+            "initial_parity": outcome.initial_hash == initial.sha256,
+            "followup_hash": outcome.followup_hash,
+            "followup_requested": outcome.request is not None,
+            "initial_candidates": initial_candidates,
+            "expanded_candidates": expanded,
+            "usage": {"model_calls": outcome.call_count},
+            "ground_truth": {
+                "root_cause_service": truth["root_cause_service"],
+                "fault": truth["fault"],
+            },
+        }
+        item["scoring_v3"] = assess_run(item)
+        records.append(item)
+    return {
+        "protocol_version": 3,
+        "case_id": view.case_id,
+        "initial_hash": initial.sha256,
+        "initial_bytes": initial.byte_length,
+        "parity": len({item["initial_hash"] for item in records}) == 1,
+        "runs": records,
+    }
+
+
 async def run(view, *, max_calls, timeout, strategy="agent"):
     from langgraph.checkpoint.memory import MemorySaver
     from pydantic import BaseModel, Field
@@ -816,18 +918,34 @@ def main(argv=None):
         runs = []
         for case_id in pilot.ids:
             view = pilot.open(case_id)
-            for strategy in ("agent", "baseline"):
-                print(f"Running {case_id} / {strategy}", flush=True)
-                item = await run(
-                    view, max_calls=args.max_calls, timeout=args.timeout_seconds, strategy=strategy
-                )
-                # Ground truth is accessed only after the prediction has been frozen.
-                truth = pilot.truth(case_id)
-                item["scoring"] = score(item["prediction"], truth)
-                item["ground_truth"] = {k: truth[k] for k in ("root_cause_service", "fault")}
-                from app.evaluation.rcaeval_scoring import assess_run
+            print(f"Running {case_id} / protocol-v3 pair", flush=True)
+            from app.core.llm_factory import llm_factory
+            from app.evaluation.comparison import _Meter, _MeteredModel
 
-                item["scoring_v2"] = assess_run(item)
+            meters = {
+                strategy: _Meter(args.max_calls, []) for strategy in ("single_stage", "agent")
+            }
+
+            def factory_for(strategy, _meters=meters):
+                meter = _meters[strategy]
+
+                def factory(**kwargs):
+                    return _MeteredModel(llm_factory.create_chat_model(**kwargs), meter)
+
+                return factory
+
+            pair = await asyncio.wait_for(
+                run_protocol_v3_case(
+                    view,
+                    view.public_task(),
+                    model_factory_for=factory_for,
+                    truth_loader=pilot.truth,
+                ),
+                timeout=args.timeout_seconds * 2,
+            )
+            for item in pair["runs"]:
+                strategy = item["strategy"]
+                item["usage"] = meters[strategy].result("live")
                 runs.append(item)
                 (args.output_dir / f"{case_id}-{strategy}.json").write_text(
                     json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -836,7 +954,13 @@ def main(argv=None):
                     json.dumps(
                         {
                             k: item[k]
-                            for k in ("case_id", "strategy", "prediction", "scoring", "errors")
+                            for k in (
+                                "case_id",
+                                "strategy",
+                                "prediction",
+                                "scoring_v3",
+                                "errors",
+                            )
                         },
                         ensure_ascii=False,
                     ),
@@ -855,7 +979,8 @@ def main(argv=None):
         }
         from app.evaluation.rcaeval_scoring import summarize
 
-        summary["scoring_version"] = 2
+        summary["protocol_version"] = 3
+        summary["scoring_version"] = 3
         summary["metrics"] = summarize(runs)
         (args.output_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
