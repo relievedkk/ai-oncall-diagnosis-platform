@@ -8,6 +8,7 @@ from app.core.diagnostic_evidence import (
     CandidateEvidence,
     CandidateHint,
     EvidenceFact,
+    EvidenceRequest,
     InitialEvidenceBundle,
     MechanismProfile,
     serialize_evidence_bundle,
@@ -146,3 +147,20 @@ def test_unicode_and_json_escaping_stay_within_actual_sanitizer_boundary():
     assert encoded.byte_length <= 16_384 - 512
     assert "tool_result_truncated" not in str(safe.content)
     assert json.loads(safe.content)["limitations"]
+
+
+def test_hint_followup_request_contract_is_strictly_bounded():
+    with pytest.raises(ValueError):
+        EvidenceRequest(
+            services=("orders", "orders"),
+            mechanisms=("cpu",),
+            view="metric_trends",
+            justification_refs=("ev-orders-cpu",),
+        )
+    with pytest.raises(ValueError):
+        EvidenceRequest(
+            services=("orders", "payments", "catalog"),
+            mechanisms=("cpu",),
+            view="metric_trends",
+            justification_refs=("ev-orders-cpu",),
+        )

@@ -5,8 +5,21 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Iterable, Mapping, Set
+from dataclasses import dataclass
 
-from app.core.diagnostic_evidence import FaultMechanism, MechanismProfile
+from app.core.data_safety import redact_sensitive
+from app.core.diagnostic_evidence import (
+    CandidateEvidence,
+    CandidateHint,
+    EvidenceFact,
+    EvidenceRequest,
+    FaultMechanism,
+    FollowupEvidenceBundle,
+    InitialEvidenceBundle,
+    MechanismProfile,
+    SerializedEvidenceBundle,
+    serialize_evidence_bundle,
+)
 
 _PREFIXES: dict[FaultMechanism, tuple[str, ...]] = {
     "cpu": ("cpu",),
@@ -126,7 +139,7 @@ def _profile_from_metrics(view, service_name: str, mechanism: FaultMechanism) ->
         column
         for column in view.m.columns
         if column.startswith(service_name + "_")
-        and _matches_mechanism(column.split("_", 1)[1], prefixes)
+        and _matches_mechanism(column[len(service_name) + 1 :], prefixes)
     ]
     signals = []
     for column in columns:
@@ -269,10 +282,428 @@ def classify_competing_mechanisms(
     return result
 
 
-def build_mechanism_profiles(view, service_name: str) -> dict[str, MechanismProfile]:
-    """Build six label-free profiles from structured recorded telemetry only."""
+def _raw_mechanism_profiles(view, service_name: str) -> dict[str, MechanismProfile]:
     view._window(service_name, None, None, 20)
-    profiles = {
+    return {
         mechanism: _profile_from_metrics(view, service_name, mechanism) for mechanism in _PREFIXES
     }
-    return classify_competing_mechanisms(profiles, common_mode=set())
+
+
+def build_mechanism_profiles(view, service_name: str) -> dict[str, MechanismProfile]:
+    """Build six label-free profiles from structured recorded telemetry only."""
+    return classify_competing_mechanisms(
+        _raw_mechanism_profiles(view, service_name), common_mode=set()
+    )
+
+
+@dataclass(frozen=True)
+class CandidateSelection:
+    candidates: tuple[str, ...]
+    hints: tuple[CandidateHint, ...]
+    reasons: dict[str, tuple[str, ...]]
+
+
+def _signal_score(profile: MechanismProfile) -> float:
+    if profile.ratio is not None and profile.ratio > 0:
+        return abs(math.log(profile.ratio))
+    values = [
+        abs(value)
+        for value in (profile.post_start_mean, profile.post_end_mean)
+        if value is not None and math.isfinite(value)
+    ]
+    return max(values, default=0.0)
+
+
+def _common_mode_mechanisms(
+    profiles_by_service: Mapping[str, Mapping[str, MechanismProfile]],
+    *,
+    bucket_seconds: int = 60,
+) -> set[str]:
+    common = set()
+    for mechanism in _RESOURCE_MECHANISMS:
+        observed = [
+            profiles[mechanism]
+            for profiles in profiles_by_service.values()
+            if profiles[mechanism].state == "direct_signal"
+        ]
+        onset = [
+            profile.first_anomalous_time
+            for profile in observed
+            if profile.first_anomalous_time is not None
+        ]
+        if (
+            len(observed) >= 3
+            and len(onset) == len(observed)
+            and max(onset) - min(onset) <= bucket_seconds
+        ):
+            common.add(mechanism)
+    return common
+
+
+def _topology_context(view) -> tuple[dict, dict[str, set[str]], dict[str, set[str]]]:
+    topology = view.call_edges(limit=50)
+    inbound = {service: set() for service in view.services}
+    outbound = {service: set() for service in view.services}
+    if topology.get("available"):
+        for edge in topology.get("edges", []):
+            caller = edge["caller"]
+            callee = edge["callee"]
+            if caller in outbound and callee in inbound:
+                outbound[caller].add(callee)
+                inbound[callee].add(caller)
+    return topology, inbound, outbound
+
+
+def _catalog_profiles(view) -> tuple[dict[str, dict[str, MechanismProfile]], set[str]]:
+    raw = {service: _raw_mechanism_profiles(view, service) for service in view.services}
+    common = _common_mode_mechanisms(raw)
+    classified = {
+        service: classify_competing_mechanisms(profiles, common_mode=common)
+        for service, profiles in raw.items()
+    }
+    return classified, common
+
+
+def _topology_ref(case_id: str, caller: str, callee: str) -> str:
+    digest = hashlib.sha256(f"{case_id}\0{caller}\0{callee}".encode()).hexdigest()[:20]
+    return f"rca-topology-{digest}"
+
+
+def _hint_for_service(
+    view,
+    service: str,
+    profiles: Mapping[str, MechanismProfile],
+    inbound: Mapping[str, set[str]],
+    outbound: Mapping[str, set[str]],
+    common_mode: set[str],
+) -> CandidateHint | None:
+    visible = []
+    refs = set()
+    for mechanism, profile in profiles.items():
+        if not profile.strong_change:
+            continue
+        suffix = ":common_mode" if mechanism in common_mode else f":{profile.state}"
+        visible.append(mechanism + suffix)
+        refs.update(profile.evidence_refs)
+    neighbors = sorted(inbound[service] | outbound[service])
+    for caller in inbound[service]:
+        refs.add(_topology_ref(view.case_id, caller, service))
+    for callee in outbound[service]:
+        refs.add(_topology_ref(view.case_id, service, callee))
+    if not visible and not neighbors:
+        return None
+    return CandidateHint(
+        service=service,
+        visible_signals=tuple(sorted(visible)),
+        topology_neighbors=tuple(neighbors),
+        evidence_refs=tuple(sorted(refs)),
+    )
+
+
+def select_candidate_services(view, *, max_candidates: int = 5) -> CandidateSelection:
+    """Select a bounded, mechanism-diverse candidate pool without answer labels."""
+    if isinstance(max_candidates, bool) or not isinstance(max_candidates, int):
+        raise ValueError("max_candidates must be an integer")
+    if not 1 <= max_candidates <= 5:
+        raise ValueError("max_candidates must be 1..5")
+    profiles_by_service, common_mode = _catalog_profiles(view)
+    topology, inbound, outbound = _topology_context(view)
+    selected: set[str] = set()
+    reasons: dict[str, set[str]] = {}
+
+    def choose(service: str, reason: str) -> None:
+        if len(selected) >= max_candidates and service not in selected:
+            return
+        selected.add(service)
+        reasons.setdefault(service, set()).add(reason)
+
+    for mechanism in _RESOURCE_MECHANISMS:
+        if mechanism in common_mode:
+            continue
+        eligible = [
+            service
+            for service, profiles in profiles_by_service.items()
+            if profiles[mechanism].state == "direct_signal"
+        ]
+        if eligible:
+            strongest = max(
+                eligible,
+                key=lambda service: (
+                    _signal_score(profiles_by_service[service][mechanism]),
+                    service,
+                ),
+            )
+            choose(strongest, f"direct:{mechanism}")
+
+    delay_only = []
+    for service, profiles in profiles_by_service.items():
+        delay = profiles["delay"]
+        unique_resource = any(
+            profiles[mechanism].state == "direct_signal" and mechanism not in common_mode
+            for mechanism in _RESOURCE_MECHANISMS
+        )
+        if delay.strong_change and not unique_resource:
+            delay_only.append(service)
+    if delay_only and len(selected) < max_candidates:
+        strongest = max(
+            delay_only,
+            key=lambda service: (_signal_score(profiles_by_service[service]["delay"]), service),
+        )
+        choose(strongest, "delay-symptom-candidate")
+
+    for callee in sorted(view.services):
+        if len(selected) >= max_candidates:
+            break
+        has_direct = any(
+            profiles_by_service[callee][mechanism].state == "direct_signal"
+            and mechanism not in common_mode
+            for mechanism in _RESOURCE_MECHANISMS
+        )
+        abnormal_callers = [
+            caller
+            for caller in inbound[callee]
+            if profiles_by_service[caller]["delay"].strong_change
+        ]
+        if has_direct and abnormal_callers:
+            choose(callee, "downstream-direct-evidence")
+
+    ranked_fallbacks = sorted(
+        view.services,
+        key=lambda service: (
+            -max(
+                (
+                    _signal_score(profile)
+                    for profile in profiles_by_service[service].values()
+                    if profile.strong_change
+                ),
+                default=0.0,
+            ),
+            service,
+        ),
+    )
+    for service in ranked_fallbacks:
+        if len(selected) >= max_candidates:
+            break
+        if any(profile.strong_change for profile in profiles_by_service[service].values()):
+            choose(service, "bounded-anomaly-fallback")
+    if not selected and view.services:
+        choose(sorted(view.services)[0], "catalog-fallback-no-strong-signal")
+
+    hints = []
+    for service in sorted(set(view.services) - selected):
+        hint = _hint_for_service(
+            view,
+            service,
+            profiles_by_service[service],
+            inbound,
+            outbound,
+            common_mode,
+        )
+        if hint is not None:
+            hints.append(hint)
+    return CandidateSelection(
+        candidates=tuple(sorted(selected)),
+        hints=tuple(hints),
+        reasons={service: tuple(sorted(values)) for service, values in sorted(reasons.items())},
+    )
+
+
+def _candidate_evidence(
+    view,
+    service: str,
+    *,
+    reasons: tuple[str, ...],
+    profiles: Mapping[str, MechanismProfile],
+    inbound: Mapping[str, set[str]],
+    outbound: Mapping[str, set[str]],
+    include: str = "all",
+    mechanisms: tuple[FaultMechanism, ...] | None = None,
+) -> CandidateEvidence:
+    profiles = {
+        mechanism: profile
+        for mechanism, profile in profiles.items()
+        if mechanisms is None or mechanism in mechanisms
+    }
+    facts = []
+    for mechanism, profile in sorted(profiles.items()):
+        if not profile.strong_change:
+            continue
+        for evidence_ref in profile.evidence_refs:
+            facts.append(
+                EvidenceFact(
+                    evidence_ref=evidence_ref,
+                    evidence_type="structured_telemetry",
+                    service=service,
+                    mechanism=mechanism,
+                    statement=(
+                        f"{profile.strongest_metric} changed after the incident; "
+                        f"state={profile.state}, interpretation={profile.interpretation}."
+                    ),
+                    data={
+                        "metric": profile.strongest_metric,
+                        "ratio": profile.ratio,
+                        "first_anomalous_time": profile.first_anomalous_time,
+                        "post_pattern": profile.post_pattern,
+                    },
+                )
+            )
+    for caller in sorted(inbound[service]):
+        facts.append(
+            EvidenceFact(
+                evidence_ref=_topology_ref(view.case_id, caller, service),
+                evidence_type="topology_edge",
+                service=service,
+                statement=f"Observed call direction: {caller} -> {service} (caller -> callee).",
+                data={"caller": caller, "callee": service},
+            )
+        )
+    for callee in sorted(outbound[service]):
+        facts.append(
+            EvidenceFact(
+                evidence_ref=_topology_ref(view.case_id, service, callee),
+                evidence_type="topology_edge",
+                service=service,
+                statement=f"Observed call direction: {service} -> {callee} (caller -> callee).",
+                data={"caller": service, "callee": callee},
+            )
+        )
+
+    trends = (
+        tuple(view.metric_trends(service, limit=6))
+        if include in {"all", "metric_trends", "mechanism_details"}
+        else ()
+    )
+    trace_data = view.traces(service, limit=6)
+    traces = (
+        tuple(trace_data.get("data_points", [])) if include in {"all", "traces", "topology"} else ()
+    )
+    log_records = view.logs(service, limit=3).get("records", [])
+    logs = (
+        tuple(
+            str(
+                redact_sensitive(
+                    f"{record['timestamp']} {record['container_name']}: {record['message']}"
+                )
+            )
+            for record in log_records
+        )
+        if include in {"all", "logs"}
+        else ()
+    )
+    return CandidateEvidence(
+        service=service,
+        selection_reasons=reasons,
+        inbound_callers=tuple(sorted(inbound[service])),
+        outbound_dependencies=tuple(sorted(outbound[service])),
+        mechanism_profiles=dict(profiles),
+        facts=tuple(facts),
+        trends=trends,
+        traces=traces,
+        logs=logs,
+    )
+
+
+def _bundle_context(view):
+    profiles_by_service, _common_mode = _catalog_profiles(view)
+    topology, inbound, outbound = _topology_context(view)
+    return profiles_by_service, topology, inbound, outbound
+
+
+def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
+    selection = select_candidate_services(view)
+    profiles_by_service, topology, inbound, outbound = _bundle_context(view)
+    limitations = [
+        "Anomaly strength and onset are heuristics, not root-cause labels.",
+        "Resource limits, GC, restarts, deployment history and injection labels are unavailable.",
+        "Observed caller -> callee edges do not prove propagation or root cause.",
+    ]
+    if not topology.get("available"):
+        limitations.append(
+            f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."
+        )
+    bundle = InitialEvidenceBundle(
+        case_id=view.case_id,
+        services=tuple(sorted(view.services)),
+        time_start=int(view.start),
+        time_end=int(view.end),
+        incident_time=int(view.incident),
+        candidates=tuple(
+            _candidate_evidence(
+                view,
+                service,
+                reasons=selection.reasons[service],
+                profiles=profiles_by_service[service],
+                inbound=inbound,
+                outbound=outbound,
+            )
+            for service in selection.candidates
+        ),
+        candidate_hints=selection.hints,
+        limitations=tuple(limitations),
+    )
+    return serialize_evidence_bundle(bundle, max_bytes=max_bytes)
+
+
+def build_followup_evidence(
+    view,
+    request: EvidenceRequest,
+    *,
+    max_bytes: int,
+) -> SerializedEvidenceBundle:
+    selection = select_candidate_services(view)
+    catalog = set(view.services)
+    if not set(request.services).issubset(catalog):
+        raise ValueError("Evidence request contains a service outside the catalog")
+    selected = set(selection.candidates)
+    hints = {hint.service: hint for hint in selection.hints}
+    expanded = set(request.services) - selected
+    if len(expanded) > 1 or not expanded.issubset(hints):
+        raise ValueError("Evidence request may expand to at most one hinted catalog service")
+    profiles_by_service, topology, inbound, outbound = _bundle_context(view)
+    justification = set(request.justification_refs)
+    allowed_refs = set()
+    for service in request.services:
+        if service in hints:
+            allowed_refs.update(hints[service].evidence_refs)
+        for profile in profiles_by_service[service].values():
+            allowed_refs.update(profile.evidence_refs)
+        allowed_refs.update(
+            _topology_ref(view.case_id, caller, service) for caller in inbound[service]
+        )
+        allowed_refs.update(
+            _topology_ref(view.case_id, service, callee) for callee in outbound[service]
+        )
+    if not justification.issubset(allowed_refs) or any(
+        not justification.intersection(hints[service].evidence_refs) for service in expanded
+    ):
+        raise ValueError(
+            "Evidence request justification_refs are not supported by catalog evidence"
+        )
+
+    limitations = [
+        "This is one bounded follow-up view; absence outside the requested view is not exculpatory.",
+        "Observed caller -> callee edges do not prove propagation or root cause.",
+    ]
+    if not topology.get("available"):
+        limitations.append(
+            f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."
+        )
+    bundle = FollowupEvidenceBundle(
+        case_id=view.case_id,
+        request=request,
+        candidates=tuple(
+            _candidate_evidence(
+                view,
+                service,
+                reasons=(selection.reasons.get(service, ("hint-authorized-followup",))),
+                profiles=profiles_by_service[service],
+                inbound=inbound,
+                outbound=outbound,
+                include=request.view,
+                mechanisms=request.mechanisms,
+            )
+            for service in sorted(request.services)
+        ),
+        limitations=tuple(limitations),
+    )
+    return serialize_evidence_bundle(bundle, max_bytes=max_bytes)
