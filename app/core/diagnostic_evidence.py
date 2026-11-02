@@ -282,6 +282,22 @@ def _compact_text_and_optional_data(payload: dict[str, Any]) -> None:
             _append_omission(payload, f"candidate_hints[{index}].topology_neighbors")
 
 
+def _compact_candidate_hints(payload: dict[str, Any]) -> None:
+    hints = payload.get("candidate_hints", [])
+    for index, hint in enumerate(hints):
+        for field, limit in (
+            ("visible_signals", 4),
+            ("topology_neighbors", 4),
+            ("evidence_refs", 4),
+        ):
+            if len(hint.get(field, [])) > limit:
+                hint[field] = hint[field][:limit]
+                _append_omission(payload, f"candidate_hints[{index}].{field}")
+    if len(hints) > 12:
+        payload["candidate_hints"] = hints[:12]
+        _append_omission(payload, "candidate_hints[12:]")
+
+
 def serialize_evidence_bundle(
     bundle: InitialEvidenceBundle | FollowupEvidenceBundle,
     *,
@@ -321,6 +337,15 @@ def serialize_evidence_bundle(
         text = encoded()
     if not fits(text):
         _compact_text_and_optional_data(payload)
+        text = encoded()
+    if not fits(text):
+        _compact_candidate_hints(payload)
+        text = encoded()
+    while not fits(text) and len(payload.get("candidate_hints", [])) > 2:
+        hints = payload["candidate_hints"]
+        keep = max(2, len(hints) // 2)
+        payload["candidate_hints"] = hints[:keep]
+        _append_omission(payload, f"candidate_hints[{keep}:]")
         text = encoded()
     if not fits(text):
         raise EvidenceBudgetError(

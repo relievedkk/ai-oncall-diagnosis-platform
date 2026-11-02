@@ -11,6 +11,7 @@ from app.core.data_safety import redact_sensitive
 from app.core.diagnostic_evidence import (
     CandidateEvidence,
     CandidateHint,
+    EvidenceBudgetError,
     EvidenceFact,
     EvidenceRequest,
     FaultMechanism,
@@ -400,14 +401,20 @@ def _hint_for_service(
     )
 
 
-def select_candidate_services(view, *, max_candidates: int = 5) -> CandidateSelection:
+def select_candidate_services(
+    view,
+    *,
+    max_candidates: int = 5,
+    _catalog=None,
+    _topology=None,
+) -> CandidateSelection:
     """Select a bounded, mechanism-diverse candidate pool without answer labels."""
     if isinstance(max_candidates, bool) or not isinstance(max_candidates, int):
         raise ValueError("max_candidates must be an integer")
     if not 1 <= max_candidates <= 5:
         raise ValueError("max_candidates must be 1..5")
-    profiles_by_service, common_mode = _catalog_profiles(view)
-    topology, inbound, outbound = _topology_context(view)
+    profiles_by_service, common_mode = _catalog or _catalog_profiles(view)
+    topology, inbound, outbound = _topology or _topology_context(view)
     selected: set[str] = set()
     reasons: dict[str, set[str]] = {}
 
@@ -501,6 +508,14 @@ def select_candidate_services(view, *, max_candidates: int = 5) -> CandidateSele
         )
         if hint is not None:
             hints.append(hint)
+    hints.sort(
+        key=lambda hint: (
+            all(signal.endswith(":common_mode") for signal in hint.visible_signals),
+            -len(hint.visible_signals),
+            -len(hint.evidence_refs),
+            hint.service,
+        )
+    )
     return CandidateSelection(
         candidates=tuple(sorted(selected)),
         hints=tuple(hints),
@@ -610,8 +625,10 @@ def _bundle_context(view):
 
 
 def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
-    selection = select_candidate_services(view)
-    profiles_by_service, topology, inbound, outbound = _bundle_context(view)
+    catalog = _catalog_profiles(view)
+    topology_context = _topology_context(view)
+    profiles_by_service, _common_mode = catalog
+    topology, inbound, outbound = topology_context
     limitations = [
         "Anomaly strength and onset are heuristics, not root-cause labels.",
         "Resource limits, GC, restarts, deployment history and injection labels are unavailable.",
@@ -621,27 +638,39 @@ def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
         limitations.append(
             f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."
         )
-    bundle = InitialEvidenceBundle(
-        case_id=view.case_id,
-        services=tuple(sorted(view.services)),
-        time_start=int(view.start),
-        time_end=int(view.end),
-        incident_time=int(view.incident),
-        candidates=tuple(
-            _candidate_evidence(
-                view,
-                service,
-                reasons=selection.reasons[service],
-                profiles=profiles_by_service[service],
-                inbound=inbound,
-                outbound=outbound,
-            )
-            for service in selection.candidates
-        ),
-        candidate_hints=selection.hints,
-        limitations=tuple(limitations),
-    )
-    return serialize_evidence_bundle(bundle, max_bytes=max_bytes)
+    last_error = None
+    for max_candidates in range(5, 0, -1):
+        selection = select_candidate_services(
+            view,
+            max_candidates=max_candidates,
+            _catalog=catalog,
+            _topology=topology_context,
+        )
+        bundle = InitialEvidenceBundle(
+            case_id=view.case_id,
+            services=tuple(sorted(view.services)),
+            time_start=int(view.start),
+            time_end=int(view.end),
+            incident_time=int(view.incident),
+            candidates=tuple(
+                _candidate_evidence(
+                    view,
+                    service,
+                    reasons=selection.reasons[service],
+                    profiles=profiles_by_service[service],
+                    inbound=inbound,
+                    outbound=outbound,
+                )
+                for service in selection.candidates
+            ),
+            candidate_hints=selection.hints,
+            limitations=tuple(limitations),
+        )
+        try:
+            return serialize_evidence_bundle(bundle, max_bytes=max_bytes)
+        except EvidenceBudgetError as exc:
+            last_error = exc
+    raise last_error or EvidenceBudgetError("No candidate evidence fits the configured budget")
 
 
 def build_followup_evidence(

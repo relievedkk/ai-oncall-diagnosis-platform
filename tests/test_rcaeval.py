@@ -376,6 +376,31 @@ def test_candidates_are_serialized_by_stable_service_name(recorded_case):
     assert names == sorted(names)
 
 
+def test_initial_bundle_fits_configured_tool_boundary_deterministically(recorded_case):
+    from langchain_core.messages import ToolMessage
+
+    from app.core.data_safety import sanitize_tool_message
+    from app.evaluation.rcaeval_evidence import build_initial_evidence
+
+    columns = {
+        f"service_{index}_cpu": [1, 1, 1, 10 + index, 10 + index, 10 + index, 10 + index]
+        for index in range(8)
+    }
+    _replace_metrics(recorded_case, **columns)
+    recorded_case.services = [f"service_{index}" for index in range(8)]
+
+    first = build_initial_evidence(recorded_case, max_bytes=16_384)
+    second = build_initial_evidence(recorded_case, max_bytes=16_384)
+    safe = sanitize_tool_message(
+        ToolMessage(content=first.text, tool_call_id="offline-gate", name="initial_evidence")
+    )
+
+    assert first.text == second.text
+    assert first.sha256 == second.sha256
+    assert first.byte_length <= 16_384 - 512
+    assert "tool_result_truncated" not in str(safe.content)
+
+
 def test_topology_exposes_caller_to_callee_without_reverse_inference(recorded_case):
     import pandas as pd
 

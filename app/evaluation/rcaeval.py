@@ -581,8 +581,41 @@ class CaseView:
         ]
 
 
+_DEVELOPMENT_CASE_IDS = frozenset(
+    {
+        "case-001",
+        "case-003",
+        "case-007",
+        "case-012",
+        "case-013",
+        "case-014",
+        "case-015",
+        "case-022",
+        "case-024",
+        "case-025",
+        "case-028",
+        "case-030",
+        "case-032",
+        "case-041",
+        "case-042",
+        "case-044",
+        "case-052",
+        "case-054",
+    }
+)
+
+
 def validate(pilot):
+    from langchain_core.messages import ToolMessage
+
+    from app.config import config
+    from app.core.data_safety import sanitize_tool_message
+    from app.evaluation.rcaeval_evidence import build_initial_evidence
+
     output = []
+    byte_lengths = []
+    development_recall = []
+    mechanism_unavailable = dict.fromkeys(("cpu", "mem", "delay", "disk", "loss", "socket"), 0)
     for case_id in pilot.ids:
         view = pilot.open(case_id)
         truth = pilot.truth(case_id)
@@ -604,17 +637,79 @@ def validate(pilot):
                 else view.traces()["data_status"] == "not_available"
             ),
         }
+        first = build_initial_evidence(view, max_bytes=config.tool_result_max_bytes)
+        second = build_initial_evidence(view, max_bytes=config.tool_result_max_bytes)
+        safe = sanitize_tool_message(
+            ToolMessage(
+                content=first.text,
+                tool_call_id=f"offline-{case_id}",
+                name="initial_evidence",
+            )
+        )
+        safe_text = str(safe.content)
+        payload = first.payload
+        initial_candidates = [item["service"] for item in payload["candidates"]]
+        hinted_candidates = [item["service"] for item in payload["candidate_hints"]]
+        bundle_checks = {
+            "bundle_deterministic": first.text == second.text and first.sha256 == second.sha256,
+            "bundle_sanitizer_safe": "tool_result_truncated" not in safe_text,
+            "bundle_within_limit": first.byte_length <= config.tool_result_max_bytes - 512,
+        }
+        checks.update(bundle_checks)
+        byte_lengths.append(first.byte_length)
+        for candidate in payload["candidates"]:
+            for mechanism, profile in candidate["mechanism_profiles"].items():
+                if profile["state"] == "unavailable":
+                    mechanism_unavailable[mechanism] += 1
+        recall = None
+        if case_id in _DEVELOPMENT_CASE_IDS:
+            truth = pilot.truth(case_id)
+            root = truth["root_cause_service"]
+            recall = {
+                "initial": root in initial_candidates,
+                "initial_or_hinted": root in set(initial_candidates) | set(hinted_candidates),
+            }
+            development_recall.append(recall)
         output.append(
             {
                 "case_id": case_id,
                 "data_availability": {"traces": "present" if trace_expected else "not_available"},
                 "checks": checks,
+                "bundle": {
+                    "sha256": first.sha256,
+                    "bytes": first.byte_length,
+                    "initial_candidates": initial_candidates,
+                    "hinted_candidates": hinted_candidates,
+                },
+                "development_candidate_recall": recall,
                 "passed": all(checks.values()),
             }
         )
+    ordered_bytes = sorted(byte_lengths)
+
+    def percentile(fraction):
+        if not ordered_bytes:
+            return 0
+        return ordered_bytes[round((len(ordered_bytes) - 1) * fraction)]
+
+    unrun = sorted(set(pilot.ids) - _DEVELOPMENT_CASE_IDS)
     return {
         "mode": "validate",
         "model_calls": 0,
+        "coordinator_case_ids": [],
+        "sealed_unrun_case_ids": unrun,
+        "bundle_bytes": {
+            "min": min(ordered_bytes, default=0),
+            "p50": percentile(0.50),
+            "p95": percentile(0.95),
+            "max": max(ordered_bytes, default=0),
+        },
+        "development_candidate_recall": {
+            "cases": len(development_recall),
+            "initial": sum(item["initial"] for item in development_recall),
+            "initial_or_hinted": sum(item["initial_or_hinted"] for item in development_recall),
+        },
+        "candidate_mechanism_unavailable_counts": mechanism_unavailable,
         "cases": output,
         "passed": all(row["passed"] for row in output),
     }
