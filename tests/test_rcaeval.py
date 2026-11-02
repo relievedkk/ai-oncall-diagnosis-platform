@@ -35,6 +35,37 @@ def recorded_case(tmp_path):
     return CaseView(tmp_path, "case-001")
 
 
+def test_offline_validation_never_loads_sealed_truth(recorded_case):
+    from app.evaluation.rcaeval import validate
+
+    class SealedPilot:
+        ids = {"case-001": "case-001"}
+
+        @staticmethod
+        def open(case_id):
+            assert case_id == "case-001"
+            return recorded_case
+
+        @staticmethod
+        def truth(case_id):
+            raise AssertionError(f"sealed truth was opened for {case_id}")
+
+    result = validate(
+        SealedPilot(),
+        development_truth_loader=lambda case_id: {
+            "case_id": case_id,
+            "root_cause_service": "orders",
+        },
+    )
+
+    assert result["passed"] is True
+    assert result["development_candidate_recall"] == {
+        "cases": 1,
+        "initial": 1,
+        "initial_or_hinted": 1,
+    }
+
+
 def test_absolute_trace_time_and_service_filter(recorded_case):
     view = recorded_case
     assert view.traces()["services"][0]["after_p90_us"] == 100
