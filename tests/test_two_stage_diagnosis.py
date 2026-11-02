@@ -6,6 +6,8 @@ from app.core.diagnosis_result import DiagnosisResult
 from app.core.diagnostic_evidence import (
     CandidateEvidence,
     CandidateHint,
+    DiagnosisEvidencePolicy,
+    EvidenceFact,
     EvidenceRequest,
     InitialEvidenceBundle,
     MechanismProfile,
@@ -63,6 +65,16 @@ def _candidate(service="orders"):
         service=service,
         selection_reasons=("direct:cpu",),
         mechanism_profiles={"cpu": profile},
+        facts=(
+            EvidenceFact(
+                evidence_ref=f"ev-{service}-cpu",
+                evidence_type="structured_telemetry",
+                service=service,
+                mechanism="cpu",
+                statement="structured CPU shifted",
+                data={"value": 10},
+            ),
+        ),
     )
 
 
@@ -350,3 +362,41 @@ async def test_provider_or_loader_failure_has_distinct_outcome():
     assert "secret" not in " ".join(provider.errors)
     assert loader.result.outcome == "dependency_failed"
     assert loader.termination_reason == "followup_loader_error"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_applies_bundle_policy():
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    initial = _initial()
+    diagnosis = DiagnosisResult(
+        outcome="diagnosed",
+        summary="orders CPU is directly supported",
+        root_cause_service="orders",
+        fault_type="cpu",
+        cause_evidence_refs=["ev-orders-cpu"],
+        observations=[{"text": "CPU shifted", "evidence_refs": ["ev-orders-cpu"]}],
+        hypotheses=[
+            {
+                "description": "orders CPU saturation",
+                "service": "orders",
+                "fault_type": "cpu",
+                "supporting_refs": ["ev-orders-cpu"],
+                "status": "supported",
+            }
+        ],
+    )
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        initial,
+        model_factory=_factory(
+            FakeModel([DiagnosisTurn(action="diagnose", diagnosis_result=diagnosis)])
+        ),
+        followup_loader=lambda _request: _followup(),
+        policy=DiagnosisEvidencePolicy.from_bundles(initial),
+    )
+
+    assert result.result.validation_issues == []
+    assert result.result.outcome == "diagnosed"
+    assert result.result.root_cause_service == "orders"
+    assert result.result.fault_type == "cpu"

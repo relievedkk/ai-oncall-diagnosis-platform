@@ -6,6 +6,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -118,6 +119,94 @@ class SerializedEvidenceBundle:
     def payload(self) -> dict[str, Any]:
         """Return a detached copy so callers cannot mutate shared evidence."""
         return json.loads(self.text)
+
+
+@dataclass(frozen=True)
+class DiagnosisEvidencePolicy:
+    allowed_services: frozenset[str]
+    valid_refs: frozenset[str]
+    mechanism_refs: Any
+    delay_blockers: frozenset[str]
+    ambiguous_services: frozenset[str]
+    directed_edges: frozenset[tuple[str, str]]
+    topology_refs: Any
+
+    @classmethod
+    def from_bundles(
+        cls,
+        initial: SerializedEvidenceBundle,
+        followup: SerializedEvidenceBundle | None = None,
+    ) -> DiagnosisEvidencePolicy:
+        payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
+        allowed = set()
+        valid_refs = set()
+        mechanism_refs: dict[tuple[str, str], set[str]] = {}
+        delay_blockers = set()
+        ambiguous = set()
+        edges = set()
+        topology_refs: dict[str, tuple[str, str]] = {}
+
+        def collect_refs(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "evidence_ref" and isinstance(child, str):
+                        valid_refs.add(child)
+                    elif key == "evidence_refs" and isinstance(child, list):
+                        valid_refs.update(ref for ref in child if isinstance(ref, str))
+                    else:
+                        collect_refs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_refs(child)
+
+        for payload in payloads:
+            collect_refs(payload)
+            for candidate in payload.get("candidates", []):
+                service = candidate.get("service")
+                if not isinstance(service, str):
+                    continue
+                allowed.add(service)
+                profiles = candidate.get("mechanism_profiles", {})
+                direct_resources = []
+                for mechanism, profile in profiles.items():
+                    if not isinstance(profile, dict):
+                        continue
+                    refs = frozenset(
+                        ref for ref in profile.get("evidence_refs", []) if isinstance(ref, str)
+                    )
+                    if profile.get("state") == "direct_signal" and refs:
+                        mechanism_refs.setdefault((service, mechanism), set()).update(refs)
+                        if mechanism != "delay":
+                            direct_resources.append(mechanism)
+                    if mechanism == "delay" and profile.get("state") == "possible_symptom":
+                        delay_blockers.add(service)
+                if direct_resources and profiles.get("delay", {}).get("strong_change"):
+                    delay_blockers.add(service)
+                if len(direct_resources) > 1 and not any(
+                    profiles[name].get("fault_eligible") for name in direct_resources
+                ):
+                    ambiguous.add(service)
+                for fact in candidate.get("facts", []):
+                    if not isinstance(fact, dict) or fact.get("evidence_type") != "topology_edge":
+                        continue
+                    data = fact.get("data", {})
+                    caller, callee = data.get("caller"), data.get("callee")
+                    ref = fact.get("evidence_ref")
+                    if all(isinstance(value, str) and value for value in (caller, callee, ref)):
+                        edges.add((caller, callee))
+                        topology_refs[ref] = (caller, callee)
+        frozen_refs = MappingProxyType(
+            {key: frozenset(value) for key, value in mechanism_refs.items()}
+        )
+        return cls(
+            allowed_services=frozenset(allowed),
+            valid_refs=frozenset(valid_refs),
+            mechanism_refs=frozen_refs,
+            delay_blockers=frozenset(delay_blockers),
+            ambiguous_services=frozenset(ambiguous),
+            directed_edges=frozenset(edges),
+            topology_refs=MappingProxyType(dict(topology_refs)),
+        )
 
 
 def canonical_json(value: Any) -> str:
