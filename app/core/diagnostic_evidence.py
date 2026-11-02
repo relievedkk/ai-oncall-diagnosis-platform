@@ -40,6 +40,16 @@ class MechanismProfile(_FrozenModel):
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
     first_anomalous_time: int | None = None
     reasons: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    available: bool = False
+    strong_change: bool = False
+    strongest_metric: str = Field(default="", max_length=256)
+    ratio: float | None = None
+    post_start_mean: float | None = None
+    post_end_mean: float | None = None
+    post_pattern: str = Field(default="unavailable", max_length=64)
+    interpretation: str = Field(default="unavailable", max_length=128)
+    fault_eligible: bool = False
+    competing_mechanisms: tuple[FaultMechanism, ...] = Field(default_factory=tuple, max_length=6)
 
 
 class CandidateEvidence(_FrozenModel):
