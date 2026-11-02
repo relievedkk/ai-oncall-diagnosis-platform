@@ -1,3 +1,8 @@
+import asyncio
+import hashlib
+import json
+import time
+
 import pytest
 
 from app.core.diagnosis_result import DiagnosisResult
@@ -10,6 +15,7 @@ from app.core.diagnostic_evidence import (
     FollowupEvidenceBundle,
     InitialEvidenceBundle,
     MechanismProfile,
+    SerializedEvidenceBundle,
     serialize_evidence_bundle,
 )
 
@@ -27,6 +33,32 @@ class FakeModel:
         class Bound:
             async def ainvoke(self, messages):
                 owner.calls.append(messages)
+                output = owner.outputs.pop(0)
+                if isinstance(output, BaseException):
+                    raise output
+                return output
+
+        return Bound()
+
+
+class DelayedModel(FakeModel):
+    def __init__(self, outputs, delay):
+        super().__init__(outputs)
+        self.delay = delay
+        self.cancelled = 0
+
+    def with_structured_output(self, schema, **kwargs):
+        self.schemas.append((schema, kwargs))
+        owner = self
+
+        class Bound:
+            async def ainvoke(self, messages):
+                owner.calls.append(messages)
+                try:
+                    await asyncio.sleep(owner.delay)
+                except asyncio.CancelledError:
+                    owner.cancelled += 1
+                    raise
                 output = owner.outputs.pop(0)
                 if isinstance(output, BaseException):
                     raise output
@@ -112,6 +144,18 @@ def _followup(request=None, *, case_id="case-coordinator", services=None):
             limitations=("bounded follow-up",),
         ),
         max_bytes=16_384,
+    )
+
+
+def _tampered_followup(request, mutate):
+    payload = _followup(request).payload
+    mutate(payload)
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    raw = text.encode("utf-8")
+    return SerializedEvidenceBundle(
+        text=text,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        byte_length=len(raw),
     )
 
 
@@ -393,6 +437,110 @@ async def test_model_timeout_has_structured_timeout_category():
 
 
 @pytest.mark.asyncio
+async def test_strategy_deadline_cancels_a_genuinely_slow_model_call():
+    from app.agent.aiops.two_stage import run_single_stage
+
+    model = DelayedModel([_diagnosis()], delay=0.2)
+    result = await run_single_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(model),
+        policy=IdentityPolicy(),
+        timeout_seconds=0.02,
+    )
+
+    assert result.failure_category == "timeout"
+    assert model.cancelled == 1
+
+
+@pytest.mark.asyncio
+async def test_two_stage_uses_one_cumulative_strategy_deadline():
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    request = EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+    model = DelayedModel(
+        [
+            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _diagnosis("too late"),
+        ],
+        delay=0.05,
+    )
+
+    async def loader(value):
+        return _followup(value)
+
+    started = time.perf_counter()
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(model),
+        followup_loader=loader,
+        policy=IdentityPolicy(),
+        timeout_seconds=0.08,
+    )
+
+    assert result.failure_category == "timeout"
+    assert result.call_count == 2
+    assert time.perf_counter() - started < 0.12
+
+
+@pytest.mark.asyncio
+async def test_sync_followup_loader_cannot_block_strategy_timeout():
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    request = EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+    model = FakeModel(
+        [
+            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _diagnosis("must not be reached"),
+        ]
+    )
+
+    def blocking_loader(value):
+        time.sleep(0.2)
+        return _followup(value)
+
+    started = time.perf_counter()
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(model),
+        followup_loader=blocking_loader,
+        policy=IdentityPolicy(),
+        timeout_seconds=0.03,
+    )
+
+    assert result.failure_category == "timeout"
+    assert result.call_count == 1
+    assert time.perf_counter() - started < 0.15
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds", [float("nan"), float("inf")])
+async def test_non_finite_strategy_timeout_is_rejected(timeout_seconds):
+    from app.agent.aiops.two_stage import run_single_stage
+
+    with pytest.raises(ValueError, match="positive finite"):
+        await run_single_stage(
+            {"task": "diagnose"},
+            _initial(),
+            model_factory=_factory(FakeModel([_diagnosis()])),
+            policy=IdentityPolicy(),
+            timeout_seconds=timeout_seconds,
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalidity", ["case_id", "request", "services"])
 async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidity):
     from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
@@ -423,6 +571,72 @@ async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidi
         _initial(),
         model_factory=_factory(model),
         followup_loader=loader,
+        policy=IdentityPolicy(),
+    )
+
+    assert result.call_count == 1
+    assert result.termination_reason == "followup_loader_error"
+    assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalidity",
+    [
+        "profile_key",
+        "blank_fact_service",
+        "mechanismless_fact",
+        "topology_fact",
+        "topology_metadata",
+        "unbound_profile_ref",
+    ],
+)
+async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidity):
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    request = EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+
+    def mutate(payload):
+        candidate = payload["candidates"][0]
+        fact = candidate["facts"][0]
+        if invalidity == "profile_key":
+            candidate["mechanism_profiles"]["cpu"]["mechanism"] = "mem"
+        elif invalidity == "blank_fact_service":
+            fact["service"] = ""
+        elif invalidity == "mechanismless_fact":
+            fact["mechanism"] = None
+        elif invalidity == "topology_fact":
+            candidate["facts"].append(
+                {
+                    "evidence_ref": "topology-ref",
+                    "evidence_type": "topology_edge",
+                    "service": "payments",
+                    "mechanism": None,
+                    "statement": "payments -> orders",
+                    "data": {"caller": "payments", "callee": "orders"},
+                }
+            )
+        elif invalidity == "topology_metadata":
+            candidate["outbound_dependencies"] = ["orders"]
+        else:
+            candidate["mechanism_profiles"]["cpu"]["evidence_refs"].append("unbound-ref")
+
+    model = FakeModel(
+        [
+            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _diagnosis("must not be reached"),
+        ]
+    )
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(model),
+        followup_loader=lambda _request: _tampered_followup(request, mutate),
         policy=IdentityPolicy(),
     )
 

@@ -22,6 +22,8 @@ Agent 第一轮只能直接诊断或提交结构化 `EvidenceRequest`；合法�
 
 协调器使用闭集失败分类，分别记录 timeout、provider setup/provider、无效模型输出、无效补查请求、补查 loader 和策略门禁失败。每条 v3 记录还保存来自实际初始/已验证补查包的有效 evidence ref 清单，引用有效性不再依赖缺失的旧版 `evidence` 数组。
 
+每种策略使用一个单调时钟总截止时间，模型调用、异步补查和策略门禁共享剩余预算；同步补查 loader 在线程中执行，不能阻塞事件循环导致整对结果无法落盘。补查包在第二次模型调用前会校验 schema、case、原始 request、候选服务、机制 key/profile 一致性、fact 的服务/机制/ref 绑定，以及 logs/metrics/traces/topology 的视图范围。
+
 ## 16 KiB 边界处理
 
 候选数由实际字节预算自适应从 5 向下收缩。超限时先删除日志、Trace 与趋势摘录，再压缩文本及低优先级 hint 邻接/引用；必要时只保留最高优先级 hints。每个语义裁剪都记录在 `omitted_paths`。候选身份、直接机理状态、稳定引用和拓扑方向不以截断预览代替。

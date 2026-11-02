@@ -64,6 +64,12 @@ class CandidateEvidence(_FrozenModel):
     traces: tuple[dict[str, Any], ...] = Field(default_factory=tuple, max_length=128)
     logs: tuple[str, ...] = Field(default_factory=tuple, max_length=128)
 
+    @model_validator(mode="after")
+    def validate_profile_keys(self):
+        if any(key != profile.mechanism for key, profile in self.mechanism_profiles.items()):
+            raise ValueError("Mechanism profile keys must match profile.mechanism")
+        return self
+
 
 class CandidateHint(_FrozenModel):
     service: str = Field(min_length=1, max_length=256)

@@ -755,7 +755,7 @@ async def run_protocol_v3_case(
 
     followup_bundles = {}
 
-    async def followup_loader(request):
+    def followup_loader(request):
         bundle = build_followup_evidence(view, request, max_bytes=max_bytes)
         followup_bundles[bundle.sha256] = bundle
         return bundle

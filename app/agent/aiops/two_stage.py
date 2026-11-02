@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
+import time
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -227,11 +229,14 @@ async def _load_followup(
     request: EvidenceRequest,
     *,
     initial_payload: dict[str, Any],
-    timeout_seconds: float | None,
+    deadline,
 ) -> SerializedEvidenceBundle:
-    value = loader(request)
+    if inspect.iscoroutinefunction(loader):
+        value = await deadline.wait(loader(request))
+    else:
+        value = await deadline.wait(asyncio.to_thread(loader, request))
     if inspect.isawaitable(value):
-        value = await _bounded(value, timeout_seconds)
+        value = await deadline.wait(value)
     if not isinstance(value, SerializedEvidenceBundle):
         raise TypeError("followup loader must return SerializedEvidenceBundle")
     payload = _validate_serialized(value)
@@ -246,15 +251,40 @@ async def _load_followup(
     ):
         raise ValueError("followup candidates do not match the authorized services")
     requested_mechanisms = set(request.mechanisms)
+    topology_allowed = request.view in {"traces", "topology"}
+    catalog = set(initial_payload.get("services", []))
     for candidate in followup.candidates:
         if not set(candidate.mechanism_profiles).issubset(requested_mechanisms):
             raise ValueError("followup contains an unrequested mechanism")
-        if any(
-            fact.service not in {"", candidate.service}
-            or (fact.mechanism is not None and fact.mechanism not in requested_mechanisms)
-            for fact in candidate.facts
-        ):
-            raise ValueError("followup facts exceed the authorized candidate scope")
+        if not topology_allowed and (candidate.inbound_callers or candidate.outbound_dependencies):
+            raise ValueError("followup contains unrequested topology metadata")
+        if not set(candidate.inbound_callers + candidate.outbound_dependencies).issubset(catalog):
+            raise ValueError("followup topology contains a service outside the catalog")
+        structured_refs: dict[str, set[str]] = {
+            mechanism: set() for mechanism in candidate.mechanism_profiles
+        }
+        for fact in candidate.facts:
+            if fact.service != candidate.service:
+                raise ValueError("followup fact is not bound to its candidate service")
+            if fact.evidence_type == "structured_telemetry":
+                if fact.mechanism not in requested_mechanisms:
+                    raise ValueError("followup telemetry fact has an unrequested mechanism")
+                structured_refs.setdefault(fact.mechanism, set()).add(fact.evidence_ref)
+            elif fact.evidence_type == "topology_edge":
+                if not topology_allowed or fact.mechanism is not None:
+                    raise ValueError("followup contains unrequested topology evidence")
+                caller, callee = fact.data.get("caller"), fact.data.get("callee")
+                if (
+                    caller not in catalog
+                    or callee not in catalog
+                    or candidate.service not in {caller, callee}
+                ):
+                    raise ValueError("followup topology fact is outside the authorized catalog")
+            else:
+                raise ValueError("followup contains an unsupported evidence type")
+        for mechanism, profile in candidate.mechanism_profiles.items():
+            if set(profile.evidence_refs) != structured_refs.get(mechanism, set()):
+                raise ValueError("followup profile references are not bound to telemetry facts")
         if candidate.logs and request.view != "logs":
             raise ValueError("followup contains unrequested logs")
         if candidate.trends and request.view not in {"metric_trends", "mechanism_details"}:
@@ -307,14 +337,35 @@ def _validate_timeout(timeout_seconds: float | None) -> None:
         return
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float):
         raise ValueError("timeout_seconds must be a positive number")
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be a positive number")
+    if timeout_seconds <= 0 or not math.isfinite(float(timeout_seconds)):
+        raise ValueError("timeout_seconds must be a positive finite number")
 
 
-async def _bounded(awaitable, timeout_seconds: float | None):
-    if timeout_seconds is None:
-        return await awaitable
-    return await asyncio.wait_for(awaitable, timeout=float(timeout_seconds))
+class _StrategyDeadline:
+    def __init__(self, timeout_seconds: float | None):
+        _validate_timeout(timeout_seconds)
+        self.expires_at = (
+            None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
+        )
+
+    def remaining(self) -> float | None:
+        if self.expires_at is None:
+            return None
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("strategy deadline exhausted")
+        return remaining
+
+    async def wait(self, awaitable):
+        try:
+            remaining = self.remaining()
+        except TimeoutError:
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise
+        if remaining is None:
+            return await awaitable
+        return await asyncio.wait_for(awaitable, timeout=remaining)
 
 
 async def run_single_stage(
@@ -325,7 +376,7 @@ async def run_single_stage(
     policy,
     timeout_seconds: float | None = None,
 ) -> CoordinatorResult:
-    _validate_timeout(timeout_seconds)
+    deadline = _StrategyDeadline(timeout_seconds)
     try:
         _validate_serialized(initial)
     except Exception as exc:
@@ -343,9 +394,8 @@ async def run_single_stage(
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
-        raw = await _bounded(
+        raw = await deadline.wait(
             structured.ainvoke(_messages(task, initial, allow_request=False)),
-            timeout_seconds,
         )
     except TimeoutError as exc:
         return _failure(initial, reason="timeout", call_count=1, error=exc)
@@ -362,7 +412,11 @@ async def run_single_stage(
             outcome="insufficient_evidence",
         )
     try:
-        normalized = await _apply_policy(policy, diagnosis, initial=initial, followup=None)
+        normalized = await deadline.wait(
+            _apply_policy(policy, diagnosis, initial=initial, followup=None)
+        )
+    except TimeoutError as exc:
+        return _failure(initial, reason="timeout", call_count=1, error=exc)
     except Exception as exc:
         return _failure(
             initial,
@@ -388,7 +442,7 @@ async def run_two_stage(
     policy,
     timeout_seconds: float | None = None,
 ) -> CoordinatorResult:
-    _validate_timeout(timeout_seconds)
+    deadline = _StrategyDeadline(timeout_seconds)
     try:
         initial_payload = _validate_serialized(initial)
     except Exception as exc:
@@ -405,9 +459,8 @@ async def run_two_stage(
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
-        raw_turn = await _bounded(
+        raw_turn = await deadline.wait(
             first_model.ainvoke(_messages(task, initial, allow_request=True)),
-            timeout_seconds,
         )
     except TimeoutError as exc:
         return _failure(initial, reason="timeout", call_count=1, error=exc)
@@ -430,9 +483,16 @@ async def run_two_stage(
         )
     if turn.action == "diagnose":
         try:
-            normalized = await _apply_policy(
-                policy, turn.diagnosis_result, initial=initial, followup=None
+            normalized = await deadline.wait(
+                _apply_policy(
+                    policy,
+                    turn.diagnosis_result,
+                    initial=initial,
+                    followup=None,
+                )
             )
+        except TimeoutError as exc:
+            return _failure(initial, reason="timeout", call_count=1, error=exc)
         except Exception as exc:
             return _failure(
                 initial,
@@ -465,7 +525,7 @@ async def run_two_stage(
             followup_loader,
             request,
             initial_payload=initial_payload,
-            timeout_seconds=timeout_seconds,
+            deadline=deadline,
         )
     except TimeoutError as exc:
         return _failure(
@@ -495,7 +555,7 @@ async def run_two_stage(
             followup_hash=followup.sha256,
         )
     try:
-        raw_diagnosis = await _bounded(
+        raw_diagnosis = await deadline.wait(
             final_model.ainvoke(
                 _messages(
                     task,
@@ -504,8 +564,7 @@ async def run_two_stage(
                     request=request,
                     followup=followup,
                 )
-            ),
-            timeout_seconds,
+            )
         )
     except TimeoutError as exc:
         return _failure(
@@ -538,7 +597,18 @@ async def run_two_stage(
             outcome="insufficient_evidence",
         )
     try:
-        normalized = await _apply_policy(policy, diagnosis, initial=initial, followup=followup)
+        normalized = await deadline.wait(
+            _apply_policy(policy, diagnosis, initial=initial, followup=followup)
+        )
+    except TimeoutError as exc:
+        return _failure(
+            initial,
+            reason="timeout",
+            call_count=2,
+            error=exc,
+            request=request,
+            followup_hash=followup.sha256,
+        )
     except Exception as exc:
         return _failure(
             initial,

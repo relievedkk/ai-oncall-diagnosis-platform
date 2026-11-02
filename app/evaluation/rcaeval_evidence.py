@@ -540,6 +540,7 @@ def _candidate_evidence(
         for mechanism, profile in profiles.items()
         if mechanisms is None or mechanism in mechanisms
     }
+    include_topology = include in {"all", "topology", "traces"}
     facts = []
     for mechanism, profile in sorted(profiles.items()):
         if not profile.strong_change:
@@ -563,26 +564,27 @@ def _candidate_evidence(
                     },
                 )
             )
-    for caller in sorted(inbound[service]):
-        facts.append(
-            EvidenceFact(
-                evidence_ref=_topology_ref(view.case_id, caller, service),
-                evidence_type="topology_edge",
-                service=service,
-                statement=f"Observed call direction: {caller} -> {service} (caller -> callee).",
-                data={"caller": caller, "callee": service},
+    if include_topology:
+        for caller in sorted(inbound[service]):
+            facts.append(
+                EvidenceFact(
+                    evidence_ref=_topology_ref(view.case_id, caller, service),
+                    evidence_type="topology_edge",
+                    service=service,
+                    statement=f"Observed call direction: {caller} -> {service} (caller -> callee).",
+                    data={"caller": caller, "callee": service},
+                )
             )
-        )
-    for callee in sorted(outbound[service]):
-        facts.append(
-            EvidenceFact(
-                evidence_ref=_topology_ref(view.case_id, service, callee),
-                evidence_type="topology_edge",
-                service=service,
-                statement=f"Observed call direction: {service} -> {callee} (caller -> callee).",
-                data={"caller": service, "callee": callee},
+        for callee in sorted(outbound[service]):
+            facts.append(
+                EvidenceFact(
+                    evidence_ref=_topology_ref(view.case_id, service, callee),
+                    evidence_type="topology_edge",
+                    service=service,
+                    statement=f"Observed call direction: {service} -> {callee} (caller -> callee).",
+                    data={"caller": service, "callee": callee},
+                )
             )
-        )
 
     trends = (
         tuple(view.metric_trends(service, limit=6))
@@ -609,8 +611,8 @@ def _candidate_evidence(
     return CandidateEvidence(
         service=service,
         selection_reasons=reasons,
-        inbound_callers=tuple(sorted(inbound[service])),
-        outbound_dependencies=tuple(sorted(outbound[service])),
+        inbound_callers=tuple(sorted(inbound[service])) if include_topology else (),
+        outbound_dependencies=tuple(sorted(outbound[service])) if include_topology else (),
         mechanism_profiles=dict(profiles),
         facts=tuple(facts),
         trends=trends,
