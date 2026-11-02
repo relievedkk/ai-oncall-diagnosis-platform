@@ -267,6 +267,66 @@ def test_policy_allows_unknown_for_ambiguous_direct_signals():
     assert result["fault_type"] == "unknown"
 
 
+def test_policy_rejects_typed_fault_from_ineligible_direct_signal():
+    checkout = _policy_candidate("checkout", "cpu", REF)
+    mem = MechanismProfile(
+        mechanism="mem",
+        state="direct_signal",
+        evidence_refs=("mem-ref",),
+        strong_change=True,
+        strongest_metric="checkout_mem",
+        fault_eligible=False,
+    )
+    checkout = checkout.model_copy(
+        update={
+            "mechanism_profiles": {**checkout.mechanism_profiles, "mem": mem},
+            "facts": checkout.facts
+            + (
+                EvidenceFact(
+                    evidence_ref="mem-ref",
+                    evidence_type="structured_telemetry",
+                    service="checkout",
+                    mechanism="mem",
+                    statement="memory shifted but lost temporal competition",
+                ),
+            ),
+        }
+    )
+    initial = serialize_evidence_bundle(
+        InitialEvidenceBundle(
+            case_id="task-a",
+            services=("checkout",),
+            time_start=0,
+            time_end=300,
+            incident_time=120,
+            candidates=(checkout,),
+            limitations=("test bundle",),
+        ),
+        max_bytes=16_384,
+    )
+    policy = DiagnosisEvidencePolicy.from_bundles(initial)
+    raw = typed_claim(fault="mem") | {
+        "fault_type": "mem",
+        "cause_evidence_refs": ["mem-ref"],
+    }
+    raw["hypotheses"][0]["supporting_refs"] = ["mem-ref"]
+
+    result = normalize_result(raw, _policy_evidence(), task_scope="task-a", evidence_policy=policy)
+
+    assert result["fault_type"] == "unknown"
+    assert result["outcome"] == "insufficient_evidence"
+
+
+def test_policy_rejects_unknown_service_without_competing_ambiguity():
+    _, policy = _policy()
+    raw = typed_claim(fault="unknown") | {"fault_type": "unknown"}
+
+    result = normalize_result(raw, _policy_evidence(), task_scope="task-a", evidence_policy=policy)
+
+    assert result["root_cause_service"] == ""
+    assert result["outcome"] == "insufficient_evidence"
+
+
 def test_valid_followup_expands_allowed_root():
     initial, _ = _policy()
     request = EvidenceRequest(

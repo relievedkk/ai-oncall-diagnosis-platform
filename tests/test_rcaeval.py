@@ -390,6 +390,34 @@ def test_common_mode_disk_does_not_fill_candidate_budget(recorded_case):
     assert len(set(selection.candidates) & {"disk_a", "disk_b", "disk_c", "disk_d"}) <= 1
 
 
+def test_three_coincident_services_are_not_common_mode_in_large_catalog(recorded_case):
+    from app.evaluation.rcaeval_evidence import select_candidate_services
+
+    _replace_metrics(
+        recorded_case,
+        disk_a_diskio=[1, 1, 1, 20, 20, 20, 20],
+        disk_b_diskio=[1, 1, 1, 21, 21, 21, 21],
+        disk_c_diskio=[1, 1, 1, 19, 19, 19, 19],
+        stable_d_cpu=[1, 1, 1, 1, 1, 1, 1],
+        stable_e_cpu=[1, 1, 1, 1, 1, 1, 1],
+        stable_f_cpu=[1, 1, 1, 1, 1, 1, 1],
+        stable_g_cpu=[1, 1, 1, 1, 1, 1, 1],
+    )
+    recorded_case.services = [
+        "disk_a",
+        "disk_b",
+        "disk_c",
+        "stable_d",
+        "stable_e",
+        "stable_f",
+        "stable_g",
+    ]
+
+    selection = select_candidate_services(recorded_case, max_candidates=3)
+
+    assert any("direct:disk" in reasons for reasons in selection.reasons.values())
+
+
 def test_candidates_are_serialized_by_stable_service_name(recorded_case):
     from app.evaluation.rcaeval_evidence import build_initial_evidence
 
@@ -430,6 +458,36 @@ def test_initial_bundle_fits_configured_tool_boundary_deterministically(recorded
     assert first.sha256 == second.sha256
     assert first.byte_length <= 16_384 - 512
     assert "tool_result_truncated" not in str(safe.content)
+
+
+def test_candidate_budget_reduction_records_detailed_evidence_omissions(recorded_case, monkeypatch):
+    from app.core.diagnostic_evidence import EvidenceBudgetError
+    from app.evaluation import rcaeval_evidence
+
+    columns = {
+        f"service_{index}_cpu": [1, 1, 1, 10 + index, 10 + index, 10 + index, 10 + index]
+        for index in range(8)
+    }
+    _replace_metrics(recorded_case, **columns)
+    recorded_case.services = [f"service_{index}" for index in range(8)]
+    original = rcaeval_evidence.serialize_evidence_bundle
+
+    def force_candidate_reduction(bundle, *, max_bytes):
+        if len(bundle.candidates) > 2:
+            raise EvidenceBudgetError("test budget requires at most two candidates")
+        return original(bundle, max_bytes=max_bytes)
+
+    monkeypatch.setattr(
+        rcaeval_evidence,
+        "serialize_evidence_bundle",
+        force_candidate_reduction,
+    )
+
+    payload = rcaeval_evidence.build_initial_evidence(recorded_case, max_bytes=16_384).payload
+
+    assert len(payload["candidates"]) == 2
+    assert any(path.startswith("candidate_budget.services[") for path in payload["omitted_paths"])
+    assert any("candidate detail" in limitation for limitation in payload["limitations"])
 
 
 def test_topology_exposes_caller_to_callee_without_reverse_inference(recorded_case):
@@ -637,6 +695,48 @@ async def test_runner_builds_initial_bundle_once_and_shares_exact_bytes(recorded
     assert seen[0][1:] == seen[1][1:]
     assert result["parity"] is True
     assert all(item["protocol_version"] == 3 for item in result["runs"])
+    assert all(item["valid_evidence_refs"] for item in result["runs"])
+    assert all(
+        all(ref.startswith("rca-") for ref in item["valid_evidence_refs"])
+        for item in result["runs"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_defaults_to_configured_tool_result_boundary(recorded_case, monkeypatch):
+    from app.agent.aiops.two_stage import CoordinatorResult
+    from app.config import config
+    from app.core.diagnosis_result import DiagnosisResult
+    from app.evaluation import rcaeval_evidence
+    from app.evaluation.rcaeval import run_protocol_v3_case
+
+    original = rcaeval_evidence.build_initial_evidence
+    observed_limits = []
+
+    def capture_limit(view, *, max_bytes):
+        observed_limits.append(max_bytes)
+        return original(view, max_bytes=max_bytes)
+
+    async def runner(task, initial, **kwargs):
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="complete",
+        )
+
+    monkeypatch.setattr(rcaeval_evidence, "build_initial_evidence", capture_limit)
+    result = await run_protocol_v3_case(
+        recorded_case,
+        {"task": "diagnose"},
+        model_factory_for=lambda _strategy: lambda **_kwargs: None,
+        truth_loader=lambda _case_id: {"root_cause_service": "orders", "fault": "cpu"},
+        single_runner=runner,
+        agent_runner=runner,
+    )
+
+    assert observed_limits == [config.tool_result_max_bytes]
+    assert result["initial_bytes"] <= config.tool_result_max_bytes - 512
 
 
 @pytest.mark.asyncio

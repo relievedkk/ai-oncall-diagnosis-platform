@@ -12,9 +12,18 @@ def assess_run(run):
     report = run.get("diagnosis_result") or {}
     errors = run.get("errors") or []
     outcome = report.get("outcome")
-    timed_out = "TimeoutError" in errors or report.get("termination_reason") == "comparison_timeout"
+    failure_category = run.get("failure_category")
+    timed_out = (
+        failure_category == "timeout"
+        or any(str(error).startswith("TimeoutError") for error in errors)
+        or report.get("termination_reason") == "comparison_timeout"
+    )
     budget = outcome == "budget_exhausted" or "ComparisonBudgetExceeded" in errors
-    execution_ok = not errors and outcome not in {"dependency_failed", "budget_exhausted"}
+    execution_ok = (
+        failure_category is None
+        and not errors
+        and outcome not in {"dependency_failed", "budget_exhausted"}
+    )
     service = prediction.get("service") == truth["root_cause_service"]
     fault = prediction.get("fault") == truth["fault"]
     refs = [ref for item in report.get("observations", []) for ref in item.get("evidence_refs", [])]
@@ -31,20 +40,32 @@ def assess_run(run):
         for key in ("supporting_refs", "opposing_refs")
         for ref in item.get(key, [])
     ]
-    evidence = {e.get("evidence_ref"): e for e in run.get("evidence", []) if e.get("evidence_ref")}
-    references = (
-        (
-            all(ref in evidence and valid_evidence(evidence[ref]) for ref in refs)
-            and not report.get("validation_issues")
+    if "valid_evidence_refs" in run:
+        valid_refs = set(run.get("valid_evidence_refs") or [])
+        references = (
+            all(ref in valid_refs for ref in refs) and not report.get("validation_issues")
+            if refs
+            else None
         )
-        if refs
-        else None
-    )
+    else:
+        evidence = {
+            e.get("evidence_ref"): e for e in run.get("evidence", []) if e.get("evidence_ref")
+        }
+        references = (
+            (
+                all(ref in evidence and valid_evidence(evidence[ref]) for ref in refs)
+                and not report.get("validation_issues")
+            )
+            if refs
+            else None
+        )
     termination = report.get("termination_reason") or run.get("termination_reason", "")
     if timed_out:
         execution_category = "timeout"
     elif budget:
         execution_category = "budget_exhausted"
+    elif failure_category:
+        execution_category = failure_category
     elif not execution_ok:
         execution_category = "dependency_failed"
     else:
@@ -144,7 +165,18 @@ def summarize(runs):
             "safe_unknown_rate": sum(r["safe_unknown"] for r in rows) / n,
             "failures_by_category": {
                 category: sum(r["execution_category"] == category for r in rows)
-                for category in ("timeout", "budget_exhausted", "dependency_failed")
+                for category in (
+                    "timeout",
+                    "budget_exhausted",
+                    "provider_setup_error",
+                    "provider_error",
+                    "invalid_initial_bundle",
+                    "invalid_model_output",
+                    "invalid_evidence_request",
+                    "followup_loader_error",
+                    "policy_validation_error",
+                    "dependency_failed",
+                )
             },
             "model_calls": sum(
                 (run.get("usage") or {}).get("model_calls", 0)

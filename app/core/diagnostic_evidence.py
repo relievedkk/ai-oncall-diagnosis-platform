@@ -125,6 +125,7 @@ class SerializedEvidenceBundle:
 class DiagnosisEvidencePolicy:
     allowed_services: frozenset[str]
     valid_refs: frozenset[str]
+    observed_mechanism_refs: Any
     mechanism_refs: Any
     delay_blockers: frozenset[str]
     ambiguous_services: frozenset[str]
@@ -140,6 +141,7 @@ class DiagnosisEvidencePolicy:
         payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
         allowed = set()
         valid_refs = set()
+        observed_mechanism_refs: dict[tuple[str, str], set[str]] = {}
         mechanism_refs: dict[tuple[str, str], set[str]] = {}
         delay_blockers = set()
         ambiguous = set()
@@ -175,7 +177,9 @@ class DiagnosisEvidencePolicy:
                         ref for ref in profile.get("evidence_refs", []) if isinstance(ref, str)
                     )
                     if profile.get("state") == "direct_signal" and refs:
-                        mechanism_refs.setdefault((service, mechanism), set()).update(refs)
+                        observed_mechanism_refs.setdefault((service, mechanism), set()).update(refs)
+                        if profile.get("fault_eligible") is True:
+                            mechanism_refs.setdefault((service, mechanism), set()).update(refs)
                         if mechanism != "delay":
                             direct_resources.append(mechanism)
                     if mechanism == "delay" and profile.get("state") == "possible_symptom":
@@ -195,12 +199,16 @@ class DiagnosisEvidencePolicy:
                     if all(isinstance(value, str) and value for value in (caller, callee, ref)):
                         edges.add((caller, callee))
                         topology_refs[ref] = (caller, callee)
+        frozen_observed_refs = MappingProxyType(
+            {key: frozenset(value) for key, value in observed_mechanism_refs.items()}
+        )
         frozen_refs = MappingProxyType(
             {key: frozenset(value) for key, value in mechanism_refs.items()}
         )
         return cls(
             allowed_services=frozenset(allowed),
             valid_refs=frozenset(valid_refs),
+            observed_mechanism_refs=frozen_observed_refs,
             mechanism_refs=frozen_refs,
             delay_blockers=frozenset(delay_blockers),
             ambiguous_services=frozenset(ambiguous),

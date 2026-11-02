@@ -1,5 +1,3 @@
-import hashlib
-
 import pytest
 
 from app.core.diagnosis_result import DiagnosisResult
@@ -9,9 +7,9 @@ from app.core.diagnostic_evidence import (
     DiagnosisEvidencePolicy,
     EvidenceFact,
     EvidenceRequest,
+    FollowupEvidenceBundle,
     InitialEvidenceBundle,
     MechanismProfile,
-    SerializedEvidenceBundle,
     serialize_evidence_bundle,
 )
 
@@ -98,12 +96,22 @@ def _initial():
     return serialize_evidence_bundle(bundle, max_bytes=16_384)
 
 
-def _followup():
-    text = '{"schema_version":3,"case_id":"case-coordinator","followup":true}'
-    return SerializedEvidenceBundle(
-        text=text,
-        sha256=hashlib.sha256(text.encode()).hexdigest(),
-        byte_length=len(text.encode()),
+def _followup(request=None, *, case_id="case-coordinator", services=None):
+    request = request or EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+    services = services or request.services
+    return serialize_evidence_bundle(
+        FollowupEvidenceBundle(
+            case_id=case_id,
+            request=request,
+            candidates=tuple(_candidate(service) for service in services),
+            limitations=("bounded follow-up",),
+        ),
+        max_bytes=16_384,
     )
 
 
@@ -194,7 +202,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
 
     async def loader(value):
         loader_calls.append(value)
-        return _followup()
+        return _followup(value)
 
     result = await run_two_stage(
         {"task": "diagnose"},
@@ -209,7 +217,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
     assert [schema[0] for schema in model.schemas] == [DiagnosisTurn, DiagnosisResult]
     assert loader_calls == [request]
     assert result.request == request
-    assert result.followup_hash == _followup().sha256
+    assert result.followup_hash == _followup(request).sha256
     assert result.result.summary == "after followup"
 
 
@@ -234,7 +242,7 @@ async def test_agent_cannot_request_second_followup():
         {"task": "diagnose"},
         _initial(),
         model_factory=_factory(model),
-        followup_loader=lambda _request: _followup(),
+        followup_loader=lambda value: _followup(value),
         policy=IdentityPolicy(),
     )
 
@@ -359,9 +367,68 @@ async def test_provider_or_loader_failure_has_distinct_outcome():
 
     assert provider.result.outcome == "dependency_failed"
     assert provider.termination_reason == "provider_error"
+    assert provider.failure_category == "provider_error"
     assert "secret" not in " ".join(provider.errors)
     assert loader.result.outcome == "dependency_failed"
     assert loader.termination_reason == "followup_loader_error"
+    assert loader.failure_category == "followup_loader_error"
+
+
+@pytest.mark.asyncio
+async def test_model_timeout_has_structured_timeout_category():
+    from app.agent.aiops.two_stage import run_single_stage
+
+    result = await run_single_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(FakeModel([TimeoutError("provider details")])),
+        policy=IdentityPolicy(),
+        timeout_seconds=1,
+    )
+
+    assert result.call_count == 1
+    assert result.termination_reason == "timeout"
+    assert result.failure_category == "timeout"
+    assert "provider details" not in " ".join(result.errors)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidity", ["case_id", "request", "services"])
+async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidity):
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    request = EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+    other_request = request.model_copy(update={"view": "logs"})
+
+    def loader(_request):
+        if invalidity == "case_id":
+            return _followup(request, case_id="case-other")
+        if invalidity == "request":
+            return _followup(other_request)
+        return _followup(request, services=("orders",))
+
+    model = FakeModel(
+        [
+            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _diagnosis("must not be reached"),
+        ]
+    )
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(model),
+        followup_loader=loader,
+        policy=IdentityPolicy(),
+    )
+
+    assert result.call_count == 1
+    assert result.termination_reason == "followup_loader_error"
+    assert len(model.calls) == 1
 
 
 @pytest.mark.asyncio

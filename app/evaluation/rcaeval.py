@@ -727,7 +727,8 @@ async def run_protocol_v3_case(
     *,
     model_factory_for,
     truth_loader,
-    max_bytes: int = 65_536,
+    max_bytes: int | None = None,
+    timeout_seconds: float | None = None,
     single_runner=None,
     agent_runner=None,
 ):
@@ -735,12 +736,14 @@ async def run_protocol_v3_case(
     import inspect
 
     from app.agent.aiops.two_stage import run_single_stage, run_two_stage
+    from app.config import config
     from app.core.diagnostic_evidence import DiagnosisEvidencePolicy, SerializedEvidenceBundle
     from app.evaluation.rcaeval_evidence import build_followup_evidence, build_initial_evidence
     from app.evaluation.rcaeval_scoring import assess_run
 
     single_runner = single_runner or run_single_stage
     agent_runner = agent_runner or run_two_stage
+    max_bytes = config.tool_result_max_bytes if max_bytes is None else max_bytes
     initial = build_initial_evidence(view, max_bytes=max_bytes)
 
     def frozen_copy():
@@ -750,8 +753,12 @@ async def run_protocol_v3_case(
             byte_length=initial.byte_length,
         )
 
+    followup_bundles = {}
+
     async def followup_loader(request):
-        return build_followup_evidence(view, request, max_bytes=max_bytes)
+        bundle = build_followup_evidence(view, request, max_bytes=max_bytes)
+        followup_bundles[bundle.sha256] = bundle
+        return bundle
 
     policy = DiagnosisEvidencePolicy.from_bundles(initial)
     single = await single_runner(
@@ -759,6 +766,7 @@ async def run_protocol_v3_case(
         frozen_copy(),
         model_factory=model_factory_for("single_stage"),
         policy=policy,
+        timeout_seconds=timeout_seconds,
     )
     agent = await agent_runner(
         task,
@@ -766,6 +774,7 @@ async def run_protocol_v3_case(
         model_factory=model_factory_for("agent"),
         followup_loader=followup_loader,
         policy=policy,
+        timeout_seconds=timeout_seconds,
     )
     truth = truth_loader(view.case_id)
     if inspect.isawaitable(truth):
@@ -774,6 +783,10 @@ async def run_protocol_v3_case(
     initial_candidates = [item["service"] for item in initial_payload["candidates"]]
     records = []
     for strategy, outcome in (("single_stage", single), ("agent", agent)):
+        evidence_policy = DiagnosisEvidencePolicy.from_bundles(
+            initial,
+            followup_bundles.get(outcome.followup_hash),
+        )
         expanded = sorted(
             set(initial_candidates)
             | (set(outcome.request.services) if outcome.request is not None else set())
@@ -789,6 +802,8 @@ async def run_protocol_v3_case(
             },
             "diagnosis_result": outcome.result.model_dump(),
             "errors": list(outcome.errors),
+            "failure_category": outcome.failure_category,
+            "valid_evidence_refs": sorted(evidence_policy.valid_refs),
             "termination_reason": outcome.termination_reason,
             "initial_hash": outcome.initial_hash,
             "initial_bytes": initial.byte_length,
@@ -1023,6 +1038,8 @@ def main(argv=None):
         return 0
 
     async def experiment():
+        from app.config import config
+
         runs = []
         for case_id in pilot.ids:
             view = pilot.open(case_id)
@@ -1042,14 +1059,13 @@ def main(argv=None):
 
                 return factory
 
-            pair = await asyncio.wait_for(
-                run_protocol_v3_case(
-                    view,
-                    view.public_task(),
-                    model_factory_for=factory_for,
-                    truth_loader=pilot.truth,
-                ),
-                timeout=args.timeout_seconds * 2,
+            pair = await run_protocol_v3_case(
+                view,
+                view.public_task(),
+                model_factory_for=factory_for,
+                truth_loader=pilot.truth,
+                max_bytes=config.tool_result_max_bytes,
+                timeout_seconds=args.timeout_seconds,
             )
             for item in pair["runs"]:
                 strategy = item["strategy"]

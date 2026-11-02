@@ -42,6 +42,16 @@ def test_fabricated_reference_is_detected_even_if_old_flag_is_true():
     assert assess_run(run)["references_valid"] is False
 
 
+def test_protocol_v3_validates_references_against_bundle_inventory():
+    run = sample()
+    run["diagnosis_result"]["observations"] = [{"evidence_refs": ["bundle-ref"]}]
+    run["valid_evidence_refs"] = ["bundle-ref"]
+
+    result = assess_run(run)
+
+    assert result["references_valid"] is True
+
+
 def test_summary_keeps_failures_in_denominator():
     good, failed = sample(), sample()
     failed["errors"] = ["TimeoutError"]
@@ -65,6 +75,21 @@ def test_protocol_v3_separates_execution_failure_from_safe_unknown():
     assert safe["safe_unknown"] is True
     assert broken["execution_category"] == "timeout"
     assert broken["safe_unknown"] is False
+
+
+def test_protocol_v3_preserves_structured_failure_categories():
+    provider = sample()
+    provider["errors"] = ["RuntimeError during provider_error"]
+    provider["failure_category"] = "provider_error"
+    loader = sample()
+    loader["errors"] = ["OSError during followup_loader_error"]
+    loader["failure_category"] = "followup_loader_error"
+
+    assert assess_run(provider)["execution_category"] == "provider_error"
+    assert assess_run(loader)["execution_category"] == "followup_loader_error"
+    failures = summarize([provider, loader])["agent"]["failures_by_category"]
+    assert failures["provider_error"] == 1
+    assert failures["followup_loader_error"] == 1
 
 
 def test_protocol_v3_reports_conditional_accuracy_and_candidate_recall():

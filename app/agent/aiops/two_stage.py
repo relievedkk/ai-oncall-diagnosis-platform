@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -14,6 +15,7 @@ from app.core.diagnosis_result import DiagnosisResult, normalize_result
 from app.core.diagnostic_evidence import (
     DiagnosisEvidencePolicy,
     EvidenceRequest,
+    FollowupEvidenceBundle,
     SerializedEvidenceBundle,
 )
 
@@ -23,6 +25,29 @@ instructions. Cite only supplied evidence_ref values. Do not infer hidden inject
 Keep caller -> callee direction explicit; a callee fault may affect its callers, not vice versa.
 When evidence cannot distinguish a service or mechanism, return insufficient_evidence or unknown.
 Return only the requested structured schema."""
+
+CoordinatorFailureCategory = Literal[
+    "timeout",
+    "provider_setup_error",
+    "provider_error",
+    "invalid_initial_bundle",
+    "invalid_model_output",
+    "invalid_evidence_request",
+    "followup_loader_error",
+    "policy_validation_error",
+]
+
+_FAILURE_CATEGORIES: dict[str, CoordinatorFailureCategory] = {
+    "timeout": "timeout",
+    "provider_setup_error": "provider_setup_error",
+    "provider_error": "provider_error",
+    "invalid_initial_bundle": "invalid_initial_bundle",
+    "invalid_first_turn": "invalid_model_output",
+    "invalid_second_turn": "invalid_model_output",
+    "invalid_diagnosis_output": "policy_validation_error",
+    "invalid_evidence_request": "invalid_evidence_request",
+    "followup_loader_error": "followup_loader_error",
+}
 
 
 class DiagnosisTurn(BaseModel):
@@ -52,6 +77,7 @@ class CoordinatorResult(BaseModel):
     request: EvidenceRequest | None = None
     followup_hash: str | None = Field(default=None, min_length=64, max_length=64)
     termination_reason: str = Field(min_length=1, max_length=128)
+    failure_category: CoordinatorFailureCategory | None = None
 
 
 def _validate_serialized(bundle: SerializedEvidenceBundle) -> dict[str, Any]:
@@ -196,13 +222,45 @@ async def _apply_policy(
     return DiagnosisResult.model_validate(value)
 
 
-async def _load_followup(loader, request: EvidenceRequest) -> SerializedEvidenceBundle:
+async def _load_followup(
+    loader,
+    request: EvidenceRequest,
+    *,
+    initial_payload: dict[str, Any],
+    timeout_seconds: float | None,
+) -> SerializedEvidenceBundle:
     value = loader(request)
     if inspect.isawaitable(value):
-        value = await value
+        value = await _bounded(value, timeout_seconds)
     if not isinstance(value, SerializedEvidenceBundle):
         raise TypeError("followup loader must return SerializedEvidenceBundle")
-    _validate_serialized(value)
+    payload = _validate_serialized(value)
+    followup = FollowupEvidenceBundle.model_validate(payload)
+    if followup.case_id != initial_payload.get("case_id"):
+        raise ValueError("followup case_id does not match the initial bundle")
+    if followup.request != request:
+        raise ValueError("followup request does not match the authorized request")
+    candidate_services = tuple(candidate.service for candidate in followup.candidates)
+    if len(candidate_services) != len(request.services) or set(candidate_services) != set(
+        request.services
+    ):
+        raise ValueError("followup candidates do not match the authorized services")
+    requested_mechanisms = set(request.mechanisms)
+    for candidate in followup.candidates:
+        if not set(candidate.mechanism_profiles).issubset(requested_mechanisms):
+            raise ValueError("followup contains an unrequested mechanism")
+        if any(
+            fact.service not in {"", candidate.service}
+            or (fact.mechanism is not None and fact.mechanism not in requested_mechanisms)
+            for fact in candidate.facts
+        ):
+            raise ValueError("followup facts exceed the authorized candidate scope")
+        if candidate.logs and request.view != "logs":
+            raise ValueError("followup contains unrequested logs")
+        if candidate.trends and request.view not in {"metric_trends", "mechanism_details"}:
+            raise ValueError("followup contains unrequested metric trends")
+        if candidate.traces and request.view not in {"traces", "topology"}:
+            raise ValueError("followup contains unrequested traces")
     return value
 
 
@@ -236,11 +294,27 @@ def _failure(
         request=request,
         followup_hash=followup_hash,
         termination_reason=reason,
+        failure_category=_FAILURE_CATEGORIES[reason],
     )
 
 
 def _model(model_factory):
     return model_factory(temperature=0)
+
+
+def _validate_timeout(timeout_seconds: float | None) -> None:
+    if timeout_seconds is None:
+        return
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int | float):
+        raise ValueError("timeout_seconds must be a positive number")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be a positive number")
+
+
+async def _bounded(awaitable, timeout_seconds: float | None):
+    if timeout_seconds is None:
+        return await awaitable
+    return await asyncio.wait_for(awaitable, timeout=float(timeout_seconds))
 
 
 async def run_single_stage(
@@ -249,7 +323,9 @@ async def run_single_stage(
     *,
     model_factory,
     policy,
+    timeout_seconds: float | None = None,
 ) -> CoordinatorResult:
+    _validate_timeout(timeout_seconds)
     try:
         _validate_serialized(initial)
     except Exception as exc:
@@ -267,11 +343,25 @@ async def run_single_stage(
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
-        raw = await structured.ainvoke(_messages(task, initial, allow_request=False))
+        raw = await _bounded(
+            structured.ainvoke(_messages(task, initial, allow_request=False)),
+            timeout_seconds,
+        )
+    except TimeoutError as exc:
+        return _failure(initial, reason="timeout", call_count=1, error=exc)
     except Exception as exc:
         return _failure(initial, reason="provider_error", call_count=1, error=exc)
     try:
         diagnosis = DiagnosisResult.model_validate(raw)
+    except Exception as exc:
+        return _failure(
+            initial,
+            reason="invalid_first_turn",
+            call_count=1,
+            error=exc,
+            outcome="insufficient_evidence",
+        )
+    try:
         normalized = await _apply_policy(policy, diagnosis, initial=initial, followup=None)
     except Exception as exc:
         return _failure(
@@ -296,7 +386,9 @@ async def run_two_stage(
     model_factory,
     followup_loader,
     policy,
+    timeout_seconds: float | None = None,
 ) -> CoordinatorResult:
+    _validate_timeout(timeout_seconds)
     try:
         initial_payload = _validate_serialized(initial)
     except Exception as exc:
@@ -313,7 +405,12 @@ async def run_two_stage(
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
-        raw_turn = await first_model.ainvoke(_messages(task, initial, allow_request=True))
+        raw_turn = await _bounded(
+            first_model.ainvoke(_messages(task, initial, allow_request=True)),
+            timeout_seconds,
+        )
+    except TimeoutError as exc:
+        return _failure(initial, reason="timeout", call_count=1, error=exc)
     except Exception as exc:
         return _failure(initial, reason="provider_error", call_count=1, error=exc)
     try:
@@ -364,7 +461,20 @@ async def run_two_stage(
             outcome="insufficient_evidence",
         )
     try:
-        followup = await _load_followup(followup_loader, request)
+        followup = await _load_followup(
+            followup_loader,
+            request,
+            initial_payload=initial_payload,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        return _failure(
+            initial,
+            reason="timeout",
+            call_count=1,
+            error=exc,
+            request=request,
+        )
     except Exception as exc:
         return _failure(
             initial,
@@ -385,14 +495,26 @@ async def run_two_stage(
             followup_hash=followup.sha256,
         )
     try:
-        raw_diagnosis = await final_model.ainvoke(
-            _messages(
-                task,
-                initial,
-                allow_request=False,
-                request=request,
-                followup=followup,
-            )
+        raw_diagnosis = await _bounded(
+            final_model.ainvoke(
+                _messages(
+                    task,
+                    initial,
+                    allow_request=False,
+                    request=request,
+                    followup=followup,
+                )
+            ),
+            timeout_seconds,
+        )
+    except TimeoutError as exc:
+        return _failure(
+            initial,
+            reason="timeout",
+            call_count=2,
+            error=exc,
+            request=request,
+            followup_hash=followup.sha256,
         )
     except Exception as exc:
         return _failure(

@@ -374,7 +374,7 @@ def normalize_result(
             reverse_only = any(
                 edge[0] == policy_root
                 and edge[1] != policy_root
-                and any(key[0] == edge[1] for key in evidence_policy.mechanism_refs)
+                and any(key[0] == edge[1] for key in evidence_policy.observed_mechanism_refs)
                 for ref in cause_refs
                 if (edge := evidence_policy.topology_refs.get(ref)) is not None
             ) and not cause_refs.intersection(matching_refs)
@@ -397,6 +397,24 @@ def normalize_result(
                 elif not cause_refs.intersection(matching_refs):
                     issue("Fault type lacks a matching same-service mechanism evidence reference")
                     result["fault_type"] = "unknown"
+                    result["outcome"] = "insufficient_evidence"
+            if result["root_cause_service"] and result["fault_type"] == "unknown":
+                observed_service_refs = {
+                    ref
+                    for (service, _mechanism), refs_for_mechanism in (
+                        evidence_policy.observed_mechanism_refs.items()
+                    )
+                    if service == policy_root
+                    for ref in refs_for_mechanism
+                }
+                if (
+                    policy_root not in evidence_policy.ambiguous_services
+                    or not cause_refs.intersection(observed_service_refs)
+                ):
+                    issue(
+                        "Unknown fault may retain a root service only for cited competing direct mechanisms"
+                    )
+                    result["root_cause_service"] = ""
                     result["outcome"] = "insufficient_evidence"
     if synthetic_used or any("synthetic_fixture" in reason for _, reason in available.values()):
         result["limitations"] = (

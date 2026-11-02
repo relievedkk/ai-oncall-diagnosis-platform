@@ -334,6 +334,7 @@ def _common_mode_mechanisms(
         ]
         if (
             len(observed) >= 3
+            and len(observed) * 2 > len(profiles_by_service)
             and len(onset) == len(observed)
             and max(onset) - min(onset) <= bucket_seconds
         ):
@@ -638,6 +639,12 @@ def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
         limitations.append(
             f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."
         )
+    full_selection = select_candidate_services(
+        view,
+        max_candidates=5,
+        _catalog=catalog,
+        _topology=topology_context,
+    )
     last_error = None
     for max_candidates in range(5, 0, -1):
         selection = select_candidate_services(
@@ -646,6 +653,21 @@ def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
             _catalog=catalog,
             _topology=topology_context,
         )
+        removed_candidate_details = sorted(
+            set(full_selection.candidates) - set(selection.candidates)
+        )
+        attempt_limitations = list(limitations)
+        omitted_paths = []
+        if removed_candidate_details:
+            attempt_limitations.append(
+                "Byte budget omitted candidate detail for: "
+                + ", ".join(removed_candidate_details)
+                + "; catalog-backed hints remain where available."
+            )
+            omitted_paths = [
+                f"candidate_budget.services[{service}].detailed_evidence"
+                for service in removed_candidate_details
+            ]
         bundle = InitialEvidenceBundle(
             case_id=view.case_id,
             services=tuple(sorted(view.services)),
@@ -664,7 +686,8 @@ def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
                 for service in selection.candidates
             ),
             candidate_hints=selection.hints,
-            limitations=tuple(limitations),
+            limitations=tuple(attempt_limitations),
+            omitted_paths=tuple(omitted_paths),
         )
         try:
             return serialize_evidence_bundle(bundle, max_bytes=max_bytes)
