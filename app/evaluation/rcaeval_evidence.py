@@ -742,22 +742,30 @@ def build_followup_evidence(
         limitations.append(
             f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."
         )
+    candidates = []
+    seen_fact_refs = set()
+    for service in sorted(request.services):
+        candidate = _candidate_evidence(
+            view,
+            service,
+            reasons=(selection.reasons.get(service, ("hint-authorized-followup",))),
+            profiles=profiles_by_service[service],
+            inbound=inbound,
+            outbound=outbound,
+            include=request.view,
+            mechanisms=request.mechanisms,
+        )
+        unique_facts = []
+        for fact in candidate.facts:
+            if fact.evidence_ref in seen_fact_refs:
+                continue
+            seen_fact_refs.add(fact.evidence_ref)
+            unique_facts.append(fact)
+        candidates.append(candidate.model_copy(update={"facts": tuple(unique_facts)}))
     bundle = FollowupEvidenceBundle(
         case_id=view.case_id,
         request=request,
-        candidates=tuple(
-            _candidate_evidence(
-                view,
-                service,
-                reasons=(selection.reasons.get(service, ("hint-authorized-followup",))),
-                profiles=profiles_by_service[service],
-                inbound=inbound,
-                outbound=outbound,
-                include=request.view,
-                mechanisms=request.mechanisms,
-            )
-            for service in sorted(request.services)
-        ),
+        candidates=tuple(candidates),
         limitations=tuple(limitations),
     )
     return serialize_evidence_bundle(bundle, max_bytes=max_bytes)

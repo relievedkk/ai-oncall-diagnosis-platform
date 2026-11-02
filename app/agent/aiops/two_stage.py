@@ -8,6 +8,8 @@ import inspect
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -51,6 +53,11 @@ _FAILURE_CATEGORIES: dict[str, CoordinatorFailureCategory] = {
     "followup_loader_error": "followup_loader_error",
 }
 
+_BLOCKING_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="aiops-bounded",
+)
+
 
 class DiagnosisTurn(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -80,6 +87,7 @@ class CoordinatorResult(BaseModel):
     followup_hash: str | None = Field(default=None, min_length=64, max_length=64)
     termination_reason: str = Field(min_length=1, max_length=128)
     failure_category: CoordinatorFailureCategory | None = None
+    followup_evidence_refs: tuple[str, ...] = Field(default_factory=tuple, max_length=2048)
 
 
 def _validate_serialized(bundle: SerializedEvidenceBundle) -> dict[str, Any]:
@@ -168,13 +176,13 @@ def _validate_request(request: EvidenceRequest, initial_payload: dict[str, Any])
             raise ValueError("expanded service lacks a cited hint ref")
 
 
-async def _apply_policy(
+def _call_policy(
     policy,
     diagnosis: DiagnosisResult,
     *,
     initial: SerializedEvidenceBundle,
     followup: SerializedEvidenceBundle | None,
-) -> DiagnosisResult:
+) -> Any:
     if isinstance(policy, DiagnosisEvidencePolicy):
         policy = DiagnosisEvidencePolicy.from_bundles(initial, followup)
         payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
@@ -219,6 +227,31 @@ async def _apply_policy(
         value = policy(diagnosis, initial=initial, followup=followup)
     else:
         raise TypeError("policy must be callable or expose normalize")
+    return value
+
+
+async def _run_blocking(function, /, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _BLOCKING_EXECUTOR,
+        partial(function, *args, **kwargs),
+    )
+
+
+async def _apply_policy(
+    policy,
+    diagnosis: DiagnosisResult,
+    *,
+    initial: SerializedEvidenceBundle,
+    followup: SerializedEvidenceBundle | None,
+) -> DiagnosisResult:
+    value = await _run_blocking(
+        _call_policy,
+        policy,
+        diagnosis,
+        initial=initial,
+        followup=followup,
+    )
     if inspect.isawaitable(value):
         value = await value
     return DiagnosisResult.model_validate(value)
@@ -234,7 +267,7 @@ async def _load_followup(
     if inspect.iscoroutinefunction(loader):
         value = await deadline.wait(loader(request))
     else:
-        value = await deadline.wait(asyncio.to_thread(loader, request))
+        value = await deadline.wait(_run_blocking(loader, request))
     if inspect.isawaitable(value):
         value = await deadline.wait(value)
     if not isinstance(value, SerializedEvidenceBundle):
@@ -253,6 +286,7 @@ async def _load_followup(
     requested_mechanisms = set(request.mechanisms)
     topology_allowed = request.view in {"traces", "topology"}
     catalog = set(initial_payload.get("services", []))
+    seen_fact_refs = set()
     for candidate in followup.candidates:
         if not set(candidate.mechanism_profiles).issubset(requested_mechanisms):
             raise ValueError("followup contains an unrequested mechanism")
@@ -264,12 +298,17 @@ async def _load_followup(
             mechanism: set() for mechanism in candidate.mechanism_profiles
         }
         for fact in candidate.facts:
+            if fact.evidence_ref in seen_fact_refs:
+                raise ValueError("followup evidence_ref must have one fact owner")
+            seen_fact_refs.add(fact.evidence_ref)
             if fact.service != candidate.service:
                 raise ValueError("followup fact is not bound to its candidate service")
             if fact.evidence_type == "structured_telemetry":
+                if fact.mechanism not in candidate.mechanism_profiles:
+                    raise ValueError("followup telemetry fact has no matching mechanism profile")
                 if fact.mechanism not in requested_mechanisms:
                     raise ValueError("followup telemetry fact has an unrequested mechanism")
-                structured_refs.setdefault(fact.mechanism, set()).add(fact.evidence_ref)
+                structured_refs[fact.mechanism].add(fact.evidence_ref)
             elif fact.evidence_type == "topology_edge":
                 if not topology_allowed or fact.mechanism is not None:
                     raise ValueError("followup contains unrequested topology evidence")
@@ -283,6 +322,8 @@ async def _load_followup(
             else:
                 raise ValueError("followup contains an unsupported evidence type")
         for mechanism, profile in candidate.mechanism_profiles.items():
+            if len(profile.evidence_refs) != len(set(profile.evidence_refs)):
+                raise ValueError("followup profile contains duplicate evidence refs")
             if set(profile.evidence_refs) != structured_refs.get(mechanism, set()):
                 raise ValueError("followup profile references are not bound to telemetry facts")
         if candidate.logs and request.view != "logs":
@@ -311,6 +352,7 @@ def _failure(
     error: BaseException | None = None,
     request: EvidenceRequest | None = None,
     followup_hash: str | None = None,
+    followup_evidence_refs: tuple[str, ...] = (),
     outcome: str = "dependency_failed",
 ) -> CoordinatorResult:
     errors = ()
@@ -325,6 +367,7 @@ def _failure(
         followup_hash=followup_hash,
         termination_reason=reason,
         failure_category=_FAILURE_CATEGORIES[reason],
+        followup_evidence_refs=followup_evidence_refs,
     )
 
 
@@ -545,6 +588,7 @@ async def run_two_stage(
         )
     try:
         final_model = model.with_structured_output(DiagnosisResult, method="json_schema")
+        followup_refs = tuple(sorted(_refs(followup.payload)))
     except Exception as exc:
         return _failure(
             initial,
@@ -553,6 +597,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=tuple(sorted(_refs(followup.payload))),
         )
     try:
         raw_diagnosis = await deadline.wait(
@@ -574,6 +619,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
         )
     except Exception as exc:
         return _failure(
@@ -583,6 +629,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
         )
     try:
         diagnosis = DiagnosisResult.model_validate(raw_diagnosis)
@@ -594,6 +641,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
         )
     try:
@@ -608,6 +656,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
         )
     except Exception as exc:
         return _failure(
@@ -617,6 +666,7 @@ async def run_two_stage(
             error=exc,
             request=request,
             followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
         )
     return CoordinatorResult(
@@ -626,4 +676,5 @@ async def run_two_stage(
         request=request,
         followup_hash=followup.sha256,
         termination_reason="followup_diagnosis",
+        followup_evidence_refs=followup_refs,
     )

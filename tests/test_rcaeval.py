@@ -548,6 +548,64 @@ def test_topology_exposes_caller_to_callee_without_reverse_inference(recorded_ca
     assert candidates["callee"]["outbound_dependencies"] == []
 
 
+def test_followup_topology_owns_each_edge_reference_once(recorded_case):
+    import pandas as pd
+
+    from app.core.diagnostic_evidence import EvidenceRequest
+    from app.evaluation.rcaeval_evidence import (
+        build_followup_evidence,
+        build_initial_evidence,
+    )
+
+    _replace_metrics(
+        recorded_case,
+        caller_latency=[1, 1, 1, 20, 20, 20, 20],
+        callee_cpu=[1, 1, 1, 30, 30, 30, 30],
+    )
+    recorded_case.services = ["callee", "caller"]
+    recorded_case.has_traces = True
+    recorded_case.t = pd.DataFrame(
+        [
+            {
+                "traceID": "post",
+                "spanID": "parent",
+                "parentSpanID": "",
+                "serviceName": "caller",
+                "duration": 100,
+                "_epoch": 240,
+            },
+            {
+                "traceID": "post",
+                "spanID": "child",
+                "parentSpanID": "parent",
+                "serviceName": "callee",
+                "duration": 90,
+                "_epoch": 240,
+            },
+        ]
+    )
+    initial = build_initial_evidence(recorded_case, max_bytes=32_768).payload
+    topology_ref = next(
+        fact["evidence_ref"]
+        for candidate in initial["candidates"]
+        for fact in candidate["facts"]
+        if fact["evidence_type"] == "topology_edge"
+    )
+    request = EvidenceRequest(
+        services=("callee", "caller"),
+        mechanisms=("cpu", "delay"),
+        view="topology",
+        justification_refs=(topology_ref,),
+    )
+
+    payload = build_followup_evidence(recorded_case, request, max_bytes=32_768).payload
+    refs = [
+        fact["evidence_ref"] for candidate in payload["candidates"] for fact in candidate["facts"]
+    ]
+
+    assert len(refs) == len(set(refs))
+
+
 def test_missing_topology_is_explicitly_unavailable(recorded_case):
     import pandas as pd
 

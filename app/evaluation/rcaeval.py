@@ -753,12 +753,8 @@ async def run_protocol_v3_case(
             byte_length=initial.byte_length,
         )
 
-    followup_bundles = {}
-
     def followup_loader(request):
-        bundle = build_followup_evidence(view, request, max_bytes=max_bytes)
-        followup_bundles[bundle.sha256] = bundle
-        return bundle
+        return build_followup_evidence(view, request, max_bytes=max_bytes)
 
     policy = DiagnosisEvidencePolicy.from_bundles(initial)
     single = await single_runner(
@@ -783,10 +779,7 @@ async def run_protocol_v3_case(
     initial_candidates = [item["service"] for item in initial_payload["candidates"]]
     records = []
     for strategy, outcome in (("single_stage", single), ("agent", agent)):
-        evidence_policy = DiagnosisEvidencePolicy.from_bundles(
-            initial,
-            followup_bundles.get(outcome.followup_hash),
-        )
+        valid_evidence_refs = sorted(set(policy.valid_refs) | set(outcome.followup_evidence_refs))
         expanded = sorted(
             set(initial_candidates)
             | (set(outcome.request.services) if outcome.request is not None else set())
@@ -803,7 +796,7 @@ async def run_protocol_v3_case(
             "diagnosis_result": outcome.result.model_dump(),
             "errors": list(outcome.errors),
             "failure_category": outcome.failure_category,
-            "valid_evidence_refs": sorted(evidence_policy.valid_refs),
+            "valid_evidence_refs": valid_evidence_refs,
             "termination_reason": outcome.termination_reason,
             "initial_hash": outcome.initial_hash,
             "initial_bytes": initial.byte_length,

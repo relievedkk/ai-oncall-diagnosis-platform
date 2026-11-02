@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -262,6 +263,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
     assert loader_calls == [request]
     assert result.request == request
     assert result.followup_hash == _followup(request).sha256
+    assert "ev-payments-cpu" in result.followup_evidence_refs
     assert result.result.summary == "after followup"
 
 
@@ -510,18 +512,46 @@ async def test_sync_followup_loader_cannot_block_strategy_timeout():
         time.sleep(0.2)
         return _followup(value)
 
+    default_executor = ThreadPoolExecutor(max_workers=1)
+    asyncio.get_running_loop().set_default_executor(default_executor)
+    try:
+        started = time.perf_counter()
+        result = await run_two_stage(
+            {"task": "diagnose"},
+            _initial(),
+            model_factory=_factory(model),
+            followup_loader=blocking_loader,
+            policy=IdentityPolicy(),
+            timeout_seconds=0.03,
+        )
+
+        assert result.failure_category == "timeout"
+        assert result.call_count == 1
+        assert time.perf_counter() - started < 0.15
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "free"), timeout=0.05) == "free"
+    finally:
+        default_executor.shutdown(wait=True, cancel_futures=True)
+
+
+@pytest.mark.asyncio
+async def test_sync_policy_cannot_block_strategy_deadline():
+    from app.agent.aiops.two_stage import run_single_stage
+
+    class BlockingPolicy:
+        def normalize(self, diagnosis, *, initial, followup=None):
+            time.sleep(0.2)
+            return diagnosis
+
     started = time.perf_counter()
-    result = await run_two_stage(
+    result = await run_single_stage(
         {"task": "diagnose"},
         _initial(),
-        model_factory=_factory(model),
-        followup_loader=blocking_loader,
-        policy=IdentityPolicy(),
+        model_factory=_factory(FakeModel([_diagnosis()])),
+        policy=BlockingPolicy(),
         timeout_seconds=0.03,
     )
 
     assert result.failure_category == "timeout"
-    assert result.call_count == 1
     assert time.perf_counter() - started < 0.15
 
 
@@ -589,6 +619,8 @@ async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidi
         "topology_fact",
         "topology_metadata",
         "unbound_profile_ref",
+        "fact_without_profile",
+        "duplicate_ref",
     ],
 )
 async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidity):
@@ -623,6 +655,10 @@ async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidit
             )
         elif invalidity == "topology_metadata":
             candidate["outbound_dependencies"] = ["orders"]
+        elif invalidity == "fact_without_profile":
+            candidate["mechanism_profiles"] = {}
+        elif invalidity == "duplicate_ref":
+            candidate["facts"].append(dict(fact))
         else:
             candidate["mechanism_profiles"]["cpu"]["evidence_refs"].append("unbound-ref")
 
