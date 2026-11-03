@@ -319,10 +319,13 @@ def main(argv=None):
         args.data_dir,
         answers_file=args.answers_file if args.audit_development or args.mode == "live" else None,
     )
-    if args.telemetry_profile == "rcaeval-re2" and not pilot.dataset.startswith("RCAEval RE2"):
-        parser.error(
-            "rcaeval-re2 profile requires an explicit RCAEval RE2 dataset; use --telemetry-profile unknown otherwise"
-        )
+    if args.telemetry_profile == "rcaeval-re2":
+        if not (args.data_dir / "manifest.json").is_file() or not pilot.dataset.startswith(
+            "RCAEval RE2"
+        ):
+            parser.error(
+                "rcaeval-re2 profile requires an explicit RCAEval RE2 manifest; use --telemetry-profile unknown otherwise"
+            )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.audit_development or args.mode == "live":
         from app.evaluation.rcaeval_v4 import DevelopmentScope

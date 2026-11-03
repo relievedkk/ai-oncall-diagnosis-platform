@@ -154,3 +154,27 @@ def test_source_snapshot_freezes_actual_code_without_subprocess(tmp_path):
     assert source_snapshot(tmp_path) == before
     (tmp_path / "one.py").write_text("x=2\n")
     assert source_snapshot(tmp_path) != before
+
+
+def test_curated_profile_requires_explicit_manifest_not_pilot_fallback_name(tmp_path):
+    root = tmp_path / "unidentified"
+    root.mkdir()
+    output = tmp_path / "output"
+    with pytest.raises(SystemExit) as error:
+        main(["--data-dir", str(root), "--output-dir", str(output)])
+    assert error.value.code == 2
+    assert not output.exists()
+
+
+def test_unidentified_dataset_can_opt_out_of_curated_profile(tmp_path):
+    root = tmp_path / "unidentified"
+    root.mkdir()
+    output = tmp_path / "output"
+    result = main(
+        ["--data-dir", str(root), "--output-dir", str(output), "--telemetry-profile", "unknown"]
+    )
+    assert result == 1  # Missing telemetry is reported without claiming RE2 provenance.
+    import json
+
+    report = json.loads((output / "validation.json").read_text(encoding="utf-8"))
+    assert report["model_calls"] == 0

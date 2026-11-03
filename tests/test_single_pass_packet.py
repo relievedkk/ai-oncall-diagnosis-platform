@@ -210,3 +210,35 @@ def test_large_development_packets_keep_all_material_values_without_reading_labe
         parallel_tool_calls=False,
     )
     assert len(canonical(request).encode()) + OUTPUT_ALLOWANCE <= 16384
+
+
+def test_emitted_pool_has_unambiguous_literal_semantics_for_an_independent_consumer():
+    seed = evidence("cpu")
+    literal = {"data": "X" * 100, "reserved": {"$v": 0}, "nested": {"$literal": {"$v": 2}}}
+    e = seed.model_copy(
+        update={
+            "facts": tuple(
+                f.model_copy(update={"data": {**f.data, "literal": literal}}) for f in seed.facts
+            )
+        }
+    )
+    raw = json.loads(build_packet(e, rank_hypotheses(e)).text)
+    pool = raw["shared_values"]
+
+    def consume(node, depth=0):
+        if depth > 20:
+            raise ValueError("cyclic_reference_in_emitted_protocol")
+        if isinstance(node, dict):
+            if set(node) == {"$literal"}:
+                return node["$literal"]  # Whole subtree is literal; no nested expansion.
+            if set(node) == {"$v"}:
+                return consume(pool[node["$v"]], depth + 1)
+            return {k: consume(v, depth + 1) for k, v in node.items()}
+        if isinstance(node, list):
+            return [consume(v, depth + 1) for v in node]
+        return node
+
+    for row in raw["facts"].values():
+        record = dict(zip(raw["fact_record_fields"], consume(row), strict=True))
+        columns = consume(raw["fact_columns"][record["columns"]])
+        assert record["values"][columns.index("literal")] == literal

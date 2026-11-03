@@ -16,7 +16,7 @@ SYSTEM_PROMPT = (
     "explain exclusions/gaps. Choose unknown for unresolved mechanisms; retain service only with "
     "independent support. Never equate timeout with loss, IO change with disk stress, or unknown "
     "units with saturation. No tools, follow-up or repair calls. Arrays follow *_record_fields and "
-    "fact_columns. {$v:i}=shared_values[i]; {$literal:x}=literal x; {suffix:metric} is the metric "
+    "fact_columns. {$v:i}=shared_values[i]; {$literal:x}=opaque literal x, no nested decoding; {suffix:metric} is the metric "
     "suffix after service_name+'_'."
 )
 OUTPUT_ALLOWANCE = 2048
@@ -25,6 +25,16 @@ OUTPUT_ALLOWANCE = 2048
 @dataclass(frozen=True)
 class _SharedRef:
     index: int
+
+
+def _has_reserved_keys(node):
+    if isinstance(node, dict):
+        return bool({"$v", "$literal"} & node.keys()) or any(
+            _has_reserved_keys(v) for v in node.values()
+        )
+    if isinstance(node, list):
+        return any(_has_reserved_keys(v) for v in node)
+    return False
 
 
 def _share_values(value):
@@ -61,8 +71,9 @@ def _share_values(value):
                 index = ids.setdefault(key, len(ids))
                 return _SharedRef(index)
         if isinstance(node, dict):
-            content = {k: encode(node[k]) for k in sorted(node)}
-            return {"$literal": content} if {"$v", "$literal"} & node.keys() else content
+            if {"$v", "$literal"} & node.keys():
+                return {"$literal": deepcopy(node)}
+            return {k: encode(node[k]) for k in sorted(node)}
         if isinstance(node, list):
             return [encode(v) for v in node]
         return node
@@ -77,7 +88,12 @@ def _share_values(value):
         return node
 
     result = render(encode(value))
-    result["shared_values"] = [scalars[key] for key in ids]
+    result["shared_values"] = [
+        {"$literal": deepcopy(scalars[key])}
+        if _has_reserved_keys(scalars[key])
+        else deepcopy(scalars[key])
+        for key in ids
+    ]
     return result
 
 
@@ -90,9 +106,14 @@ def _expand_values(payload):
                 index = node["$v"]
                 if type(index) is not int or not 0 <= index < len(pool):
                     raise ValueError("invalid_shared_value")
-                return deepcopy(pool[index])
+                entry = pool[index]
+                if isinstance(entry, dict) and set(entry) == {"$literal"}:
+                    return deepcopy(entry["$literal"])
+                if _has_reserved_keys(entry):
+                    raise ValueError("unescaped_shared_literal")
+                return deepcopy(entry)
             if set(node) == {"$literal"}:
-                return {k: decode(v) for k, v in node["$literal"].items()}
+                return deepcopy(node["$literal"])
             return {k: decode(v) for k, v in node.items()}
         if isinstance(node, list):
             return [decode(v) for v in node]
