@@ -52,8 +52,25 @@ def trace_facts(view, window, *, status_semantics=None):
     frame["duration"] = pd.to_numeric(frame.duration, errors="coerce")
     frame["_start"] = frame.startTimeMillis / 1000
     frame["_duration"] = frame.duration
-    frame = frame.loc[frame._start.between(window.start, window.end)]
-    finite = frame._duration.map(math.isfinite) & frame._duration.ge(0)
+    visible = frame._start.between(window.start, window.end)
+    active_traces = set(frame.loc[visible, "traceID"].dropna().astype(str))
+    # Malformed times in an otherwise visible trace are incomplete observations,
+    # not proof that the remaining parent has no children. Known out-of-window
+    # rows remain invisible and never contribute counts or comparisons.
+    missing_start = ~frame._start.map(math.isfinite)
+    frame = frame.loc[
+        visible | (missing_start & frame.traceID.astype(str).isin(active_traces))
+    ].copy()
+    invalid_identity = frame[["traceID", "spanID"]].isna().any(axis=1)
+    invalid_identity |= frame.traceID.astype(str).eq("") | frame.spanID.astype(str).eq("")
+    frame["traceID"] = frame.traceID.astype(str)
+    frame["spanID"] = frame.spanID.astype(str)
+    # Detect ambiguous identities before any invalid-duration copy can disappear.
+    duplicate = frame.duplicated(["traceID", "spanID"], keep=False)
+    duplicate_count = int(duplicate.sum())
+    finite = (
+        frame._start.map(math.isfinite) & frame._duration.map(math.isfinite) & frame._duration.ge(0)
+    )
     invalid_numeric = int((~finite).sum())
     incomplete_traces = set(frame.loc[~finite, "traceID"].astype(str))
     censored = int((finite & (frame._start + frame._duration / 1e6).gt(window.end)).sum())
@@ -62,13 +79,15 @@ def trace_facts(view, window, *, status_semantics=None):
             str
         )
     )
-    frame = frame.loc[finite & (frame._start + frame._duration / 1e6).le(window.end)]
-    duplicate = frame.duplicated(["traceID", "spanID"], keep=False)
-    duplicate_count = int(duplicate.sum())
     incomplete_traces.update(frame.loc[duplicate, "traceID"].astype(str))
-    invalid_identity = frame[["traceID", "spanID"]].isna().any(axis=1)
     incomplete_traces.update(frame.loc[invalid_identity, "traceID"].astype(str))
-    frame = frame.loc[~duplicate & ~invalid_identity]
+    invalid_identity_count = int(invalid_identity.sum())
+    frame = frame.loc[
+        finite
+        & (frame._start + frame._duration / 1e6).le(window.end)
+        & ~duplicate
+        & ~invalid_identity
+    ]
     spans, children, edges = {}, {}, {}
     for row in frame.itertuples(index=False):
         # Leading-underscore columns are renamed by pandas itertuples; use public fields.
@@ -185,7 +204,7 @@ def trace_facts(view, window, *, status_semantics=None):
                 "visible_valid_spans": len(spans),
                 "duplicate_rows": duplicate_count,
                 "invalid_numeric_rows": invalid_numeric,
-                "invalid_identity_rows": int(invalid_identity.sum()),
+                "invalid_identity_rows": invalid_identity_count,
                 "incomplete_traces": len(incomplete_traces),
                 "cyclic_traces": len(cyclic_traces),
                 "orphan_spans": orphan,

@@ -85,3 +85,45 @@ def test_unknown_is_valid_and_cannot_be_replaced_by_top_rank():
         ),
     )
     assert result["service"] is None and result["fault"] == "unknown"
+
+
+def test_dense_material_facts_fit_by_lossless_columnar_encoding():
+    from app.core.single_pass import EvidenceSet
+
+    e = evidence("cpu")
+    copies = []
+    for service in ("a", "b", "c"):
+        copies.extend(
+            f.model_copy(
+                update={
+                    "service": service,
+                    "ref": service + f.ref,
+                    "data": {
+                        **f.data,
+                        "metric": service + "_" + f.family,
+                        "before_median": 0.123456789,
+                        "after_median": 0.654321987,
+                        "ratio": 5.3,
+                        "onset_lower": 1234567890,
+                        "onset_upper": 1234567891,
+                        "post_shape": "sustained",
+                        "reset_count": 0,
+                        "sampling_gap": False,
+                        "scales": {str(s): 0.1 for s in (30, 60, 120, 300)},
+                    },
+                }
+            )
+            for f in e.facts
+        )
+    e = EvidenceSet(
+        case_id=e.case_id, window=e.window, services=("a", "b", "c"), facts=tuple(copies)
+    )
+    hs = rank_hypotheses(e)
+    packet = build_packet(e, hs, max_bytes=14000)
+    p = packet.payload
+    assert "fact_columns" in p
+    originals = {f.ref: f for f in e.facts}
+    for alias, ref in packet.ref_aliases:
+        compact = p["facts"][alias]
+        restored = dict(zip(p["fact_columns"][compact["columns"]], compact["values"], strict=True))
+        assert restored == originals[ref].data

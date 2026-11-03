@@ -92,7 +92,7 @@ def log_facts(view, window):
             (name for name, pattern in _PATTERNS if pattern.search(text)), "template_shift"
         )
         template = _template(text)
-        key = (service, event, template)
+        key = (service, event, specific, template)
         group = groups.setdefault(
             key,
             {
@@ -113,7 +113,7 @@ def log_facts(view, window):
     # Aggregate every recognized event before capping optional normal templates.
     # Separate structured and keyword observations so repetition cannot upgrade semantics.
     aggregated = {}
-    for (service, event, template), group in groups.items():
+    for (service, event, _specific, template), group in groups.items():
         if event == "template_shift":
             aggregated[(service, event, template)] = group
             continue

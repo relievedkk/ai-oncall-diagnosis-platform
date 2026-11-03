@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import json
 import math
-import subprocess
 from pathlib import Path
 
 from app.core.single_pass import REVISION, canonical
@@ -25,6 +24,19 @@ def feasibility_gate(audit):
         and audit.get("packet_passed") == 18
         and audit.get("errors") == 0
     )
+
+
+def source_snapshot(root=None):
+    """Freeze actual source bytes, including local edits; do not execute git from PATH."""
+    root = Path(root or Path(__file__).resolve().parents[1]).resolve(strict=True)
+    entries = []
+    for path in sorted(root.rglob("*.py")):
+        if not path.resolve(strict=True).is_relative_to(root):
+            raise ValueError("source_path_escapes_snapshot")
+        entries.append(
+            [path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()]
+        )
+    return "sha256:" + hashlib.sha256(canonical(entries).encode()).hexdigest()
 
 
 def _freeze(view, *, perturb=True):
@@ -347,17 +359,7 @@ def main(argv=None):
     from app.core.llm_factory import llm_factory
     from app.evaluation.single_pass_journal import AttemptJournal
 
-    code = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no", "--", "app"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    if status:
-        parser.error("live requires committed app code so the frozen revision is reproducible")
+    code = source_snapshot()
     config = {
         "protocol": 5,
         "revision": REVISION,

@@ -97,7 +97,21 @@ def build_packet(evidence, hypotheses, *, max_bytes=16384):
     ).hexdigest()[:24]
 
     def encode():
-        serialized = canonical(payload)
+        # Repeated JSON keys cost bytes without adding evidence. Share exact field sets;
+        # values retain full precision, nulls and missing-field distinctions losslessly.
+        encoded = {**payload, "facts": {}, "fact_columns": {}}
+        fieldsets = {}
+        for alias, fact in payload["facts"].items():
+            fields = tuple(sorted(fact["data"]))
+            if fields not in fieldsets:
+                columns = "c" + str(len(fieldsets) + 1)
+                fieldsets[fields] = columns
+                encoded["fact_columns"][columns] = list(fields)
+            encoded["facts"][alias] = {k: v for k, v in fact.items() if k != "data"}
+            encoded["facts"][alias].update(
+                columns=fieldsets[fields], values=[fact["data"][k] for k in fields]
+            )
+        serialized = canonical(encoded)
         envelope = {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},

@@ -144,3 +144,13 @@ def test_summary_counts_errors_unknowns_and_all_strata():
     assert 0 < summary["joint_wilson95"][0] < 0.5 < summary["joint_wilson95"][1] < 1
     assert summary["strata"]["fault"]["loss"]["case_count"] == 1
     assert summary["strata"]["traces"]["not_available"]["joint_correct"] == 0
+
+
+def test_source_snapshot_freezes_actual_code_without_subprocess(tmp_path):
+    from app.evaluation.single_pass_runner import source_snapshot
+
+    (tmp_path / "one.py").write_text("x=1\n")
+    before = source_snapshot(tmp_path)
+    assert source_snapshot(tmp_path) == before
+    (tmp_path / "one.py").write_text("x=2\n")
+    assert source_snapshot(tmp_path) != before

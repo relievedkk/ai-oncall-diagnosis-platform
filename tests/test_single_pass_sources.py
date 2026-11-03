@@ -173,3 +173,50 @@ def test_many_templates_never_hide_a_competing_specific_event():
     view = view_of({"orders_cpu": [1] * 20}, logs=logs)
     facts = log_facts(view, make_window(view))
     assert any(f.family == "socket_limit" and f.data["specific"] for f in facts)
+
+
+@pytest.mark.parametrize("failure", ["missing_start", "duplicate_bad_duration"])
+def test_malformed_spans_cannot_disappear_before_topology_validation(failure):
+    import math
+
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_traces import trace_facts
+
+    rows = [span("p", "", "a", 12, 1_000_000), span("c", "p", "b", 12.1, 100_000)]
+    if failure == "missing_start":
+        rows[1]["startTimeMillis"] = math.nan
+    else:
+        rows.append({**rows[0], "duration": "bad"})
+    view = view_of({"a_cpu": [1] * 20, "b_cpu": [1] * 20}, traces=rows)
+    facts = trace_facts(view, make_window(view))
+    assert not any(f.family == "edge" for f in facts)
+    if failure == "missing_start":
+        parent = next(f for f in facts if f.family == "operation" and f.service == "a")
+        assert parent.data["after_self_p90_us"] is None
+    coverage = next(f for f in facts if f.family == "coverage").data
+    assert coverage["incomplete_traces"] >= 1
+    assert coverage["invalid_numeric_rows"] >= 1
+    if failure == "duplicate_bad_duration":
+        assert coverage["duplicate_rows"] == 2
+
+
+def test_template_prefix_collision_cannot_upgrade_keyword_to_structured_buckets():
+    import json
+
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_events import log_facts
+
+    prefix = {"message": "EIO " + "x" * 300}
+    logs = [
+        {
+            "timestamp": t,
+            "container_name": "orders_1",
+            "message": json.dumps({**prefix, "errno": code}),
+        }
+        for t, code in ((12, "EIO"), (17, "OTHER"))
+    ]
+    view = view_of({"orders_cpu": [1] * 20}, logs=logs)
+    facts = log_facts(view, make_window(view))
+    structured = [f for f in facts if f.family == "disk_error" and f.data["specific"]]
+    assert len(structured) == 1 and structured[0].data["after_buckets"] == 1
+    assert any(f.family == "disk_error" and not f.data["specific"] for f in facts)
