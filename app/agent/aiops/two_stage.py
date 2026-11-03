@@ -13,7 +13,7 @@ from functools import partial
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.core.diagnosis_result import DiagnosisResult, normalize_result
 from app.core.diagnostic_evidence import (
@@ -176,6 +176,70 @@ def _validate_request(request: EvidenceRequest, initial_payload: dict[str, Any])
             raise ValueError("expanded service lacks a cited hint ref")
 
 
+def _canonical_policy_evidence(
+    initial: SerializedEvidenceBundle,
+    followup: SerializedEvidenceBundle | None,
+) -> list[dict[str, Any]]:
+    initial_payload = initial.payload
+    payloads = [initial_payload] + ([followup.payload] if followup is not None else [])
+    case_id = str(initial_payload.get("case_id", "bundle-diagnosis"))
+    incident_time = initial_payload.get("incident_time", 0)
+    evidence = []
+    seen_identities = set()
+    for payload in payloads:
+        for candidate in payload.get("candidates", []):
+            for fact in candidate.get("facts", []):
+                if not isinstance(fact, dict) or not fact.get("evidence_ref"):
+                    continue
+                data = fact.get("data", {})
+                if fact.get("evidence_type") == "topology_edge":
+                    identity = {
+                        "evidence_ref": fact["evidence_ref"],
+                        "evidence_type": "topology_edge",
+                        "caller": data.get("caller"),
+                        "callee": data.get("callee"),
+                    }
+                    service_name = str(data.get("caller") or "")
+                else:
+                    identity = {
+                        "evidence_ref": fact["evidence_ref"],
+                        "evidence_type": fact.get("evidence_type"),
+                        "service": fact.get("service", candidate.get("service", "")),
+                        "mechanism": fact.get("mechanism"),
+                        "statement": fact.get("statement"),
+                        "data": data,
+                    }
+                    service_name = str(identity["service"] or "")
+                encoded_identity = json.dumps(
+                    identity,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                identity_digest = hashlib.sha256(encoded_identity.encode("utf-8")).hexdigest()
+                dedupe_key = (fact["evidence_ref"], identity_digest)
+                if dedupe_key in seen_identities:
+                    continue
+                seen_identities.add(dedupe_key)
+                evidence.append(
+                    {
+                        "evidence_ref": fact["evidence_ref"],
+                        "evidence_identity": identity_digest,
+                        "task_scope": case_id,
+                        "source": "rcaeval_bundle",
+                        "evidence_type": "metric",
+                        "service_name": service_name,
+                        "success": True,
+                        "result": {
+                            "success": True,
+                            "data_points": [{"timestamp": incident_time, "value": 1}],
+                        },
+                    }
+                )
+    return evidence
+
+
 def _call_policy(
     policy,
     diagnosis: DiagnosisResult,
@@ -185,33 +249,9 @@ def _call_policy(
 ) -> Any:
     if isinstance(policy, DiagnosisEvidencePolicy):
         policy = DiagnosisEvidencePolicy.from_bundles(initial, followup)
-        payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
-        evidence = []
-        case_id = str(payloads[0].get("case_id", "bundle-diagnosis"))
-        for payload in payloads:
-            for candidate in payload.get("candidates", []):
-                for fact in candidate.get("facts", []):
-                    if not isinstance(fact, dict) or not fact.get("evidence_ref"):
-                        continue
-                    evidence.append(
-                        {
-                            "evidence_ref": fact["evidence_ref"],
-                            "task_scope": case_id,
-                            "source": "rcaeval_bundle",
-                            "evidence_type": "metric",
-                            "service_name": fact.get("service", candidate.get("service", "")),
-                            "success": True,
-                            "result": {
-                                "success": True,
-                                "data_points": [
-                                    {
-                                        "timestamp": payload.get("incident_time", 0),
-                                        "value": 1,
-                                    }
-                                ],
-                            },
-                        }
-                    )
+        initial_payload = initial.payload
+        evidence = _canonical_policy_evidence(initial, followup)
+        case_id = str(initial_payload.get("case_id", "bundle-diagnosis"))
         value = normalize_result(
             diagnosis.model_dump(),
             evidence,
@@ -432,7 +472,7 @@ async def run_single_stage(
         )
     try:
         structured = _model(model_factory).with_structured_output(
-            DiagnosisResult, method="json_schema"
+            DiagnosisResult, method="function_calling"
         )
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
@@ -442,6 +482,14 @@ async def run_single_stage(
         )
     except TimeoutError as exc:
         return _failure(initial, reason="timeout", call_count=1, error=exc)
+    except ValidationError as exc:
+        return _failure(
+            initial,
+            reason="invalid_first_turn",
+            call_count=1,
+            error=exc,
+            outcome="insufficient_evidence",
+        )
     except Exception as exc:
         return _failure(initial, reason="provider_error", call_count=1, error=exc)
     try:
@@ -498,7 +546,7 @@ async def run_two_stage(
         )
     try:
         model = _model(model_factory)
-        first_model = model.with_structured_output(DiagnosisTurn, method="json_schema")
+        first_model = model.with_structured_output(DiagnosisTurn, method="function_calling")
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
@@ -507,6 +555,14 @@ async def run_two_stage(
         )
     except TimeoutError as exc:
         return _failure(initial, reason="timeout", call_count=1, error=exc)
+    except ValidationError as exc:
+        return _failure(
+            initial,
+            reason="invalid_first_turn",
+            call_count=1,
+            error=exc,
+            outcome="insufficient_evidence",
+        )
     except Exception as exc:
         return _failure(initial, reason="provider_error", call_count=1, error=exc)
     try:
@@ -587,7 +643,7 @@ async def run_two_stage(
             request=request,
         )
     try:
-        final_model = model.with_structured_output(DiagnosisResult, method="json_schema")
+        final_model = model.with_structured_output(DiagnosisResult, method="function_calling")
         followup_refs = tuple(sorted(_refs(followup.payload)))
     except Exception as exc:
         return _failure(
@@ -620,6 +676,17 @@ async def run_two_stage(
             request=request,
             followup_hash=followup.sha256,
             followup_evidence_refs=followup_refs,
+        )
+    except ValidationError as exc:
+        return _failure(
+            initial,
+            reason="invalid_second_turn",
+            call_count=2,
+            error=exc,
+            request=request,
+            followup_hash=followup.sha256,
+            followup_evidence_refs=followup_refs,
+            outcome="insufficient_evidence",
         )
     except Exception as exc:
         return _failure(

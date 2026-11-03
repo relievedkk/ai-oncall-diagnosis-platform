@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.diagnosis_result import DiagnosisResult
 from app.core.diagnostic_evidence import (
@@ -160,6 +161,49 @@ def _tampered_followup(request, mutate):
     )
 
 
+def _identity_bundle_pair(initial_fact, followup_fact):
+    request = EvidenceRequest(
+        services=("orders",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=(initial_fact.evidence_ref,),
+    )
+    initial = serialize_evidence_bundle(
+        InitialEvidenceBundle(
+            case_id="case-identity",
+            services=("orders", "payments"),
+            time_start=0,
+            time_end=300,
+            incident_time=120,
+            candidates=(
+                CandidateEvidence(
+                    service="orders",
+                    mechanism_profiles={},
+                    facts=(initial_fact,),
+                ),
+            ),
+            limitations=("evaluation evidence only",),
+        ),
+        max_bytes=16_384,
+    )
+    followup = serialize_evidence_bundle(
+        FollowupEvidenceBundle(
+            case_id="case-identity",
+            request=request,
+            candidates=(
+                CandidateEvidence(
+                    service="orders",
+                    mechanism_profiles={},
+                    facts=(followup_fact,),
+                ),
+            ),
+            limitations=("bounded follow-up",),
+        ),
+        max_bytes=16_384,
+    )
+    return initial, followup
+
+
 def _diagnosis(summary="done"):
     return DiagnosisResult(outcome="insufficient_evidence", summary=summary)
 
@@ -196,6 +240,7 @@ async def test_single_stage_uses_exact_initial_payload_once():
     combined = "\n".join(message.content for message in model.calls[0])
     assert combined.count(initial.text) == 1
     assert model.schemas[0][0] is DiagnosisResult
+    assert model.schemas[0][1] == {"method": "function_calling"}
     assert result.result.summary == "done"
 
 
@@ -224,6 +269,7 @@ async def test_agent_direct_diagnosis_uses_one_call():
     assert result.result.summary == "direct"
     assert result.termination_reason == "direct_diagnosis"
     assert loader_calls == []
+    assert model.schemas[0][1] == {"method": "function_calling"}
 
 
 @pytest.mark.asyncio
@@ -265,6 +311,231 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
     assert result.followup_hash == _followup(request).sha256
     assert "ev-payments-cpu" in result.followup_evidence_refs
     assert result.result.summary == "after followup"
+    assert [kwargs for _, kwargs in model.schemas] == [
+        {"method": "function_calling"},
+        {"method": "function_calling"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_policy_deduplicates_identical_fact_across_initial_and_followup():
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    initial = _initial()
+    request = EvidenceRequest(
+        services=("orders",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-orders-cpu",),
+    )
+    diagnosis = DiagnosisResult(
+        outcome="diagnosed",
+        summary="orders CPU is directly supported",
+        root_cause_service="orders",
+        fault_type="cpu",
+        cause_evidence_refs=["ev-orders-cpu"],
+        observations=[{"text": "CPU shifted", "evidence_refs": ["ev-orders-cpu"]}],
+        hypotheses=[
+            {
+                "description": "orders CPU saturation",
+                "service": "orders",
+                "fault_type": "cpu",
+                "supporting_refs": ["ev-orders-cpu"],
+                "status": "supported",
+            }
+        ],
+    )
+    model = FakeModel(
+        [
+            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            diagnosis,
+        ]
+    )
+
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        initial,
+        model_factory=_factory(model),
+        followup_loader=lambda value: _followup(value),
+        policy=DiagnosisEvidencePolicy.from_bundles(initial),
+    )
+
+    assert result.result.root_cause_service == "orders"
+    assert result.result.fault_type == "cpu"
+    assert not any(
+        "conflicting duplicate evidence identity" in issue
+        for issue in result.result.validation_issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("initial_fact", "followup_fact", "expected_records"),
+    [
+        (
+            EvidenceFact(
+                evidence_ref="ev-shared",
+                evidence_type="structured_telemetry",
+                service="orders",
+                mechanism="cpu",
+                statement="orders CPU shifted",
+                data={"ratio": 10},
+            ),
+            EvidenceFact(
+                evidence_ref="ev-shared",
+                evidence_type="structured_telemetry",
+                service="orders",
+                mechanism="cpu",
+                statement="orders CPU shifted",
+                data={"ratio": 11},
+            ),
+            2,
+        ),
+        (
+            EvidenceFact(
+                evidence_ref="ev-shared",
+                evidence_type="structured_telemetry",
+                service="orders",
+                mechanism="cpu",
+                statement="orders CPU shifted",
+                data={"ratio": 10},
+            ),
+            EvidenceFact(
+                evidence_ref="ev-shared",
+                evidence_type="structured_telemetry",
+                service="payments",
+                mechanism="cpu",
+                statement="orders CPU shifted",
+                data={"ratio": 10},
+            ),
+            2,
+        ),
+        (
+            EvidenceFact(
+                evidence_ref="topology-shared",
+                evidence_type="topology_edge",
+                service="orders",
+                statement="orders -> payments",
+                data={"caller": "orders", "callee": "payments"},
+            ),
+            EvidenceFact(
+                evidence_ref="topology-shared",
+                evidence_type="topology_edge",
+                service="payments",
+                statement="orders -> payments",
+                data={"caller": "orders", "callee": "payments"},
+            ),
+            1,
+        ),
+        (
+            EvidenceFact(
+                evidence_ref="topology-shared",
+                evidence_type="topology_edge",
+                service="orders",
+                statement="orders -> payments",
+                data={"caller": "orders", "callee": "payments"},
+            ),
+            EvidenceFact(
+                evidence_ref="topology-shared",
+                evidence_type="topology_edge",
+                service="orders",
+                statement="orders -> catalogue",
+                data={"caller": "orders", "callee": "catalogue"},
+            ),
+            2,
+        ),
+    ],
+)
+def test_canonical_policy_evidence_preserves_real_identity_conflicts(
+    initial_fact, followup_fact, expected_records
+):
+    from app.agent.aiops.two_stage import _canonical_policy_evidence
+
+    initial, followup = _identity_bundle_pair(initial_fact, followup_fact)
+
+    records = _canonical_policy_evidence(initial, followup)
+
+    assert len(records) == expected_records
+    assert {record["evidence_ref"] for record in records} == {initial_fact.evidence_ref}
+    assert all(record["result"]["data_points"][0]["timestamp"] == 120 for record in records)
+
+
+@pytest.mark.asyncio
+async def test_structured_validation_error_is_not_misclassified_as_provider_failure():
+    from app.agent.aiops.two_stage import run_single_stage
+
+    with pytest.raises(ValidationError) as captured:
+        DiagnosisResult.model_validate(
+            {
+                "outcome": "insufficient_evidence",
+                "summary": "strict boundary",
+                "unexpected_provider_field": "must be rejected",
+            }
+        )
+
+    result = await run_single_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(FakeModel([captured.value])),
+        policy=IdentityPolicy(),
+    )
+
+    assert result.call_count == 1
+    assert result.termination_reason == "invalid_first_turn"
+    assert result.failure_category == "invalid_model_output"
+    assert result.result.outcome == "insufficient_evidence"
+
+
+@pytest.mark.asyncio
+async def test_agent_classifies_first_turn_validation_error_as_invalid_model_output():
+    from app.agent.aiops.two_stage import run_two_stage
+
+    with pytest.raises(ValidationError) as captured:
+        DiagnosisResult.model_validate({"unexpected_provider_field": "rejected"})
+
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(FakeModel([captured.value])),
+        followup_loader=lambda request: _followup(request),
+        policy=IdentityPolicy(),
+    )
+
+    assert result.call_count == 1
+    assert result.termination_reason == "invalid_first_turn"
+    assert result.failure_category == "invalid_model_output"
+
+
+@pytest.mark.asyncio
+async def test_agent_classifies_second_turn_validation_error_as_invalid_model_output():
+    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+
+    request = EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+    with pytest.raises(ValidationError) as captured:
+        DiagnosisResult.model_validate({"unexpected_provider_field": "rejected"})
+
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(
+            FakeModel(
+                [
+                    DiagnosisTurn(action="request_evidence", evidence_request=request),
+                    captured.value,
+                ]
+            )
+        ),
+        followup_loader=lambda value: _followup(value),
+        policy=IdentityPolicy(),
+    )
+
+    assert result.call_count == 2
+    assert result.termination_reason == "invalid_second_turn"
+    assert result.failure_category == "invalid_model_output"
 
 
 @pytest.mark.asyncio
