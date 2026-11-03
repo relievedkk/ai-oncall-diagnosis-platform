@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 from app.core.single_pass import REVISION, canonical
+from app.evaluation.single_pass_attribution import attribute_failure, write_attribution_report
 from app.evaluation.single_pass_hypotheses import collect_evidence, rank_hypotheses
 from app.evaluation.single_pass_packet import build_packet
 
@@ -141,6 +142,16 @@ def audit_development(pilot, *, scope, progress=None, telemetry_profile=None):
                 "quality": evidence.quality,
                 "inventory": [f.model_dump() for f in evidence.facts],
                 "window": evidence.window.model_dump(),
+                "attribution": attribute_failure(
+                    evidence,
+                    hypotheses,
+                    catalog=frozen["catalog"],
+                    truth=truth,
+                    packet_error=frozen["packet_error"],
+                ),
+                "eligible_competing_pairs": sum(
+                    h["eligible"] and not matches(h) for h in frozen["catalog"]
+                ),
                 "ablations": {
                     name: {
                         "pair_recalled": any(matches(h) for h in hs),
@@ -324,6 +335,7 @@ def main(argv=None):
         )
         audit_sha = hashlib.sha256(canonical(audit).encode()).hexdigest()
         _write(args.output_dir / "development-audit.json", audit)
+        write_attribution_report(audit, args.output_dir / "failure-attribution.md")
         print(canonical({k: v for k, v in audit.items() if k != "cases"}), flush=True)
         print("audit_sha256=" + audit_sha, flush=True)
         if args.mode == "validate":
