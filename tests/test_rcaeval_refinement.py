@@ -1,15 +1,17 @@
 import json
 import math
 
-import pandas as pd
 import pytest
 
-from app.evaluation.rcaeval import CaseView
+pd = pytest.importorskip("pandas")
+pytest.importorskip("pyarrow")
 
 
 @pytest.fixture
 def telemetry(tmp_path):
     def make(**columns):
+        from app.evaluation.rcaeval import CaseView
+
         times = list(range(20))
         pd.DataFrame({"time": times, **columns}).to_parquet(tmp_path / "metrics.parquet")
         pd.DataFrame(

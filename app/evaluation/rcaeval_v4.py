@@ -129,6 +129,24 @@ async def run_protocol_v4_case(
                 "traces": "present" if view.has_traces else "not_available",
                 "logs": "present" if not view.l.empty else "not_available",
             },
+            "evidence_coverage": {
+                candidate.service: {
+                    mechanism: {
+                        "state": profile.state,
+                        "comparison_status": profile.coverage.status
+                        if profile.coverage
+                        else "available"
+                        if profile.available
+                        else "unavailable",
+                        "fault_eligible": profile.fault_eligible,
+                        "partial_samples": profile.coverage.model_dump()
+                        if profile.coverage
+                        else None,
+                    }
+                    for mechanism, profile in candidate.mechanism_profiles.items()
+                }
+                for candidate in parsed.candidates
+            },
             "final_result_source": "refined"
             if adaptive_result and adaptive_result.refinement_status == "refined"
             else "initial",

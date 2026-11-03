@@ -9,7 +9,7 @@ from tests.test_two_stage_diagnosis import FakeModel, _factory
 async def test_v4_freezes_both_results_before_truth_and_preserves_parity(telemetry):
     from app.evaluation.rcaeval_v4 import run_protocol_v4_case
 
-    view = telemetry(orders_cpu=[1] * 5 + [20] * 15)
+    view = telemetry(orders_cpu=[1] * 5 + [20] * 15, orders_diskio=[None] * 5 + [10] * 15)
     models = {
         "single_stage": FakeModel([EvaluationDiagnosisResult()]),
         "agent": FakeModel([EvaluationDiagnosisResult(), EvaluationDiagnosisResult()]),
@@ -38,6 +38,10 @@ async def test_v4_freezes_both_results_before_truth_and_preserves_parity(telemet
     assert agent["enrichment_failure_detail_code"] is None
     assert agent["schema_issues"] == []
     assert "scoring_v4" in agent and "scoring_v3" not in agent
+    assert agent["evidence_coverage"]["orders"]["cpu"]["state"] == "direct_signal"
+    assert agent["evidence_coverage"]["orders"]["loss"]["comparison_status"] == "unavailable"
+    assert agent["evidence_coverage"]["orders"]["disk"]["comparison_status"] == "baseline_missing"
+    assert agent["evidence_coverage"]["orders"]["disk"]["partial_samples"]["after_samples"] == 15
 
 
 def _run(strategy, service, fault):
