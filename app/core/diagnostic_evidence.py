@@ -263,10 +263,20 @@ class DiagnosisEvidencePolicy:
                         topology_refs[ref] = (caller, callee)
         # This argument is supplied only by the trusted raw-data verifier, never read
         # from the serialized bundle. Self-reported eligibility cannot clear ambiguity.
+        resolved: dict[str, dict[str, set[str]]] = {}
         for service, mechanism, ref in verified_resolutions:
             if ref in observed_mechanism_refs.get((service, mechanism), set()):
+                resolved.setdefault(service, {}).setdefault(mechanism, set()).add(ref)
+        for service, winners in resolved.items():
+            for key in list(mechanism_refs):
+                if key[0] == service:
+                    del mechanism_refs[key]
+            if len(winners) == 1:
                 ambiguous.discard(service)
-                mechanism_refs[(service, mechanism)] = {ref}
+                mechanism, refs = next(iter(winners.items()))
+                mechanism_refs[(service, mechanism)] = refs
+            else:
+                ambiguous.add(service)
         frozen_observed_refs = MappingProxyType(
             {key: frozenset(value) for key, value in observed_mechanism_refs.items()}
         )

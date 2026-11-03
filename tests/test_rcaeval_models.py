@@ -61,6 +61,13 @@ def test_schema_issues_do_not_leak_inputs_messages_or_extra_field_names():
     }
 
 
+def test_unstructured_parse_exception_is_reduced_to_fixed_code():
+    from app.core.structured_output import safe_schema_issues
+
+    issues = safe_schema_issues(ValueError("secret raw provider output"))
+    assert [(i.code, i.path) for i in issues] == [("parse", "<output>")]
+
+
 @pytest.mark.asyncio
 async def test_audited_parser_failure_retains_usage_and_safe_cause():
     from app.core.structured_output import StructuredOutputError

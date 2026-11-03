@@ -55,6 +55,7 @@ class AdaptiveResult(BaseModel):
     ]
     added_refs: tuple[str, ...] = ()
     verified_refinement_refs: tuple[str, ...] = ()
+    followup_hash: str | None = None
     call_count: int = Field(ge=0, le=2)
 
 
@@ -88,12 +89,25 @@ async def run_adaptive(
             selection_reason="first_failure",
             call_count=0,
         )
+    try:
+        remaining = deadline.remaining()
+    except TimeoutError as exc:
+        first = _failure(
+            initial, reason="timeout", detail_code="strategy_timeout", call_count=0, error=exc
+        )
+        return AdaptiveResult(
+            first=first,
+            final=first,
+            refinement_status="first_failed",
+            selection_reason="first_failure",
+            call_count=0,
+        )
     first = await _run_diagnosis_turn(
         task,
         initial,
         model_factory=model_factory,
         policy=policy,
-        timeout_seconds=deadline.remaining(),
+        timeout_seconds=remaining,
         diagnosis_schema=EvaluationDiagnosisResult,
     )
 
@@ -118,9 +132,14 @@ async def run_adaptive(
             selection_reason=reason,
             added_refs=added,
             verified_refinement_refs=verified,
+            followup_hash=followup.sha256 if followup else None,
             call_count=first.call_count + (enrichment.call_count if enrichment else 0),
         )
 
+    followup = None
+    second = None
+    added = ()
+    verified = ()
     if first.failure_category:
         return retain("first_failed", reason="first_failure")
     if first.result.diagnosis_complete:
@@ -152,6 +171,8 @@ async def run_adaptive(
                     resolutions = await deadline.wait(
                         _run_blocking(refinement_verifier, request, followup)
                     )
+                if inspect.isawaitable(resolutions):
+                    resolutions = await deadline.wait(resolutions)
                 verified = added
             except TimeoutError:
                 raise
@@ -216,10 +237,18 @@ async def run_adaptive(
             selection_reason=reason,
             added_refs=added,
             verified_refinement_refs=verified,
+            followup_hash=followup.sha256,
             call_count=first.call_count + second.call_count,
         )
     except TimeoutError:
-        return retain("failed", failure="strategy_timeout", request=request)
+        return retain(
+            "failed",
+            failure="strategy_timeout",
+            request=request,
+            enrichment=second,
+            added=added,
+            verified=verified,
+        )
     except EvidenceContractError as exc:
         return retain("failed", failure=exc.code, request=request)
     except FollowupContractError as exc:

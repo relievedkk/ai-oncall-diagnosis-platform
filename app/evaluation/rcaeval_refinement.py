@@ -37,6 +37,18 @@ def plan_refinement(
         for c in candidates
         if any(p.strong_change or p.coverage is not None for p in c.mechanism_profiles.values())
     ][:2]
+    hinted = None
+    if not diagnosis.root_cause_service:
+        hinted = next(
+            (
+                h
+                for h in initial.candidate_hints
+                if h.evidence_refs and any(s.endswith(":direct_signal") for s in h.visible_signals)
+            ),
+            None,
+        )
+        if hinted:
+            chosen = chosen[:1]
     mechanisms = sorted(
         {
             m
@@ -46,10 +58,20 @@ def plan_refinement(
         }
     )
     refs = sorted({f.evidence_ref for c in chosen for f in c.facts})[:16]
+    if hinted:
+        mechanisms = sorted(
+            set(mechanisms)
+            | {
+                signal.split(":", 1)[0]
+                for signal in hinted.visible_signals
+                if signal.endswith(":direct_signal")
+            }
+        )
+        refs = sorted(set(refs[:12]) | set(hinted.evidence_refs[:4]))
     if not chosen or not mechanisms or not refs:
         return None
     request = EvidenceRequest(
-        services=tuple(c.service for c in chosen),
+        services=tuple(c.service for c in chosen) + ((hinted.service,) if hinted else ()),
         mechanisms=tuple(mechanisms),
         view="mechanism_details",
         justification_refs=tuple(refs),
@@ -164,7 +186,9 @@ def build_refinement_evidence(
             profiles[mechanism] = profiles[mechanism].model_copy(
                 update={
                     "evidence_refs": (*profiles[mechanism].evidence_refs, ref),
-                    "fault_eligible": profiles[mechanism].fault_eligible or mechanism == winner,
+                    "fault_eligible": (mechanism == winner)
+                    if winner
+                    else profiles[mechanism].fault_eligible,
                 }
             )
         candidates.append(
@@ -208,15 +232,32 @@ def refinement_has_novel_observations(
         prior = old.get(candidate["service"])
         if prior is None:
             return bool(candidate["facts"])
-        if candidate.get("trends") and candidate["trends"] != prior.get("trends"):
+
+        def observations(trends):
+            return {
+                (t.get("metric"), b.get("start"), b.get("mean"), b.get("samples"))
+                for t in trends
+                for b in t.get("minute_means", [])
+                if isinstance(b.get("mean"), (int, float))
+                and math.isfinite(b["mean"])
+                and b.get("samples", 0) > 0
+            }
+
+        if observations(candidate.get("trends", [])) - observations(prior.get("trends", [])):
             return True
-        old_data = {canonical_json(f.get("data", {})) for f in prior["facts"]}
+        old_temporal = {canonical_json(f.get("data", {}).get("temporal")) for f in prior["facts"]}
         for fact in candidate["facts"]:
             detail = fact.get("data", {}).get("temporal")
             if (
                 detail
-                and detail.get("after_samples", 0) > 0
-                and canonical_json(fact["data"]) not in old_data
+                and canonical_json(detail) not in old_temporal
+                and (
+                    detail.get("before_samples", 0) >= 3
+                    and detail.get("after_samples", 0) >= 3
+                    and detail.get("onset_lower") is not None
+                    and detail.get("onset_upper") is not None
+                    and detail.get("persistence", 0) > 0
+                )
             ):
                 return True
     return False

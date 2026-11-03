@@ -676,6 +676,8 @@ def build_initial_evidence(view, *, max_bytes: int) -> SerializedEvidenceBundle:
         "Resource limits, GC, restarts, deployment history and injection labels are unavailable.",
         "Observed caller -> callee edges do not prove propagation or root cause.",
     ]
+    if view.l.empty:
+        limitations.append("Log telemetry unavailable; absence cannot exclude a fault.")
     if not topology.get("available"):
         limitations.append(
             f"Topology unavailable: {topology.get('reason', 'no reliable call edges')}."

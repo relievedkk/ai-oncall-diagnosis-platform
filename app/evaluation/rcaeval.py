@@ -81,11 +81,14 @@ class Pilot:
         directory = (self.root / self.ids[case_id]).resolve(strict=True)
         if not directory.is_relative_to(self.root):
             raise ValueError("Case path escapes dataset root")
-        for name in ("metrics.parquet", "logs.parquet", "inject_time.txt"):
+        for name in ("metrics.parquet", "inject_time.txt"):
             if not (directory / name).resolve(strict=True).is_relative_to(self.root):
                 raise ValueError("Data file escapes dataset root")
         trace_path = directory / "traces.parquet"
         if trace_path.exists() and not trace_path.resolve(strict=True).is_relative_to(self.root):
+            raise ValueError("Data file escapes dataset root")
+        log_path = directory / "logs.parquet"
+        if log_path.exists() and not log_path.resolve(strict=True).is_relative_to(self.root):
             raise ValueError("Data file escapes dataset root")
         return CaseView(directory, case_id)
 
@@ -108,7 +111,18 @@ class CaseView:
     def __init__(self, directory, case_id):
         self.case_id = case_id
         self.m = pd.read_parquet(directory / "metrics.parquet")
-        self.l = pd.read_parquet(directory / "logs.parquet")
+        log_path = directory / "logs.parquet"
+        self.l = (
+            pd.read_parquet(log_path)
+            if log_path.exists()
+            else pd.DataFrame(
+                {
+                    "timestamp": pd.Series(dtype="int64"),
+                    "container_name": pd.Series(dtype="str"),
+                    "message": pd.Series(dtype="str"),
+                }
+            )
+        )
         trace_path = directory / "traces.parquet"
         self.has_traces = trace_path.exists()
         if self.has_traces:
@@ -227,13 +241,14 @@ class CaseView:
         frame = self.l[self.l.timestamp.between(start, end)]
         if service_name:
             # Match full container component, not an arbitrary substring.
-            frame = frame[
+            frame = frame.loc[
                 frame.container_name.astype(str)
                 .str.split("_")
                 .apply(lambda parts: service_name in parts)
+                .astype(bool)
             ]
         if query:
-            frame = frame[frame.message.str.contains(query, regex=False, na=False)]
+            frame = frame.loc[frame.message.str.contains(query, regex=False, na=False).astype(bool)]
         frame = frame.assign(_distance=(frame.timestamp - self.incident).abs()).sort_values(
             ["_distance", "timestamp"], kind="stable"
         )
@@ -248,6 +263,7 @@ class CaseView:
         return {
             **self._base(),
             "records": records,
+            "data_status": "not_available" if self.l.empty else "present" if records else "no_data",
             "total": len(frame),
             "truncated": len(frame) > limit,
             "sampling": "nearest to incident, then timestamp; bounded excerpts",
@@ -647,14 +663,16 @@ def validate(pilot, *, development_truth_loader=None):
         trace_expected = view.has_traces
         checks = {
             "inject_within_telemetry_window": view.start <= view.incident <= view.end,
-            "logs_nonempty": len(view.l) > 0,
+            "logs_nonempty_or_explicitly_unavailable": len(view.l) > 0
+            or view.logs()["data_status"] == "not_available",
             "traces_nonempty_when_present": not trace_expected or len(view.t) > 0,
             "metrics_have_signal_columns": len(view.m.columns) > 1,
             "trace_absolute_time_overlap": (
                 bool(view.t._epoch.between(view.start, view.end).any()) if trace_expected else True
             ),
             "metrics_readable": bool(view.metrics()["data_points"]),
-            "logs_readable": bool(view.logs()["records"]),
+            "logs_readable": bool(view.logs()["records"])
+            or view.logs()["data_status"] == "not_available",
             "traces_readable": (
                 bool(view.traces()["data_points"])
                 if trace_expected
@@ -1078,9 +1096,11 @@ def main(argv=None):
     if args.audit_development:
         if development_pilot is None:
             parser.error("development audit requires the known heldout-18-v1 development directory")
-        from app.evaluation.rcaeval_v4 import audit_development
+        from app.evaluation.rcaeval_v4 import DevelopmentScope, audit_development
 
-        audit = audit_development(development_pilot)
+        audit = audit_development(
+            development_pilot, scope=DevelopmentScope(answers_file=development_answers)
+        )
         (args.output_dir / "development-audit.json").write_text(
             json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
         )

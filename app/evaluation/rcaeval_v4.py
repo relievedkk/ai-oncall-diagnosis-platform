@@ -2,6 +2,8 @@
 
 import inspect
 from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
 
 from app.agent.aiops.adaptive_diagnosis import run_adaptive
 from app.agent.aiops.two_stage import run_single_stage
@@ -22,6 +24,24 @@ from app.evaluation.rcaeval_scoring import assess_run, summarize
 
 PROMPT_REVISION = "stage-specific-20261103"
 EVIDENCE_REVISION = "temporal-20261103"
+
+_DEVELOPMENT_IDS = frozenset(
+    "case-001 case-003 case-007 case-012 case-013 case-014 case-015 case-022 case-024 "
+    "case-025 case-028 case-030 case-032 case-041 case-042 case-044 case-052 case-054".split()
+)
+
+
+@dataclass(frozen=True)
+class DevelopmentScope:
+    """Explicit local capability: previously-used IDs and an approved answer source."""
+
+    answers_file: Path
+    case_ids: frozenset[str] = _DEVELOPMENT_IDS
+
+    def __post_init__(self):
+        if not self.case_ids or not self.case_ids.issubset(_DEVELOPMENT_IDS):
+            raise ValueError("Scope includes an unapproved development case")
+        object.__setattr__(self, "answers_file", Path(self.answers_file).resolve(strict=True))
 
 
 async def run_protocol_v4_case(
@@ -91,7 +111,7 @@ async def run_protocol_v4_case(
             "initial_parity": True,
             "initial_candidates": [c.service for c in parsed.candidates],
             "expanded_candidates": sorted(
-                set(c.service for c in parsed.candidates)
+                {c.service for c in parsed.candidates}
                 | (
                     set(adaptive_result.request.services)
                     if adaptive_result
@@ -113,6 +133,7 @@ async def run_protocol_v4_case(
             if adaptive_result and adaptive_result.refinement_status == "refined"
             else "initial",
             "fallback_used": adaptive_result.fallback_used if adaptive_result else False,
+            "followup_hash": adaptive_result.followup_hash if adaptive_result else None,
             "refinement_status": adaptive_result.refinement_status
             if adaptive_result
             else "not_applicable",
@@ -194,11 +215,13 @@ def summarize_v4(runs):
     return {"metrics": metrics, "paired": paired, "strata": strata}
 
 
-def audit_development(pilot, *, max_bytes=16384):
-    if not 1 <= len(pilot.ids) <= 18:
-        raise ValueError(
-            "Development audit accepts only the already-used development set (at most 18)"
-        )
+def audit_development(pilot, *, scope: DevelopmentScope | None = None, max_bytes=16384):
+    if not isinstance(scope, DevelopmentScope) or not 1 <= len(pilot.ids) <= 18:
+        raise ValueError("An explicit approved development scope is required")
+    if not set(pilot.ids).issubset(scope.case_ids):
+        raise ValueError("Case IDs are outside the approved development scope")
+    if Path(pilot.answers_file).resolve() != scope.answers_file:
+        raise ValueError("Answer source is outside the approved development scope")
     rows = []
     for case_id in pilot.ids:
         view = pilot.open(case_id)
@@ -220,6 +243,9 @@ def audit_development(pilot, *, max_bytes=16384):
         root, fault = truth["root_cause_service"], truth["fault"]
         candidate = next((c for c in parsed.candidates if c.service == root), None)
         profile = candidate.mechanism_profiles.get(fault) if candidate else None
+        from app.evaluation.rcaeval_refinement import refinement_has_novel_observations
+
+        novel = bool(followup and refinement_has_novel_observations(initial, followup))
         rows.append(
             {
                 "case_id": case_id,
@@ -236,6 +262,12 @@ def audit_development(pilot, *, max_bytes=16384):
                 and root not in refined_policy.ambiguous_services,
                 "verified_resolutions": len(resolutions),
                 "new_mechanism_refs": len(refined_policy.valid_refs - policy.valid_refs),
+                "query_semantic_novelty": novel,
+                "query_novelty_reason": "new_temporal_or_restored_observations"
+                if novel
+                else "no_new_observations"
+                if request
+                else "no_authorized_query",
                 "initial_bytes": initial.byte_length,
                 "followup_bytes": followup.byte_length if followup else None,
                 "traces": "present" if view.has_traces else "not_available",
