@@ -18,6 +18,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.diagnostic_evidence import DiagnosisEvidencePolicy
 from app.core.evidence import decode_evidence_result, evidence_response_layers, valid_evidence
 from oncall_logging.redaction import make_redactor
 
@@ -58,6 +59,8 @@ class Observation(BaseModel):
 class Hypothesis(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: Text
+    service: Text = Field(default="", description="该假设指向的单一服务；未知时为空")
+    fault_type: Text = Field(default="unknown", description="该假设指向的故障机理")
     supporting_refs: References = Field(default_factory=list)
     opposing_refs: References = Field(default_factory=list)
     status: Literal["supported", "unverified", "rejected"] = "unverified"
@@ -68,6 +71,18 @@ class DiagnosisResult(BaseModel):
     schema_version: Literal[1] = 1
     outcome: Outcome = "insufficient_evidence"
     summary: Text = ""
+    root_cause_service: Text = Field(default="", description="明确的根因服务，未知时为空")
+    fault_type: Text = Field(
+        default="unknown", description="故障机理类型；无法区分原因与症状时必须unknown"
+    )
+    cause_evidence_refs: References = Field(default_factory=list)
+    diagnosis_complete: bool = False
+    candidate_comparisons: list[Hypothesis] = Field(
+        default_factory=list,
+        max_length=8,
+        description="比较候选服务与竞争机理，分别说明支持、反证、排除理由及不确定性",
+    )
+    affected_services: TextList = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list, max_length=32)
     hypotheses: list[Hypothesis] = Field(default_factory=list, max_length=16)
     missing_evidence: TextList = Field(default_factory=list)
@@ -173,6 +188,11 @@ def normalize_result(
     context: str = "production",
     termination_reason: str = "",
     authority_outcome: str | None = None,
+    require_complete: bool = False,
+    service_catalog: tuple[str, ...] = (),
+    require_comparison: bool = False,
+    allowed_fault_types: tuple[str, ...] = (),
+    evidence_policy: DiagnosisEvidencePolicy | None = None,
 ) -> dict:
     """Validate model claims against this task's evidence and executor facts."""
     if context not in {"production", "replay", "evaluation"}:
@@ -284,15 +304,52 @@ def normalize_result(
         hypotheses.append(
             {
                 "description": description,
+                "service": text(item.get("service", "")).strip(),
+                "fault_type": text(item.get("fault_type", "unknown")).strip() or "unknown",
                 "supporting_refs": supporting,
                 "opposing_refs": opposing,
                 "status": status,
             }
         )
+    root = text(source.get("root_cause_service", "")).strip()
+    if service_catalog and root and root not in service_catalog:
+        issue("Root cause must be a single catalog service; multiple candidates are not Top-1")
+        root = ""
+    comparisons = []
+    for item in items(source.get("candidate_comparisons", []), 8):
+        if isinstance(item, dict):
+            comparisons.append(
+                {
+                    "description": text(item.get("description", "")),
+                    "service": text(item.get("service", "")).strip(),
+                    "fault_type": text(item.get("fault_type", "unknown")).strip() or "unknown",
+                    "supporting_refs": refs(item.get("supporting_refs", [])),
+                    "opposing_refs": refs(item.get("opposing_refs", [])),
+                    "status": (
+                        item.get("status")
+                        if isinstance(item.get("status"), str)
+                        and item.get("status") in {"supported", "rejected", "unverified"}
+                        else "unverified"
+                    ),
+                }
+            )
+    fault_type = text(source.get("fault_type", "unknown")).strip() or "unknown"
+    if allowed_fault_types and fault_type not in allowed_fault_types:
+        issue("Fault type is outside the allowed vocabulary")
+        fault_type = "unknown"
     result = {
         "schema_version": 1,
         "outcome": outcome,
         "summary": text(source.get("summary", "")),
+        "root_cause_service": root,
+        "candidate_comparisons": comparisons,
+        "affected_services": [
+            text(s)
+            for s in items(source.get("affected_services", []))
+            if not service_catalog or s in service_catalog
+        ],
+        "fault_type": fault_type,
+        "cause_evidence_refs": refs(source.get("cause_evidence_refs", [])),
         "observations": observations,
         "hypotheses": hypotheses,
         **{
@@ -301,16 +358,107 @@ def normalize_result(
         },
         "termination_reason": text(termination_reason, 500),
     }
+    if evidence_policy is not None and result["root_cause_service"]:
+        policy_root = result["root_cause_service"]
+        policy_fault = result["fault_type"]
+        cause_refs = set(result["cause_evidence_refs"])
+        if policy_root not in evidence_policy.allowed_services:
+            issue("Root cause service was not in the initial or expanded candidate set")
+            result["root_cause_service"] = ""
+            result["fault_type"] = "unknown"
+            result["outcome"] = "insufficient_evidence"
+        else:
+            matching_refs = set(
+                evidence_policy.mechanism_refs.get((policy_root, policy_fault), frozenset())
+            )
+            reverse_only = any(
+                edge[0] == policy_root
+                and edge[1] != policy_root
+                and any(key[0] == edge[1] for key in evidence_policy.observed_mechanism_refs)
+                for ref in cause_refs
+                if (edge := evidence_policy.topology_refs.get(ref)) is not None
+            ) and not cause_refs.intersection(matching_refs)
+            if reverse_only:
+                issue(
+                    "Caller cannot be established as root cause solely from a caller -> callee edge"
+                )
+                result["root_cause_service"] = ""
+                result["fault_type"] = "unknown"
+                result["outcome"] = "insufficient_evidence"
+            elif policy_fault != "unknown":
+                if policy_root in evidence_policy.ambiguous_services:
+                    issue("Competing direct mechanisms are ambiguous; fault type must be unknown")
+                    result["fault_type"] = "unknown"
+                    result["outcome"] = "insufficient_evidence"
+                elif policy_fault == "delay" and policy_root in evidence_policy.delay_blockers:
+                    issue("Delay is a possible symptom while direct resource evidence remains")
+                    result["fault_type"] = "unknown"
+                    result["outcome"] = "insufficient_evidence"
+                elif not cause_refs.intersection(matching_refs):
+                    issue("Fault type lacks a matching same-service mechanism evidence reference")
+                    result["fault_type"] = "unknown"
+                    result["outcome"] = "insufficient_evidence"
+            if result["root_cause_service"] and result["fault_type"] == "unknown":
+                observed_service_refs = {
+                    ref
+                    for (service, _mechanism), refs_for_mechanism in (
+                        evidence_policy.observed_mechanism_refs.items()
+                    )
+                    if service == policy_root
+                    for ref in refs_for_mechanism
+                }
+                if (
+                    policy_root not in evidence_policy.ambiguous_services
+                    or not cause_refs.intersection(observed_service_refs)
+                ):
+                    issue(
+                        "Unknown fault may retain a root service only for cited competing direct mechanisms"
+                    )
+                    result["root_cause_service"] = ""
+                    result["outcome"] = "insufficient_evidence"
     if synthetic_used or any("synthetic_fixture" in reason for _, reason in available.values()):
         result["limitations"] = (
             ["来源：synthetic_fixture（合成实验数据，非真实业务验证）"] + result["limitations"]
         )[:32]
     if outcome == "diagnosed" and not supported_observation:
         issue("Diagnosis lacks a supported hypothesis citing usable observations")
+    typed_supported_cause = any(
+        hypothesis["status"] == "supported"
+        and hypothesis["service"] == result["root_cause_service"]
+        and hypothesis["fault_type"] == result["fault_type"]
+        and bool(observed.intersection(hypothesis["supporting_refs"]))
+        for hypothesis in hypotheses
+    )
+    complete = bool(
+        result["root_cause_service"]
+        and result["fault_type"] != "unknown"
+        and observed.intersection(result["cause_evidence_refs"])
+        and supported_observation
+        and (not require_complete or typed_supported_cause)
+        and (
+            not require_comparison
+            or (
+                len(comparisons) >= 2
+                and all(c["description"].strip() for c in comparisons)
+                and any(observed.intersection(c["supporting_refs"]) for c in comparisons)
+            )
+        )
+    )
+    result["diagnosis_complete"] = complete and not issues
+    if require_complete and not result["diagnosis_complete"]:
+        if outcome == "diagnosed":
+            result["outcome"] = "insufficient_evidence"
+        result["missing_evidence"] = (
+            result["missing_evidence"]
+            + ["根因服务、故障机理或有效因果证据尚未完整确认；请保留不确定性。"]
+        )[:32]
+        if result["termination_reason"] == "sufficient_evidence":
+            result["termination_reason"] = "incomplete_diagnosis"
     if outcome == "diagnosed" and issues:
         result["outcome"] = "insufficient_evidence"
     if authority_outcome:
         result["outcome"] = authority_outcome
+    result["diagnosis_complete"] = result["diagnosis_complete"] and result["outcome"] == "diagnosed"
     result["validation_issues"] = issues
     return DiagnosisResult.model_validate(result).model_dump()
 
@@ -333,6 +481,14 @@ def render_result(result: dict) -> str:
         "legacy_unverified": "历史报告，未进行结构化校验",
     }
     lines = [f"## {labels[report.outcome]}", "", _markdown(report.summary)]
+    if report.root_cause_service or report.fault_type != "unknown":
+        lines += [
+            "",
+            "根因服务：" + _markdown(report.root_cause_service or "未知"),
+            "故障类型：" + _markdown(report.fault_type),
+            "诊断完整性："
+            + ("字段与证据引用完整，机理待复核" if report.diagnosis_complete else "未完整确认"),
+        ]
     if report.termination_reason:
         lines += ["", f"终止原因：{_markdown(report.termination_reason)}"]
     if report.observations:
@@ -346,13 +502,31 @@ def render_result(result: dict) -> str:
     if report.hypotheses:
         lines += ["", "### 候选原因"]
         for item in report.hypotheses:
-            lines.append(f"- {_markdown(item.description)} [{item.status}]")
+            typed_cause = (
+                f" ({_markdown(item.service)}/{_markdown(item.fault_type)})"
+                if item.service or item.fault_type != "unknown"
+                else ""
+            )
+            lines.append(f"- {_markdown(item.description)}{typed_cause} [{item.status}]")
             if item.supporting_refs:
                 lines.append(
                     "  - 支持：" + ", ".join(_markdown(ref) for ref in item.supporting_refs)
                 )
             if item.opposing_refs:
                 lines.append("  - 反证：" + ", ".join(_markdown(ref) for ref in item.opposing_refs))
+    if report.candidate_comparisons:
+        lines += ["", "### 候选服务与机理比较"]
+        for item in report.candidate_comparisons:
+            typed_cause = (
+                f" ({_markdown(item.service)}/{_markdown(item.fault_type)})"
+                if item.service or item.fault_type != "unknown"
+                else ""
+            )
+            lines.append(f"- {_markdown(item.description)}{typed_cause} [{item.status}]")
+            lines.append("  - 支持：" + ", ".join(_markdown(ref) for ref in item.supporting_refs))
+            lines.append("  - 反证：" + ", ".join(_markdown(ref) for ref in item.opposing_refs))
+    if report.affected_services:
+        lines += ["", "受影响服务：" + ", ".join(_markdown(s) for s in report.affected_services)]
     for key, label in (
         ("missing_evidence", "缺失证据"),
         ("next_checks", "后续验证"),
