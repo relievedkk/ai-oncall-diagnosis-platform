@@ -77,7 +77,7 @@ def metric_facts(view, window, *, semantics=None):
             data = {
                 "metric": column,
                 "metric_kind": "counter_rate" if kind == "counter" else kind,
-                "unit": (unit + "/second") if kind == "counter" else unit,
+                "unit": (unit + "/second") if kind == "counter" and unit != "unknown" else unit,
                 "reset_count": resets,
                 "coverage": coverage,
                 "before_samples": len(before),
@@ -94,6 +94,16 @@ def metric_facts(view, window, *, semantics=None):
                 "post_shape": "unavailable",
                 "scales": {},
             }
+            for key in (
+                "quantity",
+                "semantic_source",
+                "interpretation",
+                "lookback_seconds",
+                "evaluation_step_seconds",
+                "scrape_seconds",
+            ):
+                if key in meta:
+                    data[key] = meta[key]
             if coverage == "complete":
                 mad = _median(abs(float(v) - pre) for v in before)
                 threshold = max(6 * mad, abs(pre) * 0.5, 1e-9)

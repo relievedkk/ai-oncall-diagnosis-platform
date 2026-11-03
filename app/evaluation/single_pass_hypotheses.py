@@ -3,6 +3,12 @@
 from app.core.single_pass import FAULTS, EvidenceSet, Hypothesis, make_window
 from app.evaluation.single_pass_events import log_facts
 from app.evaluation.single_pass_metrics import metric_facts
+from app.evaluation.single_pass_semantics import (
+    PROFILE_SHA256,
+    SEMANTICS_REVISION,
+    published_cpu_usage,
+    resolve_semantics,
+)
 from app.evaluation.single_pass_traces import trace_facts
 
 EVENTS = {
@@ -15,10 +21,15 @@ EVENTS = {
 }
 
 
-def collect_evidence(view, *, incident=None, semantics=None, status_semantics=None):
+def collect_evidence(
+    view, *, incident=None, semantics=None, status_semantics=None, telemetry_profile=None
+):
     window = make_window(view, incident=incident)
+    resolved = resolve_semantics(view, telemetry_profile)
+    if semantics is not None:
+        resolved.update(semantics)
     facts = (
-        metric_facts(view, window, semantics=semantics)
+        metric_facts(view, window, semantics=resolved)
         + log_facts(view, window)
         + trace_facts(view, window, status_semantics=status_semantics)
     )
@@ -29,6 +40,12 @@ def collect_evidence(view, *, incident=None, semantics=None, status_semantics=No
             f.source == "metrics" and f.data.get("coverage") == "baseline_missing" for f in facts
         ),
     }
+    if telemetry_profile not in {None, "unknown"}:
+        quality.update(
+            telemetry_profile=telemetry_profile,
+            semantic_revision=SEMANTICS_REVISION,
+            semantic_sha256=PROFILE_SHA256,
+        )
     return EvidenceSet(
         case_id=view.case_id,
         window=window,
@@ -104,8 +121,13 @@ def _for_service(evidence, service):
         mechanism = bool(direct)
         if fault == "cpu":
             mechanism |= any(
-                f.data.get("unit") not in {None, "unknown"}
-                and f.data.get("metric_kind") != "unknown"
+                (
+                    published_cpu_usage(f)
+                    or (
+                        f.data.get("unit") not in {None, "unknown"}
+                        and f.data.get("metric_kind") != "unknown"
+                    )
+                )
                 and f.data.get("direction") == "up"
                 for f in own
             )

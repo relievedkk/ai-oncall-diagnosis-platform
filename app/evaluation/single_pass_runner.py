@@ -39,8 +39,8 @@ def source_snapshot(root=None):
     return "sha256:" + hashlib.sha256(canonical(entries).encode()).hexdigest()
 
 
-def _freeze(view, *, perturb=True):
-    evidence = collect_evidence(view)
+def _freeze(view, *, perturb=True, telemetry_profile=None):
+    evidence = collect_evidence(view, telemetry_profile=telemetry_profile)
     hypotheses = rank_hypotheses(evidence)
     selected = [h.model_dump() for h in hypotheses]
     # All services' permissions are frozen without labels; bounded top5 recall is scored separately.
@@ -72,7 +72,9 @@ def _freeze(view, *, perturb=True):
     if perturb:
         for shift in (-60, -30, 30, 60):
             try:
-                perturbed = collect_evidence(view, incident=view.incident + shift)
+                perturbed = collect_evidence(
+                    view, incident=view.incident + shift, telemetry_profile=telemetry_profile
+                )
                 candidates = rank_hypotheses(perturbed)
                 perturbations.append(
                     {"shift_seconds": shift, "hypotheses": [h.model_dump() for h in candidates]}
@@ -95,7 +97,7 @@ def _freeze(view, *, perturb=True):
     )
 
 
-def audit_development(pilot, *, scope, progress=None):
+def audit_development(pilot, *, scope, progress=None, telemetry_profile=None):
     from app.evaluation.rcaeval_v4 import DevelopmentScope
 
     if (
@@ -111,7 +113,9 @@ def audit_development(pilot, *, scope, progress=None):
             progress(case_id)
         try:
             view = pilot.open(case_id)
-            evidence, hypotheses, packet, frozen = _freeze(view)
+            evidence, hypotheses, packet, frozen = _freeze(
+                view, telemetry_profile=telemetry_profile
+            )
             # All features, hypotheses, ablations, time perturbations and packet are frozen first.
             truth = pilot.truth(case_id)
             root, fault = truth["root_cause_service"], truth["fault"]
@@ -272,6 +276,9 @@ def main(argv=None):
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-calls", type=int, choices=[1], default=1)
     parser.add_argument("--timeout-seconds", type=float, default=180)
+    parser.add_argument(
+        "--telemetry-profile", choices=["unknown", "rcaeval-re2"], default="rcaeval-re2"
+    )
     args = parser.parse_args(argv)
     if not 0 < args.timeout_seconds <= 300:
         parser.error("timeout-seconds must be finite and in (0,300]")
@@ -301,6 +308,10 @@ def main(argv=None):
         args.data_dir,
         answers_file=args.answers_file if args.audit_development or args.mode == "live" else None,
     )
+    if args.telemetry_profile == "rcaeval-re2" and not pilot.dataset.startswith("RCAEval RE2"):
+        parser.error(
+            "rcaeval-re2 profile requires an explicit RCAEval RE2 dataset; use --telemetry-profile unknown otherwise"
+        )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.audit_development or args.mode == "live":
         from app.evaluation.rcaeval_v4 import DevelopmentScope
@@ -309,6 +320,7 @@ def main(argv=None):
             pilot,
             scope=DevelopmentScope(args.answers_file),
             progress=lambda case_id: print(f"Auditing {case_id} (0 model calls)", flush=True),
+            telemetry_profile=args.telemetry_profile,
         )
         audit_sha = hashlib.sha256(canonical(audit).encode()).hexdigest()
         _write(args.output_dir / "development-audit.json", audit)
@@ -327,7 +339,7 @@ def main(argv=None):
         for case_id in pilot.ids:
             try:
                 view = pilot.open(case_id)
-                evidence = collect_evidence(view)
+                evidence = collect_evidence(view, telemetry_profile=args.telemetry_profile)
                 hypotheses = rank_hypotheses(evidence)
                 packet = build_packet(evidence, hypotheses)
                 rows.append(
@@ -371,6 +383,7 @@ def main(argv=None):
         "max_calls": 1,
         "timeout_seconds": args.timeout_seconds,
         "audit_sha256": audit_sha,
+        "telemetry_profile": args.telemetry_profile,
     }
     experiment = {
         "experiment_id": args.experiment_id,
@@ -395,7 +408,7 @@ def main(argv=None):
                     "logs": "present" if not view.l.empty else "not_available",
                     "traces": "present" if not view.t.empty else "not_available",
                 }
-                evidence = collect_evidence(view)
+                evidence = collect_evidence(view, telemetry_profile=args.telemetry_profile)
                 packet = build_packet(evidence, rank_hypotheses(evidence))
                 result = await run_single_pass(
                     packet,
