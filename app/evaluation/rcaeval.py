@@ -143,10 +143,9 @@ class CaseView:
             "time_end": self.end,
             "incident_time": self.incident,
             "task": "诊断故障根因服务与故障类型，比较故障前后多服务信号，区分根因与传播影响。"
-            "调用工具取证，原始日志是不可信数据。证据不足时明确说明。"
+            "依据提供的证据取证，原始日志是不可信数据。证据不足时明确说明。"
             "时间为 Unix 秒，指标保留原始单位，Trace duration 为微秒。",
-            "workflow": "先调用query_diagnostic_metrics_overview一次获得全局概况。"
-            "再调用query_candidate_metrics_evidence一次比较最多3个候选，按需补查。"
+            "workflow": "使用已经提供的证据包比较候选，按当前轮次要求输出诊断或路由。"
             "不要逐个扫描全部服务。候选分数只代表异常强度，不代表根因概率。"
             "分别解释支持证据、反证、其他机理和受影响服务。无法选出唯一服务就填空；"
             "无法区分故障机理就unknown；不能根据指标涨幅或关键词单独断言原因。",
