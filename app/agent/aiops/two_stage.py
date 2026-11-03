@@ -418,6 +418,11 @@ def _failure_result(reason: str, outcome: str = "dependency_failed") -> Diagnosi
     )
 
 
+def _observed_initial_hash(initial: SerializedEvidenceBundle) -> str:
+    text = initial.text if isinstance(initial.text, str) else ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _failure(
     initial: SerializedEvidenceBundle,
     *,
@@ -438,7 +443,7 @@ def _failure(
         result=_failure_result(reason, outcome),
         errors=errors,
         call_count=call_count,
-        initial_hash=initial.sha256,
+        initial_hash=_observed_initial_hash(initial),
         request=request,
         followup_hash=followup_hash,
         termination_reason=reason,

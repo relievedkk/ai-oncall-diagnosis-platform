@@ -412,6 +412,36 @@ def test_coordinator_result_exposes_nullable_safe_audit_fields():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runner_name", ["single", "agent"])
+@pytest.mark.parametrize("invalid_sha256", ["bad", "z" * 64])
+async def test_invalid_initial_hash_metadata_returns_closed_failure(runner_name, invalid_sha256):
+    from app.agent.aiops.two_stage import run_single_stage, run_two_stage
+
+    initial = SerializedEvidenceBundle(text="{}", sha256=invalid_sha256, byte_length=2)
+    expected_hash = hashlib.sha256(b"{}").hexdigest()
+    if runner_name == "single":
+        result = await run_single_stage(
+            {"task": "diagnose"},
+            initial,
+            model_factory=_factory(FakeModel([])),
+            policy=IdentityPolicy(),
+        )
+    else:
+        result = await run_two_stage(
+            {"task": "diagnose"},
+            initial,
+            model_factory=_factory(FakeModel([])),
+            followup_loader=lambda _request: _followup(),
+            policy=IdentityPolicy(),
+        )
+
+    assert result.call_count == 0
+    assert result.failure_category == "invalid_initial_bundle"
+    assert result.failure_detail_code == "initial_bundle_invalid"
+    assert result.initial_hash == expected_hash
+
+
+@pytest.mark.asyncio
 async def test_single_stage_uses_exact_initial_payload_once():
     from app.agent.aiops.two_stage import run_single_stage
 
@@ -652,7 +682,7 @@ async def test_policy_deduplicates_identical_fact_across_initial_and_followup():
 def test_canonical_policy_evidence_preserves_real_identity_conflicts(
     initial_fact, followup_fact, expected_records
 ):
-    from app.agent.aiops.two_stage import _canonical_policy_evidence
+    from app.agent.aiops.two_stage import _call_policy, _canonical_policy_evidence
 
     initial, followup = _identity_bundle_pair(initial_fact, followup_fact)
 
@@ -661,6 +691,35 @@ def test_canonical_policy_evidence_preserves_real_identity_conflicts(
     assert len(records) == expected_records
     assert {record["evidence_ref"] for record in records} == {initial_fact.evidence_ref}
     assert all(record["result"]["data_points"][0]["timestamp"] == 120 for record in records)
+    if expected_records == 2:
+        diagnosis = DiagnosisResult(
+            outcome="diagnosed",
+            summary="model claimed a root cause from the conflicting reference",
+            root_cause_service="orders",
+            fault_type="cpu",
+            cause_evidence_refs=[initial_fact.evidence_ref],
+            observations=[
+                {
+                    "text": "claimed observation",
+                    "evidence_refs": [initial_fact.evidence_ref],
+                }
+            ],
+        )
+
+        normalized = DiagnosisResult.model_validate(
+            _call_policy(
+                DiagnosisEvidencePolicy.from_bundles(initial, followup),
+                diagnosis,
+                initial=initial,
+                followup=followup,
+            )
+        )
+
+        assert normalized.outcome != "diagnosed"
+        assert any(
+            "conflicting duplicate evidence identity" in issue
+            for issue in normalized.validation_issues
+        )
 
 
 @pytest.mark.asyncio
