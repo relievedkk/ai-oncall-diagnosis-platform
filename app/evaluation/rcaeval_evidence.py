@@ -20,6 +20,7 @@ from app.core.diagnostic_evidence import (
     MechanismProfile,
     SerializedEvidenceBundle,
     serialize_evidence_bundle,
+    validate_evidence_request,
 )
 
 _PREFIXES: dict[FaultMechanism, tuple[str, ...]] = {
@@ -702,37 +703,12 @@ def build_followup_evidence(
     view,
     request: EvidenceRequest,
     *,
+    initial: InitialEvidenceBundle,
     max_bytes: int,
 ) -> SerializedEvidenceBundle:
-    selection = select_candidate_services(view)
-    catalog = set(view.services)
-    if not set(request.services).issubset(catalog):
-        raise ValueError("Evidence request contains a service outside the catalog")
-    selected = set(selection.candidates)
-    hints = {hint.service: hint for hint in selection.hints}
-    expanded = set(request.services) - selected
-    if len(expanded) > 1 or not expanded.issubset(hints):
-        raise ValueError("Evidence request may expand to at most one hinted catalog service")
+    validate_evidence_request(request, initial)
+    selected = {candidate.service: candidate for candidate in initial.candidates}
     profiles_by_service, topology, inbound, outbound = _bundle_context(view)
-    justification = set(request.justification_refs)
-    allowed_refs = set()
-    for service in request.services:
-        if service in hints:
-            allowed_refs.update(hints[service].evidence_refs)
-        for profile in profiles_by_service[service].values():
-            allowed_refs.update(profile.evidence_refs)
-        allowed_refs.update(
-            _topology_ref(view.case_id, caller, service) for caller in inbound[service]
-        )
-        allowed_refs.update(
-            _topology_ref(view.case_id, service, callee) for callee in outbound[service]
-        )
-    if not justification.issubset(allowed_refs) or any(
-        not justification.intersection(hints[service].evidence_refs) for service in expanded
-    ):
-        raise ValueError(
-            "Evidence request justification_refs are not supported by catalog evidence"
-        )
 
     limitations = [
         "This is one bounded follow-up view; absence outside the requested view is not exculpatory.",
@@ -748,7 +724,11 @@ def build_followup_evidence(
         candidate = _candidate_evidence(
             view,
             service,
-            reasons=(selection.reasons.get(service, ("hint-authorized-followup",))),
+            reasons=(
+                selected[service].selection_reasons
+                if service in selected
+                else ("hint-authorized-followup",)
+            ),
             profiles=profiles_by_service[service],
             inbound=inbound,
             outbound=outbound,

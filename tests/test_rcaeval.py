@@ -551,7 +551,7 @@ def test_topology_exposes_caller_to_callee_without_reverse_inference(recorded_ca
 def test_followup_topology_owns_each_edge_reference_once(recorded_case):
     import pandas as pd
 
-    from app.core.diagnostic_evidence import EvidenceRequest
+    from app.core.diagnostic_evidence import EvidenceRequest, InitialEvidenceBundle
     from app.evaluation.rcaeval_evidence import (
         build_followup_evidence,
         build_initial_evidence,
@@ -585,6 +585,7 @@ def test_followup_topology_owns_each_edge_reference_once(recorded_case):
         ]
     )
     initial = build_initial_evidence(recorded_case, max_bytes=32_768).payload
+    initial_bundle = InitialEvidenceBundle.model_validate(initial)
     topology_ref = next(
         fact["evidence_ref"]
         for candidate in initial["candidates"]
@@ -598,7 +599,12 @@ def test_followup_topology_owns_each_edge_reference_once(recorded_case):
         justification_refs=(topology_ref,),
     )
 
-    payload = build_followup_evidence(recorded_case, request, max_bytes=32_768).payload
+    payload = build_followup_evidence(
+        recorded_case,
+        request,
+        initial=initial_bundle,
+        max_bytes=32_768,
+    ).payload
     refs = [
         fact["evidence_ref"] for candidate in payload["candidates"] for fact in candidate["facts"]
     ]
@@ -623,7 +629,12 @@ def test_missing_topology_is_explicitly_unavailable(recorded_case):
 
 
 def test_hint_expansion_is_bounded_to_catalog_evidence(recorded_case):
-    from app.core.diagnostic_evidence import EvidenceRequest
+    from app.core.diagnostic_evidence import (
+        EvidenceContractError,
+        EvidenceRequest,
+        InitialEvidenceBundle,
+        validate_evidence_request,
+    )
     from app.evaluation.rcaeval_evidence import (
         build_followup_evidence,
         build_initial_evidence,
@@ -636,6 +647,7 @@ def test_hint_expansion_is_bounded_to_catalog_evidence(recorded_case):
     _replace_metrics(recorded_case, **columns)
     recorded_case.services = [f"service_{index}" for index in range(6)]
     initial = build_initial_evidence(recorded_case, max_bytes=65_536).payload
+    initial_bundle = InitialEvidenceBundle.model_validate(initial)
     initial_names = {item["service"] for item in initial["candidates"]}
     hint = initial["candidate_hints"][0]
     selected = sorted(initial_names)[0]
@@ -646,16 +658,61 @@ def test_hint_expansion_is_bounded_to_catalog_evidence(recorded_case):
         justification_refs=(hint["evidence_refs"][0],),
     )
 
-    followup = build_followup_evidence(recorded_case, request, max_bytes=32_768).payload
+    followup = build_followup_evidence(
+        recorded_case,
+        request,
+        initial=initial_bundle,
+        max_bytes=32_768,
+    ).payload
 
     assert {item["service"] for item in followup["candidates"]} == {
         selected,
         hint["service"],
     }
+    assert followup["request"] == request.model_dump(mode="json")
     assert all(set(item["mechanism_profiles"]) == {"cpu"} for item in followup["candidates"])
-    bad_request = request.model_copy(update={"justification_refs": ("not-a-catalog-ref",)})
-    with pytest.raises(ValueError, match="justification"):
-        build_followup_evidence(recorded_case, bad_request, max_bytes=32_768)
+    parity_initial = initial_bundle.model_copy(
+        update={"services": (*initial_bundle.services, "catalog-only")}
+    )
+    invalid_rows = (
+        (
+            request.model_copy(update={"services": ("outside-catalog",)}),
+            "request_service_outside_catalog",
+        ),
+        (
+            request.model_copy(update={"services": ("catalog-only",)}),
+            "request_expansion_not_authorized",
+        ),
+        (
+            request.model_copy(update={"services": (hint["service"], "catalog-only")}),
+            "request_expansion_not_authorized",
+        ),
+        (
+            EvidenceRequest(
+                services=(selected,),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=(hint["evidence_refs"][0],),
+            ),
+            "request_justification_not_authorized",
+        ),
+        (
+            request.model_copy(update={"justification_refs": ("not-a-catalog-ref",)}),
+            "request_justification_not_authorized",
+        ),
+    )
+    for bad_request, expected_code in invalid_rows:
+        with pytest.raises(EvidenceContractError) as direct:
+            validate_evidence_request(bad_request, parity_initial)
+        with pytest.raises(EvidenceContractError) as built:
+            build_followup_evidence(
+                recorded_case,
+                bad_request,
+                initial=parity_initial,
+                max_bytes=32_768,
+            )
+        assert direct.value.code == expected_code
+        assert built.value.code == direct.value.code
 
 
 def _development_case(case_id):

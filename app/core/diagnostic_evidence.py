@@ -16,10 +16,23 @@ FaultMechanism: TypeAlias = Literal["cpu", "mem", "delay", "disk", "loss", "sock
 FollowupView: TypeAlias = Literal[
     "mechanism_details", "metric_trends", "logs", "traces", "topology"
 ]
+EvidenceFailureDetail: TypeAlias = Literal[
+    "request_service_outside_catalog",
+    "request_expansion_not_authorized",
+    "request_justification_not_authorized",
+]
 
 
 class EvidenceBudgetError(ValueError):
     """The minimum authoritative evidence contract cannot fit its byte budget."""
+
+
+class EvidenceContractError(ValueError):
+    """A request violated a fixed evidence authorization boundary."""
+
+    def __init__(self, code: EvidenceFailureDetail):
+        self.code = code
+        super().__init__(code)
 
 
 class _FrozenModel(BaseModel):
@@ -113,6 +126,39 @@ class FollowupEvidenceBundle(_FrozenModel):
     candidates: tuple[CandidateEvidence, ...] = Field(min_length=1, max_length=2)
     limitations: tuple[str, ...] = Field(min_length=1, max_length=32)
     omitted_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
+
+
+def validate_evidence_request(
+    request: EvidenceRequest,
+    initial: InitialEvidenceBundle,
+) -> None:
+    """Authorize a follow-up request against one frozen initial evidence bundle."""
+    requested = set(request.services)
+    if not requested.issubset(initial.services):
+        raise EvidenceContractError("request_service_outside_catalog")
+
+    candidates = {candidate.service: candidate for candidate in initial.candidates}
+    hints = {hint.service: hint for hint in initial.candidate_hints}
+    expanded = requested - candidates.keys()
+    if len(expanded) > 1 or not expanded.issubset(hints):
+        raise EvidenceContractError("request_expansion_not_authorized")
+
+    allowed_refs: set[str] = set()
+    for service in requested:
+        candidate = candidates.get(service)
+        if candidate is not None:
+            allowed_refs.update(fact.evidence_ref for fact in candidate.facts)
+            for profile in candidate.mechanism_profiles.values():
+                allowed_refs.update(profile.evidence_refs)
+        hint = hints.get(service)
+        if hint is not None:
+            allowed_refs.update(hint.evidence_refs)
+
+    justification = set(request.justification_refs)
+    if not justification.issubset(allowed_refs):
+        raise EvidenceContractError("request_justification_not_authorized")
+    if any(not justification.intersection(hints[service].evidence_refs) for service in expanded):
+        raise EvidenceContractError("request_justification_not_authorized")
 
 
 @dataclass(frozen=True)

@@ -737,7 +737,11 @@ async def run_protocol_v3_case(
 
     from app.agent.aiops.two_stage import run_single_stage, run_two_stage
     from app.config import config
-    from app.core.diagnostic_evidence import DiagnosisEvidencePolicy, SerializedEvidenceBundle
+    from app.core.diagnostic_evidence import (
+        DiagnosisEvidencePolicy,
+        InitialEvidenceBundle,
+        SerializedEvidenceBundle,
+    )
     from app.evaluation.rcaeval_evidence import build_followup_evidence, build_initial_evidence
     from app.evaluation.rcaeval_scoring import assess_run
 
@@ -745,6 +749,7 @@ async def run_protocol_v3_case(
     agent_runner = agent_runner or run_two_stage
     max_bytes = config.tool_result_max_bytes if max_bytes is None else max_bytes
     initial = build_initial_evidence(view, max_bytes=max_bytes)
+    initial_bundle = InitialEvidenceBundle.model_validate(initial.payload)
 
     def frozen_copy():
         return SerializedEvidenceBundle(
@@ -754,7 +759,12 @@ async def run_protocol_v3_case(
         )
 
     def followup_loader(request):
-        return build_followup_evidence(view, request, max_bytes=max_bytes)
+        return build_followup_evidence(
+            view,
+            request,
+            initial=initial_bundle,
+            max_bytes=max_bytes,
+        )
 
     policy = DiagnosisEvidencePolicy.from_bundles(initial)
     single = await single_runner(

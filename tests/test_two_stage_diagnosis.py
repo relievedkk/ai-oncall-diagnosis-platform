@@ -12,6 +12,7 @@ from app.core.diagnostic_evidence import (
     CandidateEvidence,
     CandidateHint,
     DiagnosisEvidencePolicy,
+    EvidenceContractError,
     EvidenceFact,
     EvidenceRequest,
     FollowupEvidenceBundle,
@@ -19,6 +20,7 @@ from app.core.diagnostic_evidence import (
     MechanismProfile,
     SerializedEvidenceBundle,
     serialize_evidence_bundle,
+    validate_evidence_request,
 )
 
 
@@ -217,6 +219,88 @@ def _factory(model):
 
     create.calls = calls
     return create
+
+
+@pytest.mark.parametrize(
+    ("evidence_request", "expected_code"),
+    [
+        (
+            EvidenceRequest(
+                services=("outside-catalog",),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=("ev-orders-cpu",),
+            ),
+            "request_service_outside_catalog",
+        ),
+        (
+            EvidenceRequest(
+                services=("catalog-only",),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=("ev-orders-cpu",),
+            ),
+            "request_expansion_not_authorized",
+        ),
+        (
+            EvidenceRequest(
+                services=("payments", "catalog-only"),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=("ev-payments-cpu",),
+            ),
+            "request_expansion_not_authorized",
+        ),
+        (
+            EvidenceRequest(
+                services=("orders",),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=("unknown-ref",),
+            ),
+            "request_justification_not_authorized",
+        ),
+        (
+            EvidenceRequest(
+                services=("orders",),
+                mechanisms=("cpu",),
+                view="metric_trends",
+                justification_refs=("ev-payments-cpu",),
+            ),
+            "request_justification_not_authorized",
+        ),
+    ],
+)
+def test_evidence_request_authorization_rejects_with_fixed_code(evidence_request, expected_code):
+    initial = InitialEvidenceBundle.model_validate(_initial().payload)
+
+    with pytest.raises(EvidenceContractError) as caught:
+        validate_evidence_request(evidence_request, initial)
+
+    assert caught.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "evidence_request",
+    [
+        EvidenceRequest(
+            services=("orders",),
+            mechanisms=("cpu",),
+            view="metric_trends",
+            justification_refs=("ev-orders-cpu",),
+        ),
+        EvidenceRequest(
+            services=("payments",),
+            mechanisms=("cpu",),
+            view="metric_trends",
+            justification_refs=("ev-payments-cpu",),
+        ),
+    ],
+)
+def test_evidence_request_authorization_accepts_selected_or_own_hint(evidence_request):
+    initial = InitialEvidenceBundle.model_validate(_initial().payload)
+
+    assert validate_evidence_request(evidence_request, initial) is None
 
 
 @pytest.mark.asyncio

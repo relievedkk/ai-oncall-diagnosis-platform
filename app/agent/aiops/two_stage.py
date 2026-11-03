@@ -20,7 +20,9 @@ from app.core.diagnostic_evidence import (
     DiagnosisEvidencePolicy,
     EvidenceRequest,
     FollowupEvidenceBundle,
+    InitialEvidenceBundle,
     SerializedEvidenceBundle,
+    validate_evidence_request,
 )
 
 _DIAGNOSIS_INSTRUCTIONS = """You are an evidence-bound incident diagnosis engine.
@@ -147,33 +149,6 @@ def _refs(value: Any) -> set[str]:
         for child in value:
             result.update(_refs(child))
     return result
-
-
-def _validate_request(request: EvidenceRequest, initial_payload: dict[str, Any]) -> None:
-    catalog = set(initial_payload.get("services", []))
-    requested = set(request.services)
-    if not requested.issubset(catalog):
-        raise ValueError("requested service is outside the catalog")
-    selected = {
-        candidate.get("service")
-        for candidate in initial_payload.get("candidates", [])
-        if isinstance(candidate, dict) and isinstance(candidate.get("service"), str)
-    }
-    hints = {
-        hint.get("service"): hint
-        for hint in initial_payload.get("candidate_hints", [])
-        if isinstance(hint, dict) and isinstance(hint.get("service"), str)
-    }
-    expanded = requested - selected
-    if len(expanded) > 1 or not expanded.issubset(hints):
-        raise ValueError("request may add at most one hinted service")
-    justification = set(request.justification_refs)
-    if not justification.issubset(_refs(initial_payload)):
-        raise ValueError("request contains an unknown justification ref")
-    for service in expanded:
-        hint_refs = set(hints[service].get("evidence_refs", []))
-        if not justification.intersection(hint_refs):
-            raise ValueError("expanded service lacks a cited hint ref")
 
 
 def _canonical_policy_evidence(
@@ -536,6 +511,7 @@ async def run_two_stage(
     deadline = _StrategyDeadline(timeout_seconds)
     try:
         initial_payload = _validate_serialized(initial)
+        initial_bundle = InitialEvidenceBundle.model_validate(initial_payload)
     except Exception as exc:
         return _failure(
             initial,
@@ -609,7 +585,7 @@ async def run_two_stage(
 
     request = turn.evidence_request
     try:
-        _validate_request(request, initial_payload)
+        validate_evidence_request(request, initial_bundle)
     except Exception as exc:
         return _failure(
             initial,
