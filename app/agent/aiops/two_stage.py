@@ -19,7 +19,9 @@ from app.core.diagnosis_result import DiagnosisResult, normalize_result
 from app.core.diagnostic_evidence import (
     DiagnosisEvidencePolicy,
     EvidenceRequest,
+    FaultMechanism,
     FollowupEvidenceBundle,
+    FollowupView,
     InitialEvidenceBundle,
     SerializedEvidenceBundle,
     validate_evidence_request,
@@ -61,21 +63,33 @@ _BLOCKING_EXECUTOR = ThreadPoolExecutor(
 )
 
 
-class DiagnosisTurn(BaseModel):
+class RouteDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: Literal["diagnose", "request_evidence"]
-    diagnosis_result: DiagnosisResult | None = None
-    evidence_request: EvidenceRequest | None = None
+    services: tuple[str, ...] = Field(default_factory=tuple, max_length=2)
+    mechanisms: tuple[FaultMechanism, ...] = Field(default_factory=tuple, max_length=6)
+    view: FollowupView | None = None
+    justification_refs: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
 
     @model_validator(mode="after")
-    def validate_exactly_one_action(self):
+    def validate_action_contract(self):
         if self.action == "diagnose":
-            if self.diagnosis_result is None or self.evidence_request is not None:
-                raise ValueError("diagnose requires only diagnosis_result")
-        elif self.evidence_request is None or self.diagnosis_result is not None:
-            raise ValueError("request_evidence requires only evidence_request")
+            if self.services or self.mechanisms or self.view is not None or self.justification_refs:
+                raise ValueError("diagnose route cannot contain evidence request fields")
+        else:
+            self.to_evidence_request()
         return self
+
+    def to_evidence_request(self) -> EvidenceRequest | None:
+        if self.action == "diagnose":
+            return None
+        return EvidenceRequest(
+            services=self.services,
+            mechanisms=self.mechanisms,
+            view=self.view,
+            justification_refs=self.justification_refs,
+        )
 
 
 class CoordinatorResult(BaseModel):
@@ -113,7 +127,9 @@ def _messages(
     followup: SerializedEvidenceBundle | None = None,
 ) -> list:
     control = (
-        "On this first turn, either diagnose now or request one bounded evidence follow-up."
+        "Choose only the route for this first turn. Use action=diagnose when the initial "
+        "evidence is sufficient; the diagnosis itself will be requested separately. Otherwise "
+        "request one bounded evidence follow-up."
         if allow_request
         else "Diagnose now; evidence requests are not permitted on this turn."
     )
@@ -522,12 +538,12 @@ async def run_two_stage(
         )
     try:
         model = _model(model_factory)
-        first_model = model.with_structured_output(DiagnosisTurn, method="function_calling")
+        route_model = model.with_structured_output(RouteDecision, method="function_calling")
     except Exception as exc:
         return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
     try:
-        raw_turn = await deadline.wait(
-            first_model.ainvoke(_messages(task, initial, allow_request=True)),
+        raw_route = await deadline.wait(
+            route_model.ainvoke(_messages(task, initial, allow_request=True)),
         )
     except TimeoutError as exc:
         return _failure(initial, reason="timeout", call_count=1, error=exc)
@@ -542,85 +558,57 @@ async def run_two_stage(
     except Exception as exc:
         return _failure(initial, reason="provider_error", call_count=1, error=exc)
     try:
-        turn = DiagnosisTurn.model_validate(raw_turn)
+        route = RouteDecision.model_validate(raw_route)
     except Exception as exc:
-        reason = (
-            "invalid_evidence_request"
-            if isinstance(raw_turn, dict) and raw_turn.get("action") == "request_evidence"
-            else "invalid_first_turn"
-        )
         return _failure(
             initial,
-            reason=reason,
+            reason="invalid_first_turn",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
         )
-    if turn.action == "diagnose":
+
+    request = route.to_evidence_request()
+    followup = None
+    followup_refs: tuple[str, ...] = ()
+    if request is not None:
         try:
-            normalized = await deadline.wait(
-                _apply_policy(
-                    policy,
-                    turn.diagnosis_result,
-                    initial=initial,
-                    followup=None,
-                )
-            )
-        except TimeoutError as exc:
-            return _failure(initial, reason="timeout", call_count=1, error=exc)
+            validate_evidence_request(request, initial_bundle)
         except Exception as exc:
             return _failure(
                 initial,
-                reason="invalid_diagnosis_output",
+                reason="invalid_evidence_request",
                 call_count=1,
                 error=exc,
+                request=request,
                 outcome="insufficient_evidence",
             )
-        return CoordinatorResult(
-            result=normalized,
-            call_count=1,
-            initial_hash=initial.sha256,
-            termination_reason="direct_diagnosis",
-        )
-
-    request = turn.evidence_request
-    try:
-        validate_evidence_request(request, initial_bundle)
-    except Exception as exc:
-        return _failure(
-            initial,
-            reason="invalid_evidence_request",
-            call_count=1,
-            error=exc,
-            request=request,
-            outcome="insufficient_evidence",
-        )
-    try:
-        followup = await _load_followup(
-            followup_loader,
-            request,
-            initial_payload=initial_payload,
-            deadline=deadline,
-        )
-    except TimeoutError as exc:
-        return _failure(
-            initial,
-            reason="timeout",
-            call_count=1,
-            error=exc,
-            request=request,
-        )
-    except Exception as exc:
-        return _failure(
-            initial,
-            reason="followup_loader_error",
-            call_count=1,
-            error=exc,
-            request=request,
-        )
+        try:
+            followup = await _load_followup(
+                followup_loader,
+                request,
+                initial_payload=initial_payload,
+                deadline=deadline,
+            )
+            followup_refs = tuple(sorted(_refs(followup.payload)))
+        except TimeoutError as exc:
+            return _failure(
+                initial,
+                reason="timeout",
+                call_count=1,
+                error=exc,
+                request=request,
+            )
+        except Exception as exc:
+            return _failure(
+                initial,
+                reason="followup_loader_error",
+                call_count=1,
+                error=exc,
+                request=request,
+            )
     try:
         final_model = model.with_structured_output(DiagnosisResult, method="function_calling")
-        followup_refs = tuple(sorted(_refs(followup.payload)))
     except Exception as exc:
         return _failure(
             initial,
@@ -628,8 +616,8 @@ async def run_two_stage(
             call_count=1,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
-            followup_evidence_refs=tuple(sorted(_refs(followup.payload))),
+            followup_hash=followup.sha256 if followup is not None else None,
+            followup_evidence_refs=followup_refs,
         )
     try:
         raw_diagnosis = await deadline.wait(
@@ -650,7 +638,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
         )
     except ValidationError as exc:
@@ -660,7 +648,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
         )
@@ -671,7 +659,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
         )
     try:
@@ -683,7 +671,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
         )
@@ -698,7 +686,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
         )
     except Exception as exc:
@@ -708,7 +696,7 @@ async def run_two_stage(
             call_count=2,
             error=exc,
             request=request,
-            followup_hash=followup.sha256,
+            followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
         )
@@ -717,7 +705,7 @@ async def run_two_stage(
         call_count=2,
         initial_hash=initial.sha256,
         request=request,
-        followup_hash=followup.sha256,
-        termination_reason="followup_diagnosis",
+        followup_hash=followup.sha256 if followup is not None else None,
+        termination_reason=("followup_diagnosis" if followup is not None else "direct_diagnosis"),
         followup_evidence_refs=followup_refs,
     )

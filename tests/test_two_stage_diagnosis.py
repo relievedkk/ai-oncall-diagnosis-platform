@@ -210,6 +210,24 @@ def _diagnosis(summary="done"):
     return DiagnosisResult(outcome="insufficient_evidence", summary=summary)
 
 
+def _diagnose_route():
+    from app.agent.aiops.two_stage import RouteDecision
+
+    return RouteDecision(action="diagnose")
+
+
+def _request_route(request):
+    from app.agent.aiops.two_stage import RouteDecision
+
+    return RouteDecision(
+        action="request_evidence",
+        services=request.services,
+        mechanisms=request.mechanisms,
+        view=request.view,
+        justification_refs=request.justification_refs,
+    )
+
+
 def _factory(model):
     calls = []
 
@@ -303,6 +321,56 @@ def test_evidence_request_authorization_accepts_selected_or_own_hint(evidence_re
     assert validate_evidence_request(evidence_request, initial) is None
 
 
+def test_route_decision_accepts_flat_diagnose_and_request_contracts():
+    from app.agent.aiops.two_stage import RouteDecision
+
+    diagnose = RouteDecision(action="diagnose")
+    requested = RouteDecision(
+        action="request_evidence",
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+
+    assert diagnose.to_evidence_request() is None
+    assert requested.to_evidence_request() == EvidenceRequest(
+        services=("payments",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("ev-payments-cpu",),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"action": "diagnose", "services": ["orders"]},
+        {"action": "request_evidence"},
+        {
+            "action": "request_evidence",
+            "services": ["orders", "orders"],
+            "mechanisms": ["cpu"],
+            "view": "metric_trends",
+            "justification_refs": ["ev-orders-cpu"],
+        },
+        {
+            "action": "request_evidence",
+            "services": ["orders"],
+            "mechanisms": ["unsupported"],
+            "view": "metric_trends",
+            "justification_refs": ["ev-orders-cpu"],
+        },
+        {"action": "diagnose", "unexpected": "field"},
+    ],
+)
+def test_route_decision_rejects_invalid_or_extra_fields(payload):
+    from app.agent.aiops.two_stage import RouteDecision
+
+    with pytest.raises(ValidationError):
+        RouteDecision.model_validate(payload)
+
+
 @pytest.mark.asyncio
 async def test_single_stage_uses_exact_initial_payload_once():
     from app.agent.aiops.two_stage import run_single_stage
@@ -329,12 +397,11 @@ async def test_single_stage_uses_exact_initial_payload_once():
 
 
 @pytest.mark.asyncio
-async def test_agent_direct_diagnosis_uses_one_call():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+async def test_agent_direct_route_uses_dedicated_second_diagnosis_call():
+    from app.agent.aiops.two_stage import RouteDecision, run_two_stage
 
     initial = _initial()
-    turn = DiagnosisTurn(action="diagnose", diagnosis_result=_diagnosis("direct"))
-    model = FakeModel([turn])
+    model = FakeModel([_diagnose_route(), _diagnosis("direct")])
     loader_calls = []
 
     async def loader(request):
@@ -349,16 +416,25 @@ async def test_agent_direct_diagnosis_uses_one_call():
         policy=IdentityPolicy(),
     )
 
-    assert result.call_count == 1
+    assert result.call_count == 2
     assert result.result.summary == "direct"
     assert result.termination_reason == "direct_diagnosis"
     assert loader_calls == []
-    assert model.schemas[0][1] == {"method": "function_calling"}
+    assert [schema for schema, _kwargs in model.schemas] == [RouteDecision, DiagnosisResult]
+    assert len(model.calls) == 2
+    assert all(
+        "\n".join(message.content for message in call).count(initial.text) == 1
+        for call in model.calls
+    )
+    assert [kwargs for _schema, kwargs in model.schemas] == [
+        {"method": "function_calling"},
+        {"method": "function_calling"},
+    ]
 
 
 @pytest.mark.asyncio
 async def test_agent_valid_followup_uses_exactly_two_calls():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import RouteDecision, run_two_stage
 
     initial = _initial()
     request = EvidenceRequest(
@@ -369,7 +445,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
     )
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             _diagnosis("after followup"),
         ]
     )
@@ -389,7 +465,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
 
     assert result.call_count == 2
     assert len(model.calls) == 2
-    assert [schema[0] for schema in model.schemas] == [DiagnosisTurn, DiagnosisResult]
+    assert [schema[0] for schema in model.schemas] == [RouteDecision, DiagnosisResult]
     assert loader_calls == [request]
     assert result.request == request
     assert result.followup_hash == _followup(request).sha256
@@ -403,7 +479,7 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
 
 @pytest.mark.asyncio
 async def test_policy_deduplicates_identical_fact_across_initial_and_followup():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     initial = _initial()
     request = EvidenceRequest(
@@ -431,7 +507,7 @@ async def test_policy_deduplicates_identical_fact_across_initial_and_followup():
     )
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             diagnosis,
         ]
     )
@@ -591,7 +667,7 @@ async def test_agent_classifies_first_turn_validation_error_as_invalid_model_out
 
 @pytest.mark.asyncio
 async def test_agent_classifies_second_turn_validation_error_as_invalid_model_output():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -608,7 +684,7 @@ async def test_agent_classifies_second_turn_validation_error_as_invalid_model_ou
         model_factory=_factory(
             FakeModel(
                 [
-                    DiagnosisTurn(action="request_evidence", evidence_request=request),
+                    _request_route(request),
                     captured.value,
                 ]
             )
@@ -624,7 +700,7 @@ async def test_agent_classifies_second_turn_validation_error_as_invalid_model_ou
 
 @pytest.mark.asyncio
 async def test_agent_cannot_request_second_followup():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -634,8 +710,8 @@ async def test_agent_cannot_request_second_followup():
     )
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
+            _request_route(request),
         ]
     )
 
@@ -655,7 +731,7 @@ async def test_agent_cannot_request_second_followup():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("service", ["outside-catalog", "catalog-only"])
 async def test_out_of_catalog_or_unhinted_request_is_rejected_without_loader_call(service):
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=(service,),
@@ -663,7 +739,7 @@ async def test_out_of_catalog_or_unhinted_request_is_rejected_without_loader_cal
         view="metric_trends",
         justification_refs=("ev-payments-cpu",),
     )
-    model = FakeModel([DiagnosisTurn(action="request_evidence", evidence_request=request)])
+    model = FakeModel([_request_route(request)])
     loader_calls = []
 
     result = await run_two_stage(
@@ -692,35 +768,34 @@ async def test_duplicate_service_and_oversized_request_are_rejected(services):
 
     raw_turn = {
         "action": "request_evidence",
-        "diagnosis_result": None,
-        "evidence_request": {
-            "services": services,
-            "mechanisms": ["cpu"],
-            "view": "metric_trends",
-            "justification_refs": ["ev-payments-cpu"],
-        },
+        "services": services,
+        "mechanisms": ["cpu"],
+        "view": "metric_trends",
+        "justification_refs": ["ev-payments-cpu"],
     }
     model = FakeModel([raw_turn])
+    loader_calls = []
 
     result = await run_two_stage(
         {"task": "diagnose"},
         _initial(),
         model_factory=_factory(model),
-        followup_loader=lambda _request: _followup(),
+        followup_loader=lambda value: loader_calls.append(value),
         policy=IdentityPolicy(),
     )
 
     assert result.call_count == 1
-    assert result.termination_reason == "invalid_evidence_request"
+    assert result.termination_reason == "invalid_first_turn"
+    assert result.failure_category == "invalid_model_output"
+    assert loader_calls == []
+    assert len(model.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_failed_direct_diagnosis_does_not_auto_retry():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
-    model = FakeModel(
-        [DiagnosisTurn(action="diagnose", diagnosis_result=_diagnosis("model conclusion"))]
-    )
+    model = FakeModel([_diagnose_route(), _diagnosis("model conclusion")])
     rejected = DiagnosisResult(outcome="insufficient_evidence", summary="policy rejected")
 
     result = await run_two_stage(
@@ -731,14 +806,14 @@ async def test_failed_direct_diagnosis_does_not_auto_retry():
         policy=IdentityPolicy(replacement=rejected),
     )
 
-    assert result.call_count == 1
+    assert result.call_count == 2
     assert result.result.summary == "policy rejected"
     assert result.termination_reason == "direct_diagnosis"
 
 
 @pytest.mark.asyncio
 async def test_provider_or_loader_failure_has_distinct_outcome():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_single_stage, run_two_stage
+    from app.agent.aiops.two_stage import run_single_stage, run_two_stage
 
     provider = await run_single_stage(
         {"task": "diagnose"},
@@ -759,9 +834,7 @@ async def test_provider_or_loader_failure_has_distinct_outcome():
     loader = await run_two_stage(
         {"task": "diagnose"},
         _initial(),
-        model_factory=_factory(
-            FakeModel([DiagnosisTurn(action="request_evidence", evidence_request=request)])
-        ),
+        model_factory=_factory(FakeModel([_request_route(request)])),
         followup_loader=broken_loader,
         policy=IdentityPolicy(),
     )
@@ -812,7 +885,7 @@ async def test_strategy_deadline_cancels_a_genuinely_slow_model_call():
 
 @pytest.mark.asyncio
 async def test_two_stage_uses_one_cumulative_strategy_deadline():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -822,7 +895,7 @@ async def test_two_stage_uses_one_cumulative_strategy_deadline():
     )
     model = DelayedModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             _diagnosis("too late"),
         ],
         delay=0.05,
@@ -848,7 +921,7 @@ async def test_two_stage_uses_one_cumulative_strategy_deadline():
 
 @pytest.mark.asyncio
 async def test_sync_followup_loader_cannot_block_strategy_timeout():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -858,7 +931,7 @@ async def test_sync_followup_loader_cannot_block_strategy_timeout():
     )
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             _diagnosis("must not be reached"),
         ]
     )
@@ -928,7 +1001,7 @@ async def test_non_finite_strategy_timeout_is_rejected(timeout_seconds):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalidity", ["case_id", "request", "services"])
 async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidity):
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -947,7 +1020,7 @@ async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidi
 
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             _diagnosis("must not be reached"),
         ]
     )
@@ -979,7 +1052,7 @@ async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidi
     ],
 )
 async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidity):
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
         services=("payments",),
@@ -1019,7 +1092,7 @@ async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidit
 
     model = FakeModel(
         [
-            DiagnosisTurn(action="request_evidence", evidence_request=request),
+            _request_route(request),
             _diagnosis("must not be reached"),
         ]
     )
@@ -1038,7 +1111,7 @@ async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidit
 
 @pytest.mark.asyncio
 async def test_coordinator_applies_bundle_policy():
-    from app.agent.aiops.two_stage import DiagnosisTurn, run_two_stage
+    from app.agent.aiops.two_stage import run_two_stage
 
     initial = _initial()
     diagnosis = DiagnosisResult(
@@ -1061,9 +1134,7 @@ async def test_coordinator_applies_bundle_policy():
     result = await run_two_stage(
         {"task": "diagnose"},
         initial,
-        model_factory=_factory(
-            FakeModel([DiagnosisTurn(action="diagnose", diagnosis_result=diagnosis)])
-        ),
+        model_factory=_factory(FakeModel([_diagnose_route(), diagnosis])),
         followup_loader=lambda _request: _followup(),
         policy=DiagnosisEvidencePolicy.from_bundles(initial),
     )
