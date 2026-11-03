@@ -315,20 +315,42 @@ class CaseView:
             ],
         }
 
-    def metric_trends(self, service_name="", limit=12):
+    def metric_trends(self, service_name="", limit=12, *, mechanisms=None):
         """Minute means and baseline-relative onset; heuristic, not causality."""
         self._window(service_name, None, None, limit)
+        from app.evaluation.rcaeval_evidence import _PREFIXES, _matches_mechanism
+
+        if mechanisms is not None and (
+            not mechanisms or len(mechanisms) > 6 or any(m not in _PREFIXES for m in mechanisms)
+        ):
+            raise ValueError("Unsupported mechanism query")
         columns = [c["metric"] for c in self.metrics(service_name, limit=limit)["changes"]]
+        available_columns = [
+            c
+            for c in self.m.columns
+            if c != "time" and (not service_name or c.startswith(service_name + "_"))
+        ]
+        columns += sorted(set(available_columns) - set(columns))
+        if mechanisms is not None:
+            columns = [
+                c
+                for c in columns
+                if any(_matches_mechanism(c.split("_", 1)[1], _PREFIXES[m]) for m in mechanisms)
+            ]
+        columns = columns[:limit]
         rows = []
         for column in columns:
-            values = self.m[column]
+            values = self.m[column].astype(float)
+            values = values.where(values.map(lambda value: math.isfinite(value)))
             before = values[self.m.time.lt(self.incident)].dropna()
-            if before.empty:
+            after = values[self.m.time.ge(self.incident)].dropna()
+            if before.empty and after.empty:
                 continue
-            median = float(before.median())
-            mad = float((before - median).abs().median())
-            threshold = max(6 * mad, abs(median) * 0.5, 1e-9)
+            median = float(before.median()) if len(before) else None
+            mad = float((before - median).abs().median()) if len(before) else None
+            threshold = max(6 * mad, abs(median) * 0.5, 1e-9) if median is not None else None
             frame = self.m[["time", column]].copy()
+            frame[column] = values
             frame["_bucket"] = ((frame.time - self.incident) // 60).astype(int)
             bins = []
             for bucket, group in frame.groupby("_bucket"):
@@ -344,13 +366,18 @@ class CaseView:
             anomalies = [
                 b
                 for b in bins
-                if b["start"] >= self.incident and abs(b["mean"] - median) > threshold
+                if threshold is not None
+                and b["start"] >= self.incident
+                and abs(b["mean"] - median) > threshold
             ]
             rows.append(
                 {
                     "metric": column,
                     "baseline_median": median,
                     "threshold": threshold,
+                    "comparison_available": bool(len(before) and len(after)),
+                    "before_samples": len(before),
+                    "after_samples": len(after),
                     "first_anomalous_minute": anomalies[0]["start"] if anomalies else None,
                     "minute_means": [
                         bins[i]

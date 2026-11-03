@@ -48,6 +48,12 @@ class EvidenceFact(_FrozenModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class TelemetryCoverage(_FrozenModel):
+    status: Literal["baseline_missing", "post_missing", "no_finite_samples"]
+    before_samples: int = Field(ge=0)
+    after_samples: int = Field(ge=0)
+
+
 class MechanismProfile(_FrozenModel):
     mechanism: FaultMechanism
     state: MechanismState
@@ -64,6 +70,7 @@ class MechanismProfile(_FrozenModel):
     interpretation: str = Field(default="unavailable", max_length=128)
     fault_eligible: bool = False
     competing_mechanisms: tuple[FaultMechanism, ...] = Field(default_factory=tuple, max_length=6)
+    coverage: TelemetryCoverage | None = None
 
 
 class CandidateEvidence(_FrozenModel):
@@ -183,12 +190,15 @@ class DiagnosisEvidencePolicy:
     ambiguous_services: frozenset[str]
     directed_edges: frozenset[tuple[str, str]]
     topology_refs: Any
+    verified_resolutions: tuple[tuple[str, str, str], ...] = ()
 
     @classmethod
     def from_bundles(
         cls,
         initial: SerializedEvidenceBundle,
         followup: SerializedEvidenceBundle | None = None,
+        *,
+        verified_resolutions: tuple[tuple[str, str, str], ...] = (),
     ) -> DiagnosisEvidencePolicy:
         payloads = [initial.payload] + ([followup.payload] if followup is not None else [])
         allowed = set()
@@ -251,6 +261,12 @@ class DiagnosisEvidencePolicy:
                     if all(isinstance(value, str) and value for value in (caller, callee, ref)):
                         edges.add((caller, callee))
                         topology_refs[ref] = (caller, callee)
+        # This argument is supplied only by the trusted raw-data verifier, never read
+        # from the serialized bundle. Self-reported eligibility cannot clear ambiguity.
+        for service, mechanism, ref in verified_resolutions:
+            if ref in observed_mechanism_refs.get((service, mechanism), set()):
+                ambiguous.discard(service)
+                mechanism_refs[(service, mechanism)] = {ref}
         frozen_observed_refs = MappingProxyType(
             {key: frozenset(value) for key, value in observed_mechanism_refs.items()}
         )
@@ -266,6 +282,7 @@ class DiagnosisEvidencePolicy:
             ambiguous_services=frozenset(ambiguous),
             directed_edges=frozenset(edges),
             topology_refs=MappingProxyType(dict(topology_refs)),
+            verified_resolutions=verified_resolutions,
         )
 
 
@@ -381,6 +398,10 @@ def serialize_evidence_bundle(
         raise ValueError("reserve_bytes leaves less than 512 bytes for evidence")
 
     payload = deepcopy(bundle.model_dump(mode="json"))
+    for candidate in payload.get("candidates", []):
+        for profile in candidate.get("mechanism_profiles", {}).values():
+            if profile.get("coverage") is None:
+                profile.pop("coverage", None)
     payload["omitted_paths"] = sorted(set(payload.get("omitted_paths", [])))
     content_budget = max_bytes - reserve_bytes
 

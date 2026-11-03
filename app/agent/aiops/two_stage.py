@@ -297,7 +297,9 @@ def _call_policy(
     followup: SerializedEvidenceBundle | None,
 ) -> Any:
     if isinstance(policy, DiagnosisEvidencePolicy):
-        policy = DiagnosisEvidencePolicy.from_bundles(initial, followup)
+        policy = DiagnosisEvidencePolicy.from_bundles(
+            initial, followup, verified_resolutions=policy.verified_resolutions
+        )
         initial_payload = initial.payload
         evidence = _canonical_policy_evidence(initial, followup)
         case_id = str(initial_payload.get("case_id", "bundle-diagnosis"))

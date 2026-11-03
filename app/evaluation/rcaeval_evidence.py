@@ -19,6 +19,7 @@ from app.core.diagnostic_evidence import (
     InitialEvidenceBundle,
     MechanismProfile,
     SerializedEvidenceBundle,
+    TelemetryCoverage,
     serialize_evidence_bundle,
     validate_evidence_request,
 )
@@ -63,13 +64,33 @@ def _evidence_ref(case_id: str, service: str, mechanism: str, metric: str) -> st
 def _summarize_signal(metric: str, before, after_frame, value_column: str) -> dict | None:
     try:
         before = before.astype(float).dropna()
+        before = before[before.map(math.isfinite)]
         after_frame = after_frame.copy()
         after_frame[value_column] = after_frame[value_column].astype(float)
         after_frame = after_frame.dropna(subset=[value_column])
+        after_frame = after_frame.loc[after_frame[value_column].map(math.isfinite)]
     except (TypeError, ValueError):
         return None
-    if before.empty or after_frame.empty:
+    if before.empty and after_frame.empty:
         return None
+    if before.empty or after_frame.empty:
+        values = after_frame[value_column]
+        split = max(1, len(values) // 3)
+        return {
+            "metric": metric,
+            "ratio": None,
+            "first_anomalous_time": None,
+            "post_start_mean": float(values.iloc[:split].mean()) if len(values) else None,
+            "post_end_mean": float(values.iloc[-split:].mean()) if len(values) else None,
+            "post_pattern": "partial_observation",
+            "strong_change": False,
+            "strength": 0.0,
+            "coverage": {
+                "status": "baseline_missing" if before.empty else "post_missing",
+                "before_samples": len(before),
+                "after_samples": len(values),
+            },
+        }
     pre = float(before.mean())
     post = float(after_frame[value_column].mean())
     median = float(before.median())
@@ -160,7 +181,23 @@ def _profile_from_metrics(view, service_name: str, mechanism: FaultMechanism) ->
     evidence_refs = (
         (_evidence_ref(view.case_id, service_name, mechanism, metric),) if strong_change else ()
     )
-    if not available:
+    coverage = (
+        strongest.get("coverage")
+        if strongest
+        else (
+            {"status": "no_finite_samples", "before_samples": 0, "after_samples": 0}
+            if columns
+            else None
+        )
+    )
+    if coverage:
+        interpretation = coverage["status"]
+        reasons = (
+            "Partial telemetry: "
+            + coverage["status"]
+            + "; observed values do not establish an incident change.",
+        )
+    elif not available:
         interpretation = "unavailable"
         reasons = ("No structured telemetry is available for this mechanism.",)
     elif not strong_change:
@@ -185,6 +222,7 @@ def _profile_from_metrics(view, service_name: str, mechanism: FaultMechanism) ->
         post_end_mean=strongest["post_end_mean"] if strongest else None,
         post_pattern=strongest["post_pattern"] if strongest else "unavailable",
         interpretation=interpretation,
+        coverage=TelemetryCoverage.model_validate(coverage) if coverage else None,
     )
 
 
@@ -588,7 +626,7 @@ def _candidate_evidence(
             )
 
     trends = (
-        tuple(view.metric_trends(service, limit=6))
+        tuple(view.metric_trends(service, limit=6, mechanisms=mechanisms))
         if include in {"all", "metric_trends", "mechanism_details"}
         else ()
     )
