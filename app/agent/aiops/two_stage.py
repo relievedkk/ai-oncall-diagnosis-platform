@@ -528,6 +528,28 @@ async def run_single_stage(
     timeout_seconds: float | None = None,
     diagnosis_schema: type[DiagnosisResult] = DiagnosisResult,
 ) -> CoordinatorResult:
+    return await _run_diagnosis_turn(
+        task,
+        initial,
+        model_factory=model_factory,
+        policy=policy,
+        timeout_seconds=timeout_seconds,
+        diagnosis_schema=diagnosis_schema,
+    )
+
+
+async def _run_diagnosis_turn(
+    task: dict,
+    initial: SerializedEvidenceBundle,
+    *,
+    model_factory,
+    policy,
+    timeout_seconds: float | None = None,
+    diagnosis_schema: type[DiagnosisResult] = DiagnosisResult,
+    request: EvidenceRequest | None = None,
+    followup: SerializedEvidenceBundle | None = None,
+) -> CoordinatorResult:
+    """Internal turn; callers validate/authorize any follow-up before invoking."""
     deadline = _StrategyDeadline(timeout_seconds)
     try:
         _validate_serialized(initial)
@@ -563,7 +585,9 @@ async def run_single_stage(
         )
     try:
         raw = await deadline.wait(
-            structured.ainvoke(_messages(task, initial, allow_request=False)),
+            structured.ainvoke(
+                _messages(task, initial, allow_request=False, request=request, followup=followup)
+            ),
         )
     except (ModelBudgetExceeded, ModelInputRejected) as exc:
         return _failure(
@@ -612,7 +636,7 @@ async def run_single_stage(
         )
     try:
         normalized = await deadline.wait(
-            _apply_policy(policy, diagnosis, initial=initial, followup=None)
+            _apply_policy(policy, diagnosis, initial=initial, followup=followup)
         )
     except TimeoutError as exc:
         return _failure(
@@ -636,6 +660,9 @@ async def run_single_stage(
         call_count=1,
         initial_hash=initial.sha256,
         termination_reason="single_stage_complete",
+        request=request,
+        followup_hash=followup.sha256 if followup else None,
+        followup_evidence_refs=tuple(sorted(_refs(followup.payload))) if followup else (),
     )
 
 
