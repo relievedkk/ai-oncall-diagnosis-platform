@@ -101,7 +101,7 @@ class _MeteredModel:
             if structured and isinstance(result, dict) and "raw" in result:
                 self.meter.usage(result["raw"])
                 if result.get("parsing_error"):
-                    raise ValueError("Provider structured response could not be parsed")
+                    event["structured_parse_error"] = type(result["parsing_error"]).__name__
                 return result["parsed"]
             self.meter.usage(result)
             return result
@@ -235,7 +235,9 @@ def _fixture_tools(case, trace, captured):
                             else (
                                 "log"
                                 if "logs" in tool_name
-                                else "alert" if "alerts" in tool_name else "knowledge"
+                                else "alert"
+                                if "alerts" in tool_name
+                                else "knowledge"
                             )
                         ),
                         "result": result,

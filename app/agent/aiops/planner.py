@@ -10,11 +10,18 @@ from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .runtime import get_mcp_client_with_retry, load_mcp_tools_safe
-from app.core.llm_factory import llm_factory
 from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
-from .runtime import DEFAULT_LOCAL_AGENT_TOOLS, retrieve_knowledge, create_model, resolve_tools
+from app.core.llm_factory import llm_factory  # noqa: F401 - compatibility patch point
 
+from .runtime import (
+    DEFAULT_LOCAL_AGENT_TOOLS,
+    create_model,
+    current_runtime,
+    get_mcp_client_with_retry,
+    load_mcp_tools_safe,
+    resolve_tools,
+    retrieve_knowledge,
+)
 from .state import PlanExecuteState
 from .utils import format_tools_description
 
@@ -75,6 +82,11 @@ async def planner(state: PlanExecuteState) -> dict[str, Any]:
 
     input_text = state.get("input", "")
     logger.info("开始规划诊断任务，输入长度={}", len(input_text))
+
+    fixed_plan = current_runtime().initial_plan
+    if fixed_plan:
+        logger.info("使用运行时提供的有界计划，共 {} 个步骤", len(fixed_plan))
+        return {"plan": list(fixed_plan)}
 
     try:
         # 步骤1: 查询内部文档获取相关经验

@@ -14,6 +14,14 @@ class DiagnosisRuntime:
     tools: list | None = None
     model_factory: Any = None
     knowledge_lookup: Any = None
+    require_complete_diagnosis: bool = False
+    service_catalog: tuple[str, ...] = ()
+    initial_evidence: tuple[dict, ...] = ()
+    initial_plan: tuple[str, ...] = ()
+    require_candidate_comparison: bool = False
+    compact_evidence_context: bool = False
+    evidence_only_report: bool = False
+    allowed_fault_types: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.context not in {"production", "replay", "evaluation"}:

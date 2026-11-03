@@ -1,0 +1,3 @@
+# Optional dependencies for local RCAEval evaluation, separate from production.
+pandas>=2.2,<4
+pyarrow>=18,<27

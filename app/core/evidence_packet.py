@@ -5,6 +5,7 @@ Callers must redact before packing and apply their normal transport boundary.
 
 import hashlib
 
+from app.core.data_safety import bounded_tool_result, json_bytes
 from app.core.diagnostic_evidence import canonical_json
 from app.core.evidence import decode_evidence_result
 
@@ -28,7 +29,9 @@ def pack_evidence(evidence, *, max_bytes=16384):
         omitted = []
 
         def compact(value, path="", depth=0, *, count=count, chars=chars, omitted=omitted):
-            if depth > 12:
+            # The final boundary counts packet -> evidence -> record -> result
+            # wrappers, too. Stop before its absolute depth-12 cutoff.
+            if depth >= 8:
                 omitted.append(path)
                 return "[omitted: nesting limit]"
             if isinstance(value, str) and len(value) > chars:
@@ -76,8 +79,10 @@ def pack_evidence(evidence, *, max_bytes=16384):
             "limitations": "Excerpts are incomplete. same_payload_as shares content, not a new observation. "
             "Do not infer absence or causality from omitted content; originals are retained.",
         }
-        if len(encode(packet).encode()) <= max_bytes:
-            return packet
+        if json_bytes(packet) <= max_bytes:
+            transported = bounded_tool_result(packet, max_bytes=max_bytes)
+            if transported.get("error") != "tool_result_truncated":
+                return transported
     return {
         "success": False,
         "error": "evidence_packet_too_large",

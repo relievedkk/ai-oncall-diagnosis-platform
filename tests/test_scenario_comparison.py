@@ -325,6 +325,49 @@ def test_live_transport_substitute_uses_same_graph_and_records_real_usage(monkey
         assert run["diagnosis_result"]["validation_issues"] == []
 
 
+def test_metered_structured_parse_failure_reaches_coordinator_as_invalid_output():
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from app.core.diagnosis_result import DiagnosisResult
+    from app.evaluation.comparison import _Meter, _MeteredModel
+
+    class Provider:
+        def with_structured_output(self, schema, **kwargs):
+            assert kwargs.pop("include_raw") is True
+
+            async def invoke(value, config=None):
+                return {
+                    "raw": AIMessage(
+                        content="",
+                        usage_metadata={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                    ),
+                    "parsed": None,
+                    "parsing_error": ValueError("invalid structured response"),
+                }
+
+            return RunnableLambda(invoke)
+
+    trace = []
+    meter = _Meter(1, trace)
+    model = _MeteredModel(Provider(), meter)
+    result = asyncio.run(
+        model.with_structured_output(DiagnosisResult, method="function_calling").ainvoke("diagnose")
+    )
+
+    assert result is None
+    assert meter.calls == 1
+    assert meter.result("live")["tokens"] == 5
+    assert trace == [
+        {
+            "kind": "model",
+            "call": 1,
+            "operation": "DiagnosisResult",
+            "structured_parse_error": "ValueError",
+        }
+    ]
+
+
 def test_live_timeout_cancels_transport_and_preserves_budget_result(monkeypatch):
     from langchain_core.runnables import RunnableLambda
 

@@ -124,7 +124,7 @@ class AIOpsService:
                 "input": user_input,
                 "plan": [],
                 "past_steps": Overwrite([]),
-                "evidence": Overwrite([]),
+                "evidence": Overwrite(list(current_runtime().initial_evidence)),
                 "response": "",
                 "diagnosis_result": None,
                 "task_scope": current_runtime().task_scope or session_id,
