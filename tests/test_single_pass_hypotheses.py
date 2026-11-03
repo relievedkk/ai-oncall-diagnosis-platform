@@ -156,3 +156,134 @@ def test_incident_alignment_breaks_retrieval_ties_without_granting_permission():
     ranked = rank_hypotheses(e)
     assert ranked[0].service == "z"
     assert not any(h.eligible for h in ranked)
+
+
+def test_missing_baseline_observation_remains_a_candidate_with_explicit_gap():
+    e = evidence("cpu", known=False)
+    fs = tuple(
+        f.model_copy(
+            update={
+                "data": {
+                    **f.data,
+                    "coverage": "baseline_missing",
+                    "before_median": None,
+                    "after_median": 100.0,
+                    "after_samples": 20,
+                    "before_samples": 0,
+                    "changed": False,
+                }
+            }
+        )
+        if f.family == "disk"
+        else f
+        for f in e.facts
+    )
+    e = e.model_copy(update={"facts": fs})
+    h = next(h for h in rank_hypotheses(e) if h.fault == "disk")
+    disk = next(f for f in fs if f.family == "disk")
+    assert disk.ref in h.supporting_refs
+    assert "missing_baseline_for_mechanism" in h.gaps and not h.eligible
+
+
+def test_persistent_subthreshold_socket_is_retrieved_without_connection_permission():
+    e = evidence("cpu", known=False)
+    e = e.model_copy(
+        update={
+            "facts": tuple(
+                f.model_copy(
+                    update={
+                        "data": {
+                            **f.data,
+                            "before_median": 20.0,
+                            "after_median": 28.0,
+                            "onset_upper": 10,
+                            "persistence": 0.5,
+                        }
+                    }
+                )
+                if f.family == "socket"
+                else f
+                for f in e.facts
+            )
+        }
+    )
+    h = next(h for h in rank_hypotheses(e) if h.fault == "socket")
+    assert h.supporting_refs and "retrieval_only_observation" in h.gaps
+    assert not h.eligible
+
+
+def test_network_ambiguity_keeps_both_explanations_for_top_two_endpoints():
+    from app.core.single_pass import EvidenceSet
+
+    seed = evidence("delay", known=False)
+    facts = []
+    services = tuple("s" + str(i) for i in range(5))
+    for i, service in enumerate(services):
+        for f in seed.facts:
+            if f.family == "loss":
+                continue
+            data = {**f.data, "onset_upper": 10 + i * 20}
+            facts.append(
+                f.model_copy(update={"service": service, "ref": service + f.ref, "data": data})
+            )
+    e = EvidenceSet(case_id=seed.case_id, window=seed.window, services=services, facts=tuple(facts))
+    hs = rank_hypotheses(e)
+    assert len(hs) == 5
+    assert {("s0", "delay"), ("s0", "loss"), ("s1", "delay"), ("s1", "loss")} <= {
+        (h.service, h.fault) for h in hs
+    }
+    assert not any(h.eligible for h in hs)
+    assert all("missing_mechanism_specific_observation" in h.gaps for h in hs if h.fault == "loss")
+
+
+def test_shared_resource_changes_do_not_displace_distinct_memory_hypothesis():
+    from app.core.single_pass import EvidenceSet
+
+    seed = evidence("disk", known=False)
+    facts = []
+    services = tuple("s" + str(i) for i in range(8))
+    for service in services:
+        for f in seed.facts:
+            data = {**f.data}
+            if service == "s7" and f.family == "mem":
+                data["changed"] = True
+            facts.append(
+                f.model_copy(update={"service": service, "ref": service + f.ref, "data": data})
+            )
+    e = EvidenceSet(case_id=seed.case_id, window=seed.window, services=services, facts=tuple(facts))
+    hs = rank_hypotheses(e)
+    assert any(h.service == "s7" and h.fault == "mem" for h in hs)
+    assert not any(h.eligible for h in hs)
+
+
+def test_partial_delay_observation_never_becomes_a_qualified_latency_change():
+    e = evidence("delay")
+    fs = tuple(
+        f.model_copy(
+            update={
+                "data": {
+                    **f.data,
+                    "coverage": "baseline_missing",
+                    "before_median": None,
+                    "after_median": 10.0,
+                    "before_samples": 0,
+                    "after_samples": 20,
+                    "changed": False,
+                }
+            }
+        )
+        if f.family == "delay"
+        else f
+        for f in e.facts
+    )
+    error = fact_for(
+        "case",
+        WINDOW,
+        "a",
+        "metrics",
+        "error",
+        {"changed": True, "coverage": "complete", "before_median": 0.0, "after_median": 2.0},
+    )
+    e = e.model_copy(update={"facts": fs + (error,)})
+    h = next(h for h in rank_hypotheses(e, limit=6) if h.fault == "delay")
+    assert h.supporting_refs and not h.eligible

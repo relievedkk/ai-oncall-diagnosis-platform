@@ -98,3 +98,15 @@ def test_profile_reaches_base_and_all_time_perturbations_before_truth(tmp_path, 
         pilot, scope=DevelopmentScope(answers), telemetry_profile="rcaeval-re2"
     )
     assert audit["audited"] == 1 and audit["eligible_correct_pairs"] == 1
+
+
+def test_cpu_usage_permission_handles_credible_subthreshold_connection_competition():
+    view = cpu_view()
+    view.m["a_socket"] = [20.0] * 10 + [35.0] * 6 + [28.0] * 15
+    e = collect_evidence(view, telemetry_profile="rcaeval-re2")
+    socket = next(f for f in e.facts if f.family == "socket")
+    assert socket.data["changed"] is False
+    cpu = next(h for h in rank_hypotheses(e) if h.fault == "cpu")
+    assert not cpu.eligible
+    assert socket.ref in cpu.opposing_refs
+    assert "unresolved_competing_explanation" in cpu.gaps

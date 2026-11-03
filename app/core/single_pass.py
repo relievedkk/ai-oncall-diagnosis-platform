@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Fault = Literal["cpu", "mem", "disk", "socket", "loss", "delay"]
 FAULTS = ("cpu", "mem", "disk", "socket", "loss", "delay")
-REVISION = "single-pass-v5-20261103"
+REVISION = "single-pass-v5.1-20261103"
 
 
 def canonical(value: Any) -> str:

@@ -94,6 +94,31 @@ def _trace_delay(f, *, own=False):
     )
 
 
+def _temporal_score(facts, incident):
+    if not facts:
+        return 0.0
+    score = 0.5 * max(float(f.data.get("persistence", 0)) for f in facts)
+    times = [f.data.get("onset_upper") for f in facts if f.data.get("onset_upper") is not None]
+    if times:
+        score += 0.5 / (1 + min(abs(t - incident) for t in times) / 30)
+    return score
+
+
+def _weak_socket(f):
+    return (
+        f.source == "metrics"
+        and f.family == "socket"
+        and not f.data.get("changed")
+        and f.data.get("coverage") == "complete"
+        and not f.data.get("sampling_gap")
+        and f.data.get("onset_upper") is not None
+        and f.data.get("persistence", 0) >= 0.25
+        and f.data.get("before_median") is not None
+        and f.data["before_median"] > 0
+        and f.data.get("after_median", 0) >= 1.25 * f.data["before_median"]
+    )
+
+
 def _for_service(evidence, service):
     facts = [f for f in evidence.facts if f.service == service]
     changed = [f for f in facts if _changed(f)]
@@ -118,6 +143,33 @@ def _for_service(evidence, service):
         contrast = stable_load + [f for f in stable if f.family in FAULTS and f.family != fault]
         support = own + direct
         gaps, alternatives = [], []
+        partial = [
+            f
+            for f in facts
+            if f.source == "metrics"
+            and f.family == fault
+            and f.data.get("coverage") == "baseline_missing"
+            and f.data.get("after_samples", 0) >= 3
+            and f.data.get("after_median") is not None
+        ]
+        weak = [f for f in facts if fault == "socket" and _weak_socket(f)]
+        network_ambiguous = bool(
+            latency
+            and stable_load
+            and not events
+            and not any(f.family in {"cpu", "mem", "disk", "socket", "loss"} for f in changed)
+            and not any(f.family == "loss" and _stable(f) for f in facts)
+        )
+        support += partial + weak
+        if partial:
+            gaps.append("missing_baseline_for_mechanism")
+        if partial or weak:
+            gaps.append("retrieval_only_observation")
+        if fault in {"loss", "delay"} and network_ambiguous:
+            alternatives.append("network_delay_or_loss_unresolved")
+            if fault == "loss" and not own and not direct:
+                support += latency
+                gaps.append("retrieval_only_observation")
         mechanism = bool(direct)
         if fault == "cpu":
             mechanism |= any(
@@ -135,6 +187,10 @@ def _for_service(evidence, service):
                 f.family in {"gc", "retry"} and f.data.get("after_buckets", 0) >= 2 for f in facts
             ):
                 alternatives.append("gc_or_retry_cpu_effect")
+            connection_pressure = [f for f in facts if _weak_socket(f)]
+            if connection_pressure and not direct:
+                opposing += connection_pressure
+                alternatives.append("connection_pressure_may_drive_cpu")
         elif fault == "mem":
             mechanism |= any(
                 f.data.get("post_shape") == "growth" and f.data.get("direction") == "up"
@@ -154,7 +210,8 @@ def _for_service(evidence, service):
         elif fault == "loss":
             mechanism |= any(f.data.get("direction") == "up" for f in own)
         elif fault == "delay":
-            support += [f for f in facts if _trace_delay(f, own=True)]
+            own_trace_latency = [f for f in facts if _trace_delay(f, own=True)]
+            support += own_trace_latency
             resource_coverage = {
                 f.family for f in stable if f.family in {"cpu", "mem", "disk", "socket", "loss"}
             }
@@ -170,14 +227,20 @@ def _for_service(evidence, service):
             contrast += edges
             # Complete resource contrasts are required; absent network telemetry is a gap.
             mechanism = (
-                bool(support)
+                bool(own or own_trace_latency)
                 and resource_coverage == {"cpu", "mem", "disk", "socket", "loss"}
                 and edges_stable
             )
             if not edges_stable:
                 alternatives.append("downstream_latency")
         unresolved = bool(
-            (competitors or load or "gc_or_retry_cpu_effect" in alternatives) and not direct
+            (
+                competitors
+                or load
+                or "gc_or_retry_cpu_effect" in alternatives
+                or "connection_pressure_may_drive_cpu" in alternatives
+            )
+            and not direct
         )
         unresolved |= any(f.family not in EVENTS[fault] for f in events)
         if not mechanism:
@@ -193,13 +256,10 @@ def _for_service(evidence, service):
         score = 5 * len(direct) + 2 * bool(own) + bool(latency) + bool(stable_load) + 4 * eligible
         score -= 0.5 * bool(load)
         # Bounded within-signal timing/shape features break retrieval ties without comparing raw units.
-        if own:
-            score += 0.5 * max(float(f.data.get("persistence", 0)) for f in own)
-            times = [
-                f.data.get("onset_upper") for f in own if f.data.get("onset_upper") is not None
-            ]
-            if times:
-                score += 0.5 / (1 + min(abs(t - evidence.window.incident) for t in times) / 30)
+        score += _temporal_score(own, evidence.window.incident)
+        score += 0.8 * bool(partial) + 1.5 * bool(weak)
+        if fault == "loss" and network_ambiguous and not own and not direct:
+            score += 2 + _temporal_score(latency, evidence.window.incident) - 0.05
         hypotheses.append(
             Hypothesis(
                 service=service,
@@ -230,7 +290,47 @@ def rank_hypotheses(evidence, *, limit=5):
     if not 1 <= limit <= 30:
         raise ValueError("invalid_hypothesis_limit")
     all_hypotheses = [h for service in evidence.services for h in _for_service(evidence, service)]
-    return tuple(sorted(all_hypotheses, key=lambda h: (-h.score, h.service, h.fault))[:limit])
+    # Frequency within each measured family is a retrieval contrast, not a causal veto.
+    observed, shifted = {}, {}
+    for f in evidence.facts:
+        if f.source != "metrics" or f.family not in FAULTS:
+            continue
+        if f.data.get("coverage") == "complete":
+            observed.setdefault(f.family, set()).add(f.service)
+        if _changed(f):
+            shifted.setdefault(f.family, set()).add(f.service)
+    revised = []
+    for h in all_hypotheses:
+        population = observed.get(h.fault, set())
+        changed_services = shifted.get(h.fault, set())
+        bonus = (
+            (1 - len(changed_services) / len(population))
+            if population and h.service in changed_services
+            else 0
+        )
+        revised.append(h.model_copy(update={"score": h.score + bonus}))
+    ordered = sorted(revised, key=lambda h: (-h.score, h.service, h.fault))
+    if limit > 5:
+        return tuple(ordered[:limit])  # complete local permission catalog for the evaluator
+    chosen, seen = [], set()
+    by_pair = {(h.service, h.fault): h for h in ordered}
+    for h in ordered:
+        if (h.service, h.fault) in seen:
+            continue
+        chosen.append(h)
+        seen.add((h.service, h.fault))
+        if len(chosen) == limit:
+            break
+        # Preserve the genuinely unresolved network explanation for a selected endpoint.
+        # It consumes the same finite budget and never inherits eligibility from delay.
+        if h.fault == "delay" and "network_delay_or_loss_unresolved" in h.alternatives:
+            rival = by_pair[(h.service, "loss")]
+            if (rival.service, rival.fault) not in seen:
+                chosen.append(rival)
+                seen.add((rival.service, rival.fault))
+                if len(chosen) == limit:
+                    break
+    return tuple(chosen)
 
 
 def supported_service(evidence, service):
