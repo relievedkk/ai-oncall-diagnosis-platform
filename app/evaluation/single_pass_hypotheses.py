@@ -157,6 +157,7 @@ def _for_service(evidence, service):
         unresolved = bool(
             (competitors or load or "gc_or_retry_cpu_effect" in alternatives) and not direct
         )
+        unresolved |= any(f.family not in EVENTS[fault] for f in events)
         if not mechanism:
             gaps.append("missing_mechanism_specific_observation")
         if not stable_load:
@@ -169,6 +170,14 @@ def _for_service(evidence, service):
         # Scores retrieve hypotheses; they are deliberately not probabilities or permission.
         score = 5 * len(direct) + 2 * bool(own) + bool(latency) + bool(stable_load) + 4 * eligible
         score -= 0.5 * bool(load)
+        # Bounded within-signal timing/shape features break retrieval ties without comparing raw units.
+        if own:
+            score += 0.5 * max(float(f.data.get("persistence", 0)) for f in own)
+            times = [
+                f.data.get("onset_upper") for f in own if f.data.get("onset_upper") is not None
+            ]
+            if times:
+                score += 0.5 / (1 + min(abs(t - evidence.window.incident) for t in times) / 30)
         hypotheses.append(
             Hypothesis(
                 service=service,

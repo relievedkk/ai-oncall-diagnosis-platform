@@ -122,3 +122,54 @@ def test_explicit_status_mapping_and_empty_sources():
     assert fact.data["after_error_count"] == 1
     empty = view_of({"orders_cpu": [1] * 20})
     assert trace_facts(empty, make_window(empty))[0].data["status"] == "not_available"
+
+
+def test_incomplete_or_duplicate_children_do_not_fabricate_parent_self_time():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_traces import trace_facts
+
+    view = view_of(
+        {"a_cpu": [1] * 20, "b_cpu": [1] * 20},
+        traces=[
+            span("p", "", "a", 12, 1_000_000),
+            span("c", "p", "b", 12.1, 500_000),
+            span("c", "p", "b", 12.1, 500_000),
+        ],
+    )
+    facts = trace_facts(view, make_window(view))
+    parent = next(f for f in facts if f.family == "operation" and f.service == "a")
+    assert parent.data["after_self_p90_us"] is None
+    assert parent.data["after_self_spans"] == 0
+
+
+def test_nullable_operation_and_invalid_numeric_trace_values_are_quality_gaps():
+    import pandas as pd
+
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_traces import trace_facts
+
+    rows = [span("a", "", "orders", 12, 100), span("bad", "", "orders", 12, 100)]
+    rows[0]["operationName"] = pd.NA
+    rows[1]["duration"] = "invalid"
+    view = view_of({"orders_cpu": [1] * 20}, traces=rows)
+    facts = trace_facts(view, make_window(view))
+    assert next(f for f in facts if f.family == "operation").data["operation"] == "unknown"
+    assert next(f for f in facts if f.family == "coverage").data["invalid_numeric_rows"] == 1
+
+
+def test_many_templates_never_hide_a_competing_specific_event():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_events import log_facts
+
+    logs = [
+        {
+            "timestamp": 12,
+            "container_name": "orders_1",
+            "message": '{"errno":"ENOMEM","site":"' + chr(65 + i) + '"}',
+        }
+        for i in range(20)
+    ]
+    logs += [{"timestamp": 16, "container_name": "orders_1", "message": '{"errno":"EMFILE"}'}]
+    view = view_of({"orders_cpu": [1] * 20}, logs=logs)
+    facts = log_facts(view, make_window(view))
+    assert any(f.family == "socket_limit" and f.data["specific"] for f in facts)

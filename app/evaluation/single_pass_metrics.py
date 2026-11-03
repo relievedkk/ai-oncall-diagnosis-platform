@@ -5,6 +5,14 @@ import math
 from app.core.single_pass import fact_for, family_for
 
 
+def _median(values):
+    ordered = sorted(float(v) for v in values)
+    if not ordered:
+        return None
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else ordered[middle - 1] / 2 + ordered[middle] / 2
+
+
 def metric_facts(view, window, *, semantics=None):
     frame = view.m.loc[view.m.time.between(window.start, window.end)].sort_values("time")
     facts = []
@@ -48,7 +56,7 @@ def metric_facts(view, window, *, semantics=None):
                 delta, elapsed = series[column].diff(), series.time.diff()
                 resets = int(delta.lt(0).sum())
                 series[column] = (delta / elapsed).where(delta.ge(0) & elapsed.gt(0))
-                series = series.dropna(subset=[column])
+                series = series.loc[series[column].map(math.isfinite)]
             before = series.loc[series.time.lt(window.incident), column]
             after = series.loc[series.time.ge(window.incident)]
             values = after[column]
@@ -63,8 +71,9 @@ def metric_facts(view, window, *, semantics=None):
                 if len(before) < 3 or len(values) < 3
                 else "complete"
             )
-            pre = float(before.median()) if len(before) else None
-            post = float(values.median()) if len(values) else None
+            pre = _median(before)
+            post = _median(values)
+            ratio = post / pre if pre not in (None, 0) and post is not None else None
             data = {
                 "metric": column,
                 "metric_kind": "counter_rate" if kind == "counter" else kind,
@@ -75,7 +84,7 @@ def metric_facts(view, window, *, semantics=None):
                 "after_samples": len(values),
                 "before_median": pre,
                 "after_median": post,
-                "ratio": post / pre if pre not in (None, 0) and post is not None else None,
+                "ratio": ratio if ratio is not None and math.isfinite(ratio) else None,
                 "changed": False,
                 "onset_lower": None,
                 "onset_upper": None,
@@ -86,7 +95,7 @@ def metric_facts(view, window, *, semantics=None):
                 "scales": {},
             }
             if coverage == "complete":
-                mad = float((before - pre).abs().median())
+                mad = _median(abs(float(v) - pre) for v in before)
                 threshold = max(6 * mad, abs(pre) * 0.5, 1e-9)
                 cadence = float(series.time.diff().dropna().median())
                 data["sampling_gap"] |= bool(
@@ -117,7 +126,7 @@ def metric_facts(view, window, *, semantics=None):
                 )
                 data["direction"] = "up" if post > pre else "down" if post < pre else "stable"
                 split = max(1, len(values) // 3)
-                early, late = float(values.iloc[:split].mean()), float(values.iloc[-split:].mean())
+                early, late = _median(values.iloc[:split]), _median(values.iloc[-split:])
                 data["post_shape"] = (
                     "stable"
                     if not data["changed"]
@@ -129,6 +138,6 @@ def metric_facts(view, window, *, semantics=None):
                 )
                 for seconds in (30, 60, 120, 300):
                     section = after.loc[after.time.lt(window.incident + seconds), column]
-                    data["scales"][str(seconds)] = float(section.median()) if len(section) else None
+                    data["scales"][str(seconds)] = _median(section)
             facts.append(fact_for(view.case_id, window, service, "metrics", family, data))
     return tuple(facts)

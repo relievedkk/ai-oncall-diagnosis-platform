@@ -125,3 +125,34 @@ def test_specific_service_can_survive_unknown_mechanism_and_ranking_is_bounded()
     assert not supported_service(e, "invented")
     assert len(rank_hypotheses(e)) <= 5
     assert rank_hypotheses(e) == rank_hypotheses(e)
+
+
+def test_two_equally_specific_mechanisms_cannot_both_be_confirmed():
+    e = evidence("mem", specific=True)
+    competing = fact_for(
+        "case",
+        WINDOW,
+        "a",
+        "logs",
+        "disk_error",
+        {"specific": True, "new_event": True, "after_buckets": 3},
+    )
+    e = e.model_copy(update={"facts": e.facts + (competing,)})
+    assert not any(h.eligible for h in rank_hypotheses(e, limit=6))
+    h = next(h for h in rank_hypotheses(e, limit=6) if h.fault == "mem")
+    assert competing.ref in h.opposing_refs
+
+
+def test_incident_alignment_breaks_retrieval_ties_without_granting_permission():
+    e = evidence("cpu", known=False)
+    early = tuple(f.model_copy(update={"service": "z", "ref": "z-" + f.ref}) for f in e.facts)
+    late = tuple(
+        f.model_copy(update={"data": {**f.data, "onset_lower": 25, "onset_upper": 28}})
+        if f.data.get("changed")
+        else f
+        for f in e.facts
+    )
+    e = e.model_copy(update={"services": ("a", "z"), "facts": early + late})
+    ranked = rank_hypotheses(e)
+    assert ranked[0].service == "z"
+    assert not any(h.eligible for h in ranked)

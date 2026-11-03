@@ -89,3 +89,13 @@ def test_single_transient_is_not_sustained_onset():
     data = metric_facts(view, make_window(view))[0].data
     assert data["onset_upper"] is None
     assert data["changed"] is False
+
+
+def test_extreme_finite_values_never_create_nonfinite_derived_evidence():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_metrics import metric_facts
+
+    view = view_of({"orders_cpu": [1e-300] * 10 + [1e308] * 10})
+    fact = metric_facts(view, make_window(view))[0]
+    assert fact.data["ratio"] is None
+    assert "Infinity" not in fact.model_dump_json()

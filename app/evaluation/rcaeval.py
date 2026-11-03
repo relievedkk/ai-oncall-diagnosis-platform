@@ -1048,6 +1048,16 @@ async def run(view, *, max_calls, timeout, strategy="agent"):
 
 
 def main(argv=None):
+    import sys
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    protocol = argparse.ArgumentParser(add_help=False)
+    protocol.add_argument("--protocol-version", type=int, choices=[3, 4, 5], default=5)
+    selected, _ = protocol.parse_known_args(argv)
+    if selected.protocol_version == 5:
+        from app.evaluation.single_pass_runner import main as single_pass_main
+
+        return single_pass_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path(".runtime/rcaeval/pilot"))
     parser.add_argument(

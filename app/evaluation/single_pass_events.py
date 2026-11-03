@@ -110,9 +110,37 @@ def log_facts(view, window):
         group["specific"] |= specific
         if period == "after":
             group["first_after"] = min(group["first_after"] or timestamp, timestamp)
+    # Aggregate every recognized event before capping optional normal templates.
+    # Separate structured and keyword observations so repetition cannot upgrade semantics.
+    aggregated = {}
+    for (service, event, template), group in groups.items():
+        if event == "template_shift":
+            aggregated[(service, event, template)] = group
+            continue
+        key = (service, event, "structured" if group["specific"] else "keyword")
+        target = aggregated.setdefault(
+            key,
+            {
+                "before_count": 0,
+                "after_count": 0,
+                "before_buckets": set(),
+                "after_buckets": set(),
+                "specific": group["specific"],
+                "first_after": None,
+                "templates": [],
+            },
+        )
+        for period in ("before", "after"):
+            target[period + "_count"] += group[period + "_count"]
+            target[period + "_buckets"].update(group[period + "_buckets"])
+        if group["first_after"] is not None:
+            target["first_after"] = min(
+                target["first_after"] or group["first_after"], group["first_after"]
+            )
+        target["templates"].append(template)
     facts = []
     for service in view.services:
-        selected = [(key, g) for key, g in groups.items() if key[0] == service]
+        selected = [(key, g) for key, g in aggregated.items() if key[0] == service]
         selected.sort(
             key=lambda item: (
                 not item[1]["specific"],
@@ -123,15 +151,20 @@ def log_facts(view, window):
             )
         )
         counts.setdefault("omitted_templates", 0)
-        counts["omitted_templates"] += max(0, len(selected) - 16)
-        for (_, event, template), group in selected[:16]:
+        events = [item for item in selected if item[0][1] != "template_shift"]
+        normal = [item for item in selected if item[0][1] == "template_shift"]
+        counts["omitted_templates"] += max(0, len(normal) - 16)
+        for (_, event, template), group in events + normal[:16]:
+            template = min(group["templates"]) if "templates" in group else template
             data = {
-                **group,
+                **{k: v for k, v in group.items() if k != "templates"},
                 "before_buckets": len(group["before_buckets"]),
                 "after_buckets": len(group["after_buckets"]),
                 "template": template,
                 "excerpt": template[:160],
                 "untrusted_text": True,
+                "template_count": len(group.get("templates", [template])),
+                "request_normalization": "unavailable_without_request_semantics",
             }
             data["new_event"] = bool(data["after_count"] and not data["before_count"])
             facts.append(fact_for(view.case_id, window, service, "logs", event, data))

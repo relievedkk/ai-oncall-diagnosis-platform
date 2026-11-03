@@ -102,13 +102,13 @@ async def test_failures_never_retry_and_parse_usage_is_preserved(tmp_path, mode)
         delay=0.1 if mode == "timeout" else 0,
     )
     journal = AttemptJournal(tmp_path / "journal.sqlite")
-    kwargs = dict(
-        journal=journal,
-        experiment_id="run",
-        config={"model": "test"},
-        model_factory=lambda: model,
-        timeout_seconds=0.01 if mode == "timeout" else 1,
-    )
+    kwargs = {
+        "journal": journal,
+        "experiment_id": "run",
+        "config": {"model": "test"},
+        "model_factory": lambda: model,
+        "timeout_seconds": 0.01 if mode == "timeout" else 1,
+    }
     if mode == "cancel":
         with pytest.raises(asyncio.CancelledError):
             await run_single_pass(p, **kwargs)
@@ -134,3 +134,71 @@ async def test_model_setup_failure_does_not_reserve_or_call(tmp_path):
         )
     assert model.calls == 0
     assert journal.load("run", p.case_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ok", "malformed", "provider_error"])
+async def test_real_sdk_transport_makes_exactly_one_mock_http_request(tmp_path, mode):
+    import httpx
+
+    from app.core.llm_factory import SafeChatOpenAI
+
+    p = packet()
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if mode == "provider_error":
+            return httpx.Response(500, json={"error": {"message": "synthetic failure"}})
+        arguments = decision(p).model_dump_json() if mode == "ok" else "{malformed"
+        return httpx.Response(
+            200,
+            json={
+                "id": "mock",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "mock",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "SinglePassDecision",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        model = SafeChatOpenAI(
+            model="mock",
+            api_key="test-placeholder",
+            base_url="https://mock.invalid/v1",
+            http_async_client=client,
+            max_tokens=384,
+        )
+        result = await run_single_pass(
+            p,
+            journal=AttemptJournal(tmp_path / "journal.sqlite"),
+            experiment_id="mock-http",
+            config={"model": "mock"},
+            model_factory=lambda: model,
+        )
+    assert len(requests) == 1
+    assert result["model_calls"] == 1
+    assert (result["status"] == "supported") is (mode == "ok")
+    if mode != "provider_error":
+        assert result["usage"]["total_tokens"] == 25
