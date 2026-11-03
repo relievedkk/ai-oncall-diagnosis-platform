@@ -15,9 +15,11 @@ from typing import Any, Literal
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.core.data_safety import ModelBudgetExceeded, ModelInputRejected
 from app.core.diagnosis_result import DiagnosisResult, normalize_result
 from app.core.diagnostic_evidence import (
     DiagnosisEvidencePolicy,
+    EvidenceContractError,
     EvidenceRequest,
     FaultMechanism,
     FollowupEvidenceBundle,
@@ -36,6 +38,7 @@ Return only the requested structured schema."""
 
 CoordinatorFailureCategory = Literal[
     "timeout",
+    "budget_exhausted",
     "provider_setup_error",
     "provider_error",
     "invalid_initial_bundle",
@@ -45,17 +48,52 @@ CoordinatorFailureCategory = Literal[
     "policy_validation_error",
 ]
 
-_FAILURE_CATEGORIES: dict[str, CoordinatorFailureCategory] = {
-    "timeout": "timeout",
-    "provider_setup_error": "provider_setup_error",
-    "provider_error": "provider_error",
-    "invalid_initial_bundle": "invalid_initial_bundle",
-    "invalid_first_turn": "invalid_model_output",
-    "invalid_second_turn": "invalid_model_output",
-    "invalid_diagnosis_output": "policy_validation_error",
-    "invalid_evidence_request": "invalid_evidence_request",
-    "followup_loader_error": "followup_loader_error",
+FailureDetailCode = Literal[
+    "strategy_timeout",
+    "model_budget_exhausted",
+    "provider_setup_failed",
+    "provider_transport_failed",
+    "initial_bundle_invalid",
+    "route_output_invalid",
+    "diagnosis_output_invalid",
+    "request_service_outside_catalog",
+    "request_expansion_not_authorized",
+    "request_justification_not_authorized",
+    "followup_loader_failed",
+    "followup_request_mismatch",
+    "followup_candidate_mismatch",
+    "followup_content_not_authorized",
+    "policy_execution_failed",
+]
+
+_FAILURE_DETAIL_CATEGORIES: dict[FailureDetailCode, CoordinatorFailureCategory] = {
+    "strategy_timeout": "timeout",
+    "model_budget_exhausted": "budget_exhausted",
+    "provider_setup_failed": "provider_setup_error",
+    "provider_transport_failed": "provider_error",
+    "initial_bundle_invalid": "invalid_initial_bundle",
+    "route_output_invalid": "invalid_model_output",
+    "diagnosis_output_invalid": "invalid_model_output",
+    "request_service_outside_catalog": "invalid_evidence_request",
+    "request_expansion_not_authorized": "invalid_evidence_request",
+    "request_justification_not_authorized": "invalid_evidence_request",
+    "followup_loader_failed": "followup_loader_error",
+    "followup_request_mismatch": "followup_loader_error",
+    "followup_candidate_mismatch": "followup_loader_error",
+    "followup_content_not_authorized": "followup_loader_error",
+    "policy_execution_failed": "policy_validation_error",
 }
+
+
+def failure_category_for_detail(detail_code: FailureDetailCode) -> CoordinatorFailureCategory:
+    return _FAILURE_DETAIL_CATEGORIES[detail_code]
+
+
+class FollowupContractError(ValueError):
+    def __init__(self, code: FailureDetailCode):
+        self.code = code
+        super().__init__(code)
+
 
 _BLOCKING_EXECUTOR = ThreadPoolExecutor(
     max_workers=4,
@@ -103,6 +141,8 @@ class CoordinatorResult(BaseModel):
     followup_hash: str | None = Field(default=None, min_length=64, max_length=64)
     termination_reason: str = Field(min_length=1, max_length=128)
     failure_category: CoordinatorFailureCategory | None = None
+    failure_detail_code: FailureDetailCode | None = None
+    route_action: Literal["diagnose", "request_evidence"] | None = None
     followup_evidence_refs: tuple[str, ...] = Field(default_factory=tuple, max_length=2048)
 
 
@@ -302,67 +342,70 @@ async def _load_followup(
     if inspect.isawaitable(value):
         value = await deadline.wait(value)
     if not isinstance(value, SerializedEvidenceBundle):
-        raise TypeError("followup loader must return SerializedEvidenceBundle")
-    payload = _validate_serialized(value)
-    followup = FollowupEvidenceBundle.model_validate(payload)
+        raise FollowupContractError("followup_loader_failed")
+    try:
+        payload = _validate_serialized(value)
+        followup = FollowupEvidenceBundle.model_validate(payload)
+    except Exception as exc:
+        raise FollowupContractError("followup_content_not_authorized") from exc
     if followup.case_id != initial_payload.get("case_id"):
-        raise ValueError("followup case_id does not match the initial bundle")
+        raise FollowupContractError("followup_request_mismatch")
     if followup.request != request:
-        raise ValueError("followup request does not match the authorized request")
+        raise FollowupContractError("followup_request_mismatch")
     candidate_services = tuple(candidate.service for candidate in followup.candidates)
     if len(candidate_services) != len(request.services) or set(candidate_services) != set(
         request.services
     ):
-        raise ValueError("followup candidates do not match the authorized services")
+        raise FollowupContractError("followup_candidate_mismatch")
     requested_mechanisms = set(request.mechanisms)
     topology_allowed = request.view in {"traces", "topology"}
     catalog = set(initial_payload.get("services", []))
     seen_fact_refs = set()
     for candidate in followup.candidates:
         if not set(candidate.mechanism_profiles).issubset(requested_mechanisms):
-            raise ValueError("followup contains an unrequested mechanism")
+            raise FollowupContractError("followup_content_not_authorized")
         if not topology_allowed and (candidate.inbound_callers or candidate.outbound_dependencies):
-            raise ValueError("followup contains unrequested topology metadata")
+            raise FollowupContractError("followup_content_not_authorized")
         if not set(candidate.inbound_callers + candidate.outbound_dependencies).issubset(catalog):
-            raise ValueError("followup topology contains a service outside the catalog")
+            raise FollowupContractError("followup_content_not_authorized")
         structured_refs: dict[str, set[str]] = {
             mechanism: set() for mechanism in candidate.mechanism_profiles
         }
         for fact in candidate.facts:
             if fact.evidence_ref in seen_fact_refs:
-                raise ValueError("followup evidence_ref must have one fact owner")
+                raise FollowupContractError("followup_content_not_authorized")
             seen_fact_refs.add(fact.evidence_ref)
             if fact.service != candidate.service:
-                raise ValueError("followup fact is not bound to its candidate service")
+                raise FollowupContractError("followup_content_not_authorized")
             if fact.evidence_type == "structured_telemetry":
                 if fact.mechanism not in candidate.mechanism_profiles:
-                    raise ValueError("followup telemetry fact has no matching mechanism profile")
+                    raise FollowupContractError("followup_content_not_authorized")
                 if fact.mechanism not in requested_mechanisms:
-                    raise ValueError("followup telemetry fact has an unrequested mechanism")
+                    raise FollowupContractError("followup_content_not_authorized")
                 structured_refs[fact.mechanism].add(fact.evidence_ref)
             elif fact.evidence_type == "topology_edge":
                 if not topology_allowed or fact.mechanism is not None:
-                    raise ValueError("followup contains unrequested topology evidence")
+                    raise FollowupContractError("followup_content_not_authorized")
                 caller, callee = fact.data.get("caller"), fact.data.get("callee")
                 if (
                     caller not in catalog
                     or callee not in catalog
                     or candidate.service not in {caller, callee}
                 ):
-                    raise ValueError("followup topology fact is outside the authorized catalog")
+                    raise FollowupContractError("followup_content_not_authorized")
             else:
-                raise ValueError("followup contains an unsupported evidence type")
+                raise FollowupContractError("followup_content_not_authorized")
         for mechanism, profile in candidate.mechanism_profiles.items():
             if len(profile.evidence_refs) != len(set(profile.evidence_refs)):
-                raise ValueError("followup profile contains duplicate evidence refs")
+                raise FollowupContractError("followup_content_not_authorized")
             if set(profile.evidence_refs) != structured_refs.get(mechanism, set()):
-                raise ValueError("followup profile references are not bound to telemetry facts")
+                raise FollowupContractError("followup_content_not_authorized")
         if candidate.logs and request.view != "logs":
-            raise ValueError("followup contains unrequested logs")
+            raise FollowupContractError("followup_content_not_authorized")
         if candidate.trends and request.view not in {"metric_trends", "mechanism_details"}:
-            raise ValueError("followup contains unrequested metric trends")
+            raise FollowupContractError("followup_content_not_authorized")
         if candidate.traces and request.view not in {"traces", "topology"}:
-            raise ValueError("followup contains unrequested traces")
+            raise FollowupContractError("followup_content_not_authorized")
     return value
 
 
@@ -379,12 +422,14 @@ def _failure(
     initial: SerializedEvidenceBundle,
     *,
     reason: str,
+    detail_code: FailureDetailCode,
     call_count: int,
     error: BaseException | None = None,
     request: EvidenceRequest | None = None,
     followup_hash: str | None = None,
     followup_evidence_refs: tuple[str, ...] = (),
     outcome: str = "dependency_failed",
+    route_action: Literal["diagnose", "request_evidence"] | None = None,
 ) -> CoordinatorResult:
     errors = ()
     if error is not None:
@@ -397,7 +442,9 @@ def _failure(
         request=request,
         followup_hash=followup_hash,
         termination_reason=reason,
-        failure_category=_FAILURE_CATEGORIES[reason],
+        failure_category=failure_category_for_detail(detail_code),
+        failure_detail_code=detail_code,
+        route_action=route_action,
         followup_evidence_refs=followup_evidence_refs,
     )
 
@@ -457,6 +504,7 @@ async def run_single_stage(
         return _failure(
             initial,
             reason="invalid_initial_bundle",
+            detail_code="initial_bundle_invalid",
             call_count=0,
             error=exc,
             outcome="insufficient_evidence",
@@ -465,30 +513,68 @@ async def run_single_stage(
         structured = _model(model_factory).with_structured_output(
             DiagnosisResult, method="function_calling"
         )
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
+        return _failure(
+            initial,
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
+            call_count=0,
+            error=exc,
+            outcome="budget_exhausted",
+        )
     except Exception as exc:
-        return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
+        return _failure(
+            initial,
+            reason="provider_setup_error",
+            detail_code="provider_setup_failed",
+            call_count=0,
+            error=exc,
+        )
     try:
         raw = await deadline.wait(
             structured.ainvoke(_messages(task, initial, allow_request=False)),
         )
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
+        return _failure(
+            initial,
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
+            call_count=1,
+            error=exc,
+            outcome="budget_exhausted",
+        )
     except TimeoutError as exc:
-        return _failure(initial, reason="timeout", call_count=1, error=exc)
+        return _failure(
+            initial,
+            reason="timeout",
+            detail_code="strategy_timeout",
+            call_count=1,
+            error=exc,
+        )
     except ValidationError as exc:
         return _failure(
             initial,
             reason="invalid_first_turn",
+            detail_code="diagnosis_output_invalid",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
         )
     except Exception as exc:
-        return _failure(initial, reason="provider_error", call_count=1, error=exc)
+        return _failure(
+            initial,
+            reason="provider_error",
+            detail_code="provider_transport_failed",
+            call_count=1,
+            error=exc,
+        )
     try:
         diagnosis = DiagnosisResult.model_validate(raw)
     except Exception as exc:
         return _failure(
             initial,
             reason="invalid_first_turn",
+            detail_code="diagnosis_output_invalid",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
@@ -498,11 +584,18 @@ async def run_single_stage(
             _apply_policy(policy, diagnosis, initial=initial, followup=None)
         )
     except TimeoutError as exc:
-        return _failure(initial, reason="timeout", call_count=1, error=exc)
+        return _failure(
+            initial,
+            reason="timeout",
+            detail_code="strategy_timeout",
+            call_count=1,
+            error=exc,
+        )
     except Exception as exc:
         return _failure(
             initial,
             reason="invalid_diagnosis_output",
+            detail_code="policy_execution_failed",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
@@ -532,6 +625,7 @@ async def run_two_stage(
         return _failure(
             initial,
             reason="invalid_initial_bundle",
+            detail_code="initial_bundle_invalid",
             call_count=0,
             error=exc,
             outcome="insufficient_evidence",
@@ -539,30 +633,68 @@ async def run_two_stage(
     try:
         model = _model(model_factory)
         route_model = model.with_structured_output(RouteDecision, method="function_calling")
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
+        return _failure(
+            initial,
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
+            call_count=0,
+            error=exc,
+            outcome="budget_exhausted",
+        )
     except Exception as exc:
-        return _failure(initial, reason="provider_setup_error", call_count=0, error=exc)
+        return _failure(
+            initial,
+            reason="provider_setup_error",
+            detail_code="provider_setup_failed",
+            call_count=0,
+            error=exc,
+        )
     try:
         raw_route = await deadline.wait(
             route_model.ainvoke(_messages(task, initial, allow_request=True)),
         )
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
+        return _failure(
+            initial,
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
+            call_count=1,
+            error=exc,
+            outcome="budget_exhausted",
+        )
     except TimeoutError as exc:
-        return _failure(initial, reason="timeout", call_count=1, error=exc)
+        return _failure(
+            initial,
+            reason="timeout",
+            detail_code="strategy_timeout",
+            call_count=1,
+            error=exc,
+        )
     except ValidationError as exc:
         return _failure(
             initial,
             reason="invalid_first_turn",
+            detail_code="route_output_invalid",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
         )
     except Exception as exc:
-        return _failure(initial, reason="provider_error", call_count=1, error=exc)
+        return _failure(
+            initial,
+            reason="provider_error",
+            detail_code="provider_transport_failed",
+            call_count=1,
+            error=exc,
+        )
     try:
         route = RouteDecision.model_validate(raw_route)
     except Exception as exc:
         return _failure(
             initial,
             reason="invalid_first_turn",
+            detail_code="route_output_invalid",
             call_count=1,
             error=exc,
             outcome="insufficient_evidence",
@@ -574,14 +706,16 @@ async def run_two_stage(
     if request is not None:
         try:
             validate_evidence_request(request, initial_bundle)
-        except Exception as exc:
+        except EvidenceContractError as exc:
             return _failure(
                 initial,
                 reason="invalid_evidence_request",
+                detail_code=exc.code,
                 call_count=1,
                 error=exc,
                 request=request,
                 outcome="insufficient_evidence",
+                route_action=route.action,
             )
         try:
             followup = await _load_followup(
@@ -595,29 +729,58 @@ async def run_two_stage(
             return _failure(
                 initial,
                 reason="timeout",
+                detail_code="strategy_timeout",
                 call_count=1,
                 error=exc,
                 request=request,
+                route_action=route.action,
+            )
+        except FollowupContractError as exc:
+            return _failure(
+                initial,
+                reason="followup_loader_error",
+                detail_code=exc.code,
+                call_count=1,
+                error=exc,
+                request=request,
+                route_action=route.action,
             )
         except Exception as exc:
             return _failure(
                 initial,
                 reason="followup_loader_error",
+                detail_code="followup_loader_failed",
                 call_count=1,
                 error=exc,
                 request=request,
+                route_action=route.action,
             )
     try:
         final_model = model.with_structured_output(DiagnosisResult, method="function_calling")
-    except Exception as exc:
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
         return _failure(
             initial,
-            reason="provider_setup_error",
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
             call_count=1,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
+            outcome="budget_exhausted",
+            route_action=route.action,
+        )
+    except Exception as exc:
+        return _failure(
+            initial,
+            reason="provider_setup_error",
+            detail_code="provider_setup_failed",
+            call_count=1,
+            error=exc,
+            request=request,
+            followup_hash=followup.sha256 if followup is not None else None,
+            followup_evidence_refs=followup_refs,
+            route_action=route.action,
         )
     try:
         raw_diagnosis = await deadline.wait(
@@ -631,36 +794,55 @@ async def run_two_stage(
                 )
             )
         )
-    except TimeoutError as exc:
+    except (ModelBudgetExceeded, ModelInputRejected) as exc:
         return _failure(
             initial,
-            reason="timeout",
+            reason="model_budget_exhausted",
+            detail_code="model_budget_exhausted",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
+            outcome="budget_exhausted",
+            route_action=route.action,
+        )
+    except TimeoutError as exc:
+        return _failure(
+            initial,
+            reason="timeout",
+            detail_code="strategy_timeout",
+            call_count=2,
+            error=exc,
+            request=request,
+            followup_hash=followup.sha256 if followup is not None else None,
+            followup_evidence_refs=followup_refs,
+            route_action=route.action,
         )
     except ValidationError as exc:
         return _failure(
             initial,
             reason="invalid_second_turn",
+            detail_code="diagnosis_output_invalid",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
+            route_action=route.action,
         )
     except Exception as exc:
         return _failure(
             initial,
             reason="provider_error",
+            detail_code="provider_transport_failed",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
+            route_action=route.action,
         )
     try:
         diagnosis = DiagnosisResult.model_validate(raw_diagnosis)
@@ -668,12 +850,14 @@ async def run_two_stage(
         return _failure(
             initial,
             reason="invalid_second_turn",
+            detail_code="diagnosis_output_invalid",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
+            route_action=route.action,
         )
     try:
         normalized = await deadline.wait(
@@ -683,22 +867,26 @@ async def run_two_stage(
         return _failure(
             initial,
             reason="timeout",
+            detail_code="strategy_timeout",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
+            route_action=route.action,
         )
     except Exception as exc:
         return _failure(
             initial,
             reason="invalid_diagnosis_output",
+            detail_code="policy_execution_failed",
             call_count=2,
             error=exc,
             request=request,
             followup_hash=followup.sha256 if followup is not None else None,
             followup_evidence_refs=followup_refs,
             outcome="insufficient_evidence",
+            route_action=route.action,
         )
     return CoordinatorResult(
         result=normalized,
@@ -707,5 +895,6 @@ async def run_two_stage(
         request=request,
         followup_hash=followup.sha256 if followup is not None else None,
         termination_reason=("followup_diagnosis" if followup is not None else "direct_diagnosis"),
+        route_action=route.action,
         followup_evidence_refs=followup_refs,
     )

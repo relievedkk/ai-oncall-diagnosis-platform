@@ -115,3 +115,22 @@ def test_old_summary_remains_rescorable_without_v3_fields():
     assert result["schema_version"] == 3
     assert result["initial_candidate_recall"] is None
     assert summarize([sample()])["agent"]["conditional_joint_accuracy"] == 1.0
+
+
+def test_policy_normalized_abstention_is_success_but_policy_exception_is_failure():
+    normalized = sample()
+    normalized["prediction"] = {"service": None, "fault": "unknown"}
+    normalized["diagnosis_result"]["outcome"] = "insufficient_evidence"
+    normalized["diagnosis_result"]["validation_issues"] = ["unsupported model claim cleared"]
+    failed = sample()
+    failed["prediction"] = {"service": None, "fault": "unknown"}
+    failed["failure_category"] = "policy_validation_error"
+    failed["failure_detail_code"] = "policy_execution_failed"
+
+    safe = assess_run(normalized)
+    broken = assess_run(failed)
+
+    assert safe["execution_ok"] is True
+    assert safe["safe_unknown"] is True
+    assert broken["execution_ok"] is False
+    assert broken["execution_category"] == "policy_validation_error"

@@ -815,6 +815,66 @@ async def test_runner_builds_initial_bundle_once_and_shares_exact_bytes(recorded
         all(ref.startswith("rca-") for ref in item["valid_evidence_refs"])
         for item in result["runs"]
     )
+    assert all(
+        item["evidence_request"] is None
+        and item["failure_detail_code"] is None
+        and item["route_action"] is None
+        for item in result["runs"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_only_typed_safe_agent_audit_fields(recorded_case):
+    from app.agent.aiops.two_stage import CoordinatorResult
+    from app.core.diagnosis_result import DiagnosisResult
+    from app.core.diagnostic_evidence import EvidenceRequest
+    from app.evaluation.rcaeval import run_protocol_v3_case
+
+    evidence_request = EvidenceRequest(
+        services=("orders",),
+        mechanisms=("cpu",),
+        view="metric_trends",
+        justification_refs=("safe-ref",),
+    )
+
+    async def single(_task, initial, **_kwargs):
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="insufficient_evidence"),
+            call_count=1,
+            initial_hash=initial.sha256,
+            termination_reason="single_stage_complete",
+        )
+
+    async def agent(_task, initial, **_kwargs):
+        return CoordinatorResult(
+            result=DiagnosisResult(outcome="dependency_failed"),
+            errors=("OSError during followup_loader_error",),
+            call_count=1,
+            initial_hash=initial.sha256,
+            request=evidence_request,
+            termination_reason="followup_loader_error",
+            failure_category="followup_loader_error",
+            failure_detail_code="followup_loader_failed",
+            route_action="request_evidence",
+        )
+
+    result = await run_protocol_v3_case(
+        recorded_case,
+        {"task": "diagnose"},
+        model_factory_for=lambda _strategy: lambda **_kwargs: None,
+        truth_loader=lambda _case_id: {"root_cause_service": "orders", "fault": "cpu"},
+        single_runner=single,
+        agent_runner=agent,
+    )
+
+    single_record, agent_record = result["runs"]
+    assert single_record["evidence_request"] is None
+    assert single_record["failure_detail_code"] is None
+    assert single_record["route_action"] is None
+    assert agent_record["evidence_request"] == evidence_request.model_dump(mode="json")
+    assert agent_record["failure_detail_code"] == "followup_loader_failed"
+    assert agent_record["route_action"] == "request_evidence"
+    assert "secret" not in str(result)
 
 
 @pytest.mark.asyncio

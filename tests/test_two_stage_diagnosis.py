@@ -371,6 +371,46 @@ def test_route_decision_rejects_invalid_or_extra_fields(payload):
         RouteDecision.model_validate(payload)
 
 
+def test_failure_detail_codes_map_to_closed_top_level_categories():
+    from app.agent.aiops.two_stage import failure_category_for_detail
+
+    expected = {
+        "strategy_timeout": "timeout",
+        "model_budget_exhausted": "budget_exhausted",
+        "provider_setup_failed": "provider_setup_error",
+        "provider_transport_failed": "provider_error",
+        "initial_bundle_invalid": "invalid_initial_bundle",
+        "route_output_invalid": "invalid_model_output",
+        "diagnosis_output_invalid": "invalid_model_output",
+        "request_service_outside_catalog": "invalid_evidence_request",
+        "request_expansion_not_authorized": "invalid_evidence_request",
+        "request_justification_not_authorized": "invalid_evidence_request",
+        "followup_loader_failed": "followup_loader_error",
+        "followup_request_mismatch": "followup_loader_error",
+        "followup_candidate_mismatch": "followup_loader_error",
+        "followup_content_not_authorized": "followup_loader_error",
+        "policy_execution_failed": "policy_validation_error",
+    }
+
+    assert {code: failure_category_for_detail(code) for code in expected} == expected
+
+
+def test_coordinator_result_exposes_nullable_safe_audit_fields():
+    from app.agent.aiops.two_stage import CoordinatorResult
+
+    result = CoordinatorResult(
+        result=_diagnosis(),
+        call_count=0,
+        initial_hash="0" * 64,
+        termination_reason="test",
+        failure_detail_code="route_output_invalid",
+        route_action="diagnose",
+    )
+
+    assert result.failure_detail_code == "route_output_invalid"
+    assert result.route_action == "diagnose"
+
+
 @pytest.mark.asyncio
 async def test_single_stage_uses_exact_initial_payload_once():
     from app.agent.aiops.two_stage import run_single_stage
@@ -419,6 +459,8 @@ async def test_agent_direct_route_uses_dedicated_second_diagnosis_call():
     assert result.call_count == 2
     assert result.result.summary == "direct"
     assert result.termination_reason == "direct_diagnosis"
+    assert result.route_action == "diagnose"
+    assert result.failure_detail_code is None
     assert loader_calls == []
     assert [schema for schema, _kwargs in model.schemas] == [RouteDecision, DiagnosisResult]
     assert len(model.calls) == 2
@@ -468,6 +510,8 @@ async def test_agent_valid_followup_uses_exactly_two_calls():
     assert [schema[0] for schema in model.schemas] == [RouteDecision, DiagnosisResult]
     assert loader_calls == [request]
     assert result.request == request
+    assert result.route_action == "request_evidence"
+    assert result.failure_detail_code is None
     assert result.followup_hash == _followup(request).sha256
     assert "ev-payments-cpu" in result.followup_evidence_refs
     assert result.result.summary == "after followup"
@@ -642,6 +686,7 @@ async def test_structured_validation_error_is_not_misclassified_as_provider_fail
     assert result.call_count == 1
     assert result.termination_reason == "invalid_first_turn"
     assert result.failure_category == "invalid_model_output"
+    assert result.failure_detail_code == "diagnosis_output_invalid"
     assert result.result.outcome == "insufficient_evidence"
 
 
@@ -663,6 +708,7 @@ async def test_agent_classifies_first_turn_validation_error_as_invalid_model_out
     assert result.call_count == 1
     assert result.termination_reason == "invalid_first_turn"
     assert result.failure_category == "invalid_model_output"
+    assert result.failure_detail_code == "route_output_invalid"
 
 
 @pytest.mark.asyncio
@@ -696,6 +742,7 @@ async def test_agent_classifies_second_turn_validation_error_as_invalid_model_ou
     assert result.call_count == 2
     assert result.termination_reason == "invalid_second_turn"
     assert result.failure_category == "invalid_model_output"
+    assert result.failure_detail_code == "diagnosis_output_invalid"
 
 
 @pytest.mark.asyncio
@@ -752,6 +799,12 @@ async def test_out_of_catalog_or_unhinted_request_is_rejected_without_loader_cal
 
     assert result.call_count == 1
     assert result.termination_reason == "invalid_evidence_request"
+    expected_detail = (
+        "request_service_outside_catalog"
+        if service == "outside-catalog"
+        else "request_expansion_not_authorized"
+    )
+    assert result.failure_detail_code == expected_detail
     assert loader_calls == []
 
 
@@ -842,10 +895,52 @@ async def test_provider_or_loader_failure_has_distinct_outcome():
     assert provider.result.outcome == "dependency_failed"
     assert provider.termination_reason == "provider_error"
     assert provider.failure_category == "provider_error"
+    assert provider.failure_detail_code == "provider_transport_failed"
     assert "secret" not in " ".join(provider.errors)
     assert loader.result.outcome == "dependency_failed"
     assert loader.termination_reason == "followup_loader_error"
     assert loader.failure_category == "followup_loader_error"
+    assert loader.failure_detail_code == "followup_loader_failed"
+
+
+@pytest.mark.asyncio
+async def test_model_budget_failure_uses_fixed_safe_detail():
+    from app.agent.aiops.two_stage import run_single_stage
+    from app.core.data_safety import ModelBudgetExceeded
+
+    result = await run_single_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(FakeModel([ModelBudgetExceeded("secret budget state")])),
+        policy=IdentityPolicy(),
+    )
+
+    assert result.result.outcome == "budget_exhausted"
+    assert result.failure_category == "budget_exhausted"
+    assert result.failure_detail_code == "model_budget_exhausted"
+    assert "secret" not in " ".join(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_policy_exception_is_failure_but_does_not_persist_exception_text():
+    from app.agent.aiops.two_stage import run_two_stage
+
+    class BrokenPolicy:
+        def normalize(self, diagnosis, *, initial, followup=None):
+            raise RuntimeError("secret policy internals")
+
+    result = await run_two_stage(
+        {"task": "diagnose"},
+        _initial(),
+        model_factory=_factory(FakeModel([_diagnose_route(), _diagnosis()])),
+        followup_loader=lambda _request: _followup(),
+        policy=BrokenPolicy(),
+    )
+
+    assert result.failure_category == "policy_validation_error"
+    assert result.failure_detail_code == "policy_execution_failed"
+    assert result.route_action == "diagnose"
+    assert "secret" not in " ".join(result.errors)
 
 
 @pytest.mark.asyncio
@@ -863,6 +958,7 @@ async def test_model_timeout_has_structured_timeout_category():
     assert result.call_count == 1
     assert result.termination_reason == "timeout"
     assert result.failure_category == "timeout"
+    assert result.failure_detail_code == "strategy_timeout"
     assert "provider details" not in " ".join(result.errors)
 
 
@@ -999,8 +1095,17 @@ async def test_non_finite_strategy_timeout_is_rejected(timeout_seconds):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalidity", ["case_id", "request", "services"])
-async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidity):
+@pytest.mark.parametrize(
+    ("invalidity", "expected_detail"),
+    [
+        ("case_id", "followup_request_mismatch"),
+        ("request", "followup_request_mismatch"),
+        ("services", "followup_candidate_mismatch"),
+    ],
+)
+async def test_agent_rejects_followup_bundle_outside_authorized_request(
+    invalidity, expected_detail
+):
     from app.agent.aiops.two_stage import run_two_stage
 
     request = EvidenceRequest(
@@ -1034,6 +1139,7 @@ async def test_agent_rejects_followup_bundle_outside_authorized_request(invalidi
 
     assert result.call_count == 1
     assert result.termination_reason == "followup_loader_error"
+    assert result.failure_detail_code == expected_detail
     assert len(model.calls) == 1
 
 
@@ -1106,6 +1212,7 @@ async def test_agent_rejects_internally_inconsistent_followup_evidence(invalidit
 
     assert result.call_count == 1
     assert result.termination_reason == "followup_loader_error"
+    assert result.failure_detail_code == "followup_content_not_authorized"
     assert len(model.calls) == 1
 
 

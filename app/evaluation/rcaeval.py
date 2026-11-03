@@ -806,6 +806,11 @@ async def run_protocol_v3_case(
             "diagnosis_result": outcome.result.model_dump(),
             "errors": list(outcome.errors),
             "failure_category": outcome.failure_category,
+            "failure_detail_code": outcome.failure_detail_code,
+            "route_action": outcome.route_action,
+            "evidence_request": (
+                outcome.request.model_dump(mode="json") if outcome.request is not None else None
+            ),
             "valid_evidence_refs": valid_evidence_refs,
             "termination_reason": outcome.termination_reason,
             "initial_hash": outcome.initial_hash,
