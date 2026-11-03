@@ -32,35 +32,35 @@
 Files: new app/evaluation/single_pass_semantics.py; modify single_pass_metrics.py, single_pass_hypotheses.py, single_pass_runner.py; new tests/test_single_pass_semantics.py.
 Interfaces: resolve_semantics(view,profile), collect_evidence(...,telemetry_profile=None), audit_development(...,telemetry_profile=None); CLI --telemetry-profile.
 
-- [ ] Investigate official sources and existing3CPU inventories; record what is proved and remains unknown.
-- [ ] RED tests: published CPU-usage quantity reaches eligibility via relative comparison; no percentage/counter inference; arbitrary/counter-like columns excluded; profile switch reaches all5 extraction paths and changes packet identity.
-- [ ] Implement curated source-backed quantity profile, preserve unknown kind/unit unless explicitly documented; maintain existing known-unit path.
-- [ ] Run semantic/extractor/runner regression (PASS); document3CPU before/after; commit.
+- [x] Investigate official sources and existing3CPU inventories; record what is proved and remains unknown.
+- [x] RED tests: published CPU-usage quantity reaches eligibility via relative comparison; no percentage/counter inference; arbitrary/counter-like columns excluded; profile switch reaches all5 extraction paths and changes packet identity.
+- [x] Implement curated source-backed quantity profile, preserve unknown kind/unit unless explicitly documented; maintain existing known-unit path.
+- [x] Run semantic/extractor/runner regression (PASS); document3CPU before/after; commit.
 
 ### Task2: Reviewable18-case failure attribution
 
 Files: new app/evaluation/single_pass_attribution.py; modify single_pass_runner.py; new tests/test_single_pass_attribution.py.
 Interfaces: attribute_failure(evidence,hypotheses,packet_error,truth), write_attribution_report(audit,path).
 
-- [ ] RED tests: independent metadata/coverage/competition/retrieval/packet axes; absent extracted feature cannot assert raw-data absence; truth available only post-freeze.
-- [ ] Add per-case source/semantics inventory, exact cited refs/gaps, specific follow-up actions and aggregate table; preserve failures in all denominators.
-- [ ] Focused tests PASS; generate18 attribution from approved developer artifact/current frozen evidence; commit.
+- [x] RED tests: independent metadata/coverage/competition/retrieval/packet axes; absent extracted feature cannot assert raw-data absence; truth available only post-freeze.
+- [x] Add per-case source/semantics inventory, exact cited refs/gaps, specific follow-up actions and aggregate table; preserve failures in all denominators.
+- [x] Focused tests PASS; generate18 attribution from approved developer artifact/current frozen evidence; commit.
 
 ### Task3: Label-free retrieval and lossless budget repair
 
 Files: modify single_pass_hypotheses.py and single_pass_packet.py; extend tests/test_single_pass_hypotheses.py and tests/test_single_pass_packet.py.
 Interfaces: same rank_hypotheses/build_packet public contracts; optional versioned transport decoding internal to Packet.payload.
 
-- [ ] Investigate all5 misses and3 overflows using frozen developer evidence; state reproducible cause before each change.
-- [ ] RED tests for each general correction: weak/missing-baseline facts, genuine alternative hypotheses, service/mechanism diversity with temporal context as available; no new mechanism permissions from ranking.
-- [ ] RED dense fact fixture: exact support/opposition/contrast identity and full precision survive compression or0-call failure. Prefer structural field/value sharing over deletion.
-- [ ] Implement only evidence-backed corrections, run all single-pass/SDK/journal regressions PASS; commit.
+- [x] Investigate all5 misses and3 overflows using frozen developer evidence; state reproducible cause before each change.
+- [x] RED tests for each general correction: weak/missing-baseline facts, genuine alternative hypotheses, service/mechanism diversity with temporal context as available; no new mechanism permissions from ranking.
+- [x] RED dense fact fixture: exact support/opposition/contrast identity and full precision survive compression or0-call failure. Prefer structural field/value sharing over deletion.
+- [x] Implement only evidence-backed corrections, run all single-pass/SDK/journal regressions PASS; commit.
 
 ### Task4: Frozen no-fee verification, review and report
 
 Files: docs/single-pass-evidence-recovery.md; extend docs/single-pass-validation.md and protocol revision/config if needed.
 
-- [ ] Run all18 raw-source audits with ablations and4perturbations using frozen profiles; report top5, eligible true/competing pairs, packet counts, time stability separately.
-- [ ] Full pytest, targeted Ruff/Bandit, one fresh independent whole-range reviewer. Fix material findings with RED/GREEN and full green suite.
-- [ ] Write actual before/after, source proofs/unknowns and remaining data requirements; paid run blocked unless prerequisites and review satisfied; remaining36 untouched.
-- [ ] Commit only task files; preserve branch and progress records (previous deletion auto-review rejected). No merge/push.
+- [x] Run all18 raw-source audits with ablations and4perturbations using frozen profiles; report top5, eligible true/competing pairs, packet counts, time stability separately.
+- [x] Full pytest, targeted Ruff/Bandit, one fresh independent whole-range reviewer. Fix material findings with RED/GREEN and full green suite.
+- [x] Write actual before/after, source proofs/unknowns and remaining data requirements; paid run blocked unless prerequisites and review satisfied; remaining36 untouched.
+- [x] Commit only task files; preserve branch and progress records (previous deletion auto-review rejected). No merge/push.
