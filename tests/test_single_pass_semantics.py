@@ -73,7 +73,7 @@ def test_profile_reaches_base_and_all_time_perturbations_before_truth(tmp_path, 
     from types import SimpleNamespace
 
     from app.evaluation import single_pass_runner as runner
-    from app.evaluation.rcaeval_v4 import DevelopmentScope
+    from app.evaluation.evaluation_scope import DevelopmentScope
 
     answers = tmp_path / "answers.parquet"
     answers.touch()

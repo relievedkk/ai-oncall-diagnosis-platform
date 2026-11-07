@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.evaluation.rcaeval_v4 import DevelopmentScope
+from app.evaluation.evaluation_scope import DevelopmentScope
 from app.evaluation.single_pass_runner import audit_development, feasibility_gate, main
 from tests.single_pass_helpers import view_of
 

@@ -8,8 +8,8 @@ from app.agent.aiops.single_pass import run_single_pass
 from app.evaluation.single_pass_hypotheses import rank_hypotheses
 from app.evaluation.single_pass_journal import AttemptJournal
 from app.evaluation.single_pass_packet import build_packet
+from tests.single_pass_helpers import choice_of as decision
 from tests.test_single_pass_hypotheses import evidence
-from tests.test_single_pass_packet import decision
 
 
 class Model:
@@ -170,7 +170,7 @@ async def test_real_sdk_transport_makes_exactly_one_mock_http_request(tmp_path, 
                                     "id": "call",
                                     "type": "function",
                                     "function": {
-                                        "name": "SinglePassDecision",
+                                        "name": "SinglePassChoice",
                                         "arguments": arguments,
                                     },
                                 }

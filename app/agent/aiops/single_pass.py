@@ -4,19 +4,34 @@ import asyncio
 import hashlib
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from app.core.data_safety import redact_sensitive
 from app.core.single_pass import REVISION, Frozen, canonical
+from app.core.structured_output import safe_schema_issues
+from app.evaluation.single_pass_storage import PersistenceError
+
+
+class SinglePassChoice(Frozen):
+    hypothesis_id: str | None = Field(
+        default=None, description="Exact supplied hypothesis id, or null for unknown"
+    )
+    decision: Literal["candidate", "service_only", "unknown"]
+    reason: str = Field(
+        default="",
+        description="Optional brief rationale, preferably at most120 characters; not authoritative evidence",
+    )
 
 
 class SinglePassDecision(Frozen):
+    """Internal/server-bound decision; the model only emits SinglePassChoice."""
+
     packet_id: str = Field(min_length=1, max_length=64)
     service_id: str | None = Field(default=None, max_length=16)
     fault: Literal["cpu", "mem", "disk", "socket", "loss", "delay", "unknown"]
-    supporting_refs: list[str] = Field(default_factory=list, max_length=32)
-    opposing_refs: list[str] = Field(default_factory=list, max_length=32)
-    contrast_refs: list[str] = Field(default_factory=list, max_length=32)
+    supporting_refs: list[str] = Field(default_factory=list)
+    opposing_refs: list[str] = Field(default_factory=list)
+    contrast_refs: list[str] = Field(default_factory=list)
     excluded_hypotheses: list[str] = Field(default_factory=list, max_length=5)
     reason: str = Field(default="", max_length=400)
     gaps: list[str] = Field(default_factory=list, max_length=6)
@@ -91,10 +106,65 @@ def render_report(result):
     )
 
 
+def validate_choice(packet, choice):
+    payload = packet.payload
+    if choice.decision == "unknown":
+        if choice.hypothesis_id is not None:
+            raise ValueError("unknown_choice_has_hypothesis")
+        h = None
+    else:
+        h = next((h for h in payload["hypotheses"] if h["id"] == choice.hypothesis_id), None)
+        if h is None:
+            raise ValueError("unknown_hypothesis_id")
+    reason = str(redact_sensitive(choice.reason))[:400]
+    decision = SinglePassDecision(
+        packet_id=payload["packet_id"],
+        service_id=h["service"] if h else None,
+        fault=h["fault"] if h and choice.decision == "candidate" else "unknown",
+        supporting_refs=h["support"] if h else [],
+        opposing_refs=h["opposition"] if h else [],
+        contrast_refs=h["contrast"] if h else [],
+        reason=reason,
+    )
+    result = validate_decision(packet, decision)
+    proposal_service = payload["services"][h["service"]]["name"] if h else None
+    proposed_type = h["fault"] if h and choice.decision == "candidate" else "unknown"
+    tentative = bool(
+        h
+        and h.get("candidate_supported", h["eligible"])
+        and result["service"]
+        and choice.decision == "candidate"
+    )
+    reasons = list(h["gaps"]) if h and proposed_type != "unknown" and not h["eligible"] else []
+    if h and not result["service"]:
+        reasons.append("service_localization_not_supported")
+    if choice.decision == "service_only":
+        reasons.append("model_service_only")
+    if choice.decision == "unknown":
+        reasons.append("model_abstained")
+    result.update(
+        proposal={
+            "hypothesis_id": h["id"] if h else None,
+            "decision": choice.decision,
+            "service": proposal_service,
+            "fault": proposed_type,
+        },
+        candidate_service=result["service"] if tentative else None,
+        candidate_fault=proposed_type if tentative else "unknown",
+        confirmed=result["status"] == "supported",
+        service_certainty="supported_localization" if result["service"] else "unknown",
+        downgrade_reasons=sorted(set(reasons)),
+        evidence_binding_origin="server_bound_candidate",
+    )
+    if tentative and not result["confirmed"]:
+        result["status"] = "candidate"
+    return result
+
+
 def configuration_fingerprint(packet, config):
     from app.evaluation.single_pass_packet import SYSTEM_PROMPT
 
-    value = [REVISION, packet.sha256, config, SYSTEM_PROMPT, SinglePassDecision.model_json_schema()]
+    value = [REVISION, packet.sha256, config, SYSTEM_PROMPT, SinglePassChoice.model_json_schema()]
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
@@ -136,11 +206,13 @@ async def run_single_pass(
     if row:
         if row["fingerprint"] != fingerprint:
             raise ValueError("configuration_mismatch")
+        if resume and row["state"] == "reserved":
+            row = journal.recover(experiment_id, packet.case_id, fingerprint)
         if row["state"] != "complete":
             raise ValueError("attempt_already_reserved")
         if not resume:
             raise ValueError("explicit_resume_required")
-        return {**journal.cached(row), "reused": True}
+        return {**journal.cached(row), "reused": True, "new_model_calls": 0}
     messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=packet.text)]
     with diagnosis_runtime(DiagnosisRuntime(context="evaluation")):
         model = model_factory()
@@ -152,22 +224,25 @@ async def run_single_pass(
 
             transport = model._get_request_payload(
                 messages,
-                tools=[convert_to_openai_tool(SinglePassDecision)],
-                tool_choice={"type": "function", "function": {"name": "SinglePassDecision"}},
+                tools=[convert_to_openai_tool(SinglePassChoice)],
+                tool_choice={"type": "function", "function": {"name": "SinglePassChoice"}},
                 parallel_tool_calls=False,
             )
             if len(canonical(transport).encode()) + OUTPUT_ALLOWANCE > 16384:
                 raise ValueError("evidence_budget_exceeded")
         target = model.with_structured_output(
-            SinglePassDecision, include_raw=True, method="function_calling"
+            SinglePassChoice, include_raw=True, method="function_calling"
         )
         token = journal.reserve(experiment_id, packet.case_id, fingerprint)
         usage, finish_reason = _usage(None), None
         failure_code = "provider_error"
+        failure_detail_code = "provider_transport_failed"
+        issues = []
         try:
             async with asyncio.timeout(timeout_seconds):
                 response = await target.ainvoke(messages)
             failure_code = "invalid_structured_output"
+            failure_detail_code = "raw_usage_missing"
             if not isinstance(response, dict) or "raw" not in response:
                 raise ValueError("raw_usage_missing")
             raw = response["raw"]
@@ -179,16 +254,26 @@ async def run_single_pass(
                 else None
             )
             if response.get("parsing_error") is not None or response.get("parsed") is None:
+                issues = [
+                    i.model_dump()
+                    for i in safe_schema_issues(response.get("parsing_error") or ValueError())
+                ]
+                failure_detail_code = "schema_parse_failed"
                 raise ValueError("schema_parse_failed")
-            parsed = SinglePassDecision.model_validate(response["parsed"])
+            failure_detail_code = "schema_parse_failed"
+            parsed = SinglePassChoice.model_validate(response["parsed"])
             if len(canonical(parsed.model_dump()).encode()) > OUTPUT_ALLOWANCE:
+                failure_detail_code = "result_budget_exceeded"
                 raise ValueError("result_budget_exceeded")
             if finish_reason in {"length", "content_filter"}:
+                failure_detail_code = "output_incomplete"
                 raise ValueError("output_incomplete")
             failure_code = "invalid_evidence_binding"
-            result = validate_decision(packet, parsed)
+            failure_detail_code = "choice_binding_invalid"
+            result = validate_choice(packet, parsed)
             result.update(
                 model_calls=1,
+                new_model_calls=1,
                 usage=usage,
                 finish_reason=finish_reason,
                 reused=False,
@@ -196,30 +281,48 @@ async def run_single_pass(
                 report=render_report(result),
             )
         except asyncio.CancelledError:
-            journal.finish(
-                experiment_id,
-                packet.case_id,
-                token,
-                {
-                    "status": "error",
-                    "error": "cancelled_unknown",
-                    "case_id": packet.case_id,
-                    "model_calls": 1,
-                    "usage": usage,
-                    "configuration_sha256": fingerprint,
-                },
-            )
+            try:
+                journal.finish(
+                    experiment_id,
+                    packet.case_id,
+                    token,
+                    {
+                        "status": "error",
+                        "error": "cancelled_unknown",
+                        "case_id": packet.case_id,
+                        "packet_sha256": packet.sha256,
+                        "model_calls": 1,
+                        "new_model_calls": 1,
+                        "usage": usage,
+                        "configuration_sha256": fingerprint,
+                    },
+                )
+            except PersistenceError as exc:
+                raise asyncio.CancelledError() from exc
             raise
         except Exception as exc:
+            if isinstance(exc, ValidationError):
+                issues = [i.model_dump() for i in safe_schema_issues(exc)]
+            if isinstance(exc, ValueError) and str(exc) in {
+                "unknown_hypothesis_id",
+                "unknown_choice_has_hypothesis",
+            }:
+                failure_detail_code = str(exc)
             result = {
                 "case_id": packet.case_id,
                 "status": "error",
                 "error": "timeout_unknown" if isinstance(exc, TimeoutError) else failure_code,
+                "failure_detail_code": "timeout_unknown"
+                if isinstance(exc, TimeoutError)
+                else failure_detail_code,
+                "schema_issues": issues,
                 "model_calls": 1,
+                "new_model_calls": 1,
                 "usage": usage,
                 "finish_reason": finish_reason,
                 "configuration_sha256": fingerprint,
                 "reused": False,
             }
+        result["packet_sha256"] = packet.sha256
         journal.finish(experiment_id, packet.case_id, token, result)
         return result

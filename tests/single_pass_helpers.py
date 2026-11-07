@@ -5,6 +5,17 @@ import pytest
 pd = pytest.importorskip("pandas")
 
 
+def choice_of(packet, **updates):
+    from app.agent.aiops.single_pass import SinglePassChoice
+
+    h = next(
+        (h for h in packet.payload["hypotheses"] if h["eligible"]), packet.payload["hypotheses"][0]
+    )
+    return SinglePassChoice(
+        **{"hypothesis_id": h["id"], "decision": "candidate", "reason": "brief", **updates}
+    )
+
+
 def view_of(columns, *, incident=10, logs=None, traces=None, times=None):
     n = len(next(iter(columns.values())))
     metrics = pd.DataFrame({"time": list(range(n)) if times is None else times, **columns})

@@ -1052,7 +1052,7 @@ def main(argv=None):
 
     argv = list(sys.argv[1:] if argv is None else argv)
     protocol = argparse.ArgumentParser(add_help=False)
-    protocol.add_argument("--protocol-version", type=int, choices=[3, 4, 5], default=5)
+    protocol.add_argument("--protocol-version", type=int, choices=[3, 5], default=5)
     selected, _ = protocol.parse_known_args(argv)
     if selected.protocol_version == 5:
         from app.evaluation.single_pass_runner import main as single_pass_main
@@ -1068,8 +1068,7 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, default=Path(".runtime/rcaeval/results"))
     parser.add_argument("--mode", choices=["validate", "live"], default="validate")
     parser.add_argument("--allow-live", action="store_true")
-    parser.add_argument("--protocol-version", type=int, choices=[3, 4], default=4)
-    parser.add_argument("--audit-development", action="store_true")
+    parser.add_argument("--protocol-version", type=int, choices=[3], default=3)
     parser.add_argument("--max-calls", type=int, default=16)
     parser.add_argument("--timeout-seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -1103,17 +1102,6 @@ def main(argv=None):
     print(json.dumps(validation, indent=2), flush=True)
     if not validation["passed"]:
         return 1
-    if args.audit_development:
-        if development_pilot is None:
-            parser.error("development audit requires the known heldout-18-v1 development directory")
-        from app.evaluation.rcaeval_v4 import DevelopmentScope, audit_development
-
-        audit = audit_development(
-            development_pilot, scope=DevelopmentScope(answers_file=development_answers)
-        )
-        (args.output_dir / "development-audit.json").write_text(
-            json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
     if args.mode == "validate":
         return 0
 
@@ -1126,8 +1114,6 @@ def main(argv=None):
             print(f"Running {case_id} / protocol-v{args.protocol_version} pair", flush=True)
             from app.core.llm_factory import llm_factory
             from app.evaluation.comparison import _Meter, _MeteredModel
-            from app.evaluation.rcaeval_models import AuditedMeteredModel
-            from app.evaluation.rcaeval_v4 import run_protocol_v4_case
 
             meters = {
                 strategy: _Meter(args.max_calls, []) for strategy in ("single_stage", "agent")
@@ -1137,13 +1123,11 @@ def main(argv=None):
                 meter = _meters[strategy]
 
                 def factory(**kwargs):
-                    wrapper = AuditedMeteredModel if args.protocol_version == 4 else _MeteredModel
-                    return wrapper(llm_factory.create_chat_model(**kwargs), meter)
+                    return _MeteredModel(llm_factory.create_chat_model(**kwargs), meter)
 
                 return factory
 
-            runner = run_protocol_v4_case if args.protocol_version == 4 else run_protocol_v3_case
-            pair = await runner(
+            pair = await run_protocol_v3_case(
                 view,
                 view.public_task(),
                 model_factory_for=factory_for,
@@ -1189,12 +1173,7 @@ def main(argv=None):
 
         summary["protocol_version"] = args.protocol_version
         summary["scoring_version"] = args.protocol_version
-        if args.protocol_version == 4:
-            from app.evaluation.rcaeval_v4 import summarize_v4
-
-            summary.update(summarize_v4(runs))
-        else:
-            summary["metrics"] = summarize(runs)
+        summary["metrics"] = summarize(runs)
         (args.output_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
         )

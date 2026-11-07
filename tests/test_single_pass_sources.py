@@ -42,6 +42,24 @@ def test_log_metadata_and_ambiguous_container_never_become_evidence():
     assert "root_cause_service" not in "".join(f.model_dump_json() for f in facts)
 
 
+def test_plain_errno_is_typed_data_but_not_structured_authority():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_events import log_facts
+
+    v = view_of(
+        {"orders_cpu": [1] * 20},
+        logs=[
+            {
+                "timestamp": 12,
+                "container_name": "orders",
+                "message": "storage request failed errno=EIO",
+            }
+        ],
+    )
+    f = next(f for f in log_facts(v, make_window(v)) if f.family == "disk_error")
+    assert f.data["literal_errno"] == "EIO" and not f.data["specific"]
+
+
 def span(identifier, parent, service, start, duration, *, trace="t", status=None):
     return {
         "traceID": trace,
@@ -74,6 +92,69 @@ def test_parallel_children_are_subtracted_as_union_not_sum():
         ("front", "a"),
         ("front", "b"),
     }
+
+
+def test_paired_remote_call_wait_cannot_count_as_caller_self_time():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_traces import trace_facts
+
+    view = view_of(
+        {"front_cpu": [1] * 20, "a_cpu": [1] * 20},
+        traces=[
+            {**span("request", "", "front", 12, 1_000_000), "operationName": "Handle"},
+            {**span("client", "request", "front", 12.1, 600_000), "operationName": "pkg.A/Read"},
+            {**span("server", "client", "a", 12.2, 10_000), "operationName": "grpc.pkg.A/Read"},
+        ],
+    )
+    facts = trace_facts(view, make_window(view))
+    client = next(
+        f for f in facts if f.service == "front" and f.data.get("operation") == "pkg.A/Read"
+    )
+    server = next(f for f in facts if f.service == "a" and f.family == "operation")
+    edge = next(f for f in facts if f.family == "edge")
+    assert client.data["after_spans"] == 1 and client.data["after_self_spans"] == 0
+    assert client.data["after_paired_remote_spans"] == 1
+    assert server.data["after_self_p90_us"] == 10_000
+    assert edge.data["after_p90_us"] == 10_000
+    assert edge.data["after_client_p90_us"] == 600_000
+
+
+def test_rpc_wait_distribution_uses_matched_calls_and_distinct_traces():
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_traces import trace_facts
+
+    rows = []
+    for period, origin, client_time in (("pre", 10, 2000), ("post", 130, 42000)):
+        for i in range(12):
+            start = origin + i * 8
+            trace = f"{period}-{i}"
+            rows.extend(
+                [
+                    {
+                        **span("client", "", "front", start, client_time, trace=trace),
+                        "operationName": "pkg.A/Read",
+                    },
+                    {
+                        **span("server", "client", "a", start, 1000, trace=trace),
+                        "operationName": "grpc.pkg.A/Read",
+                    },
+                ]
+            )
+    # A retry on one trace must not inflate the count of independent observations.
+    rows.extend(
+        [
+            {**span("retry", "", "front", 11, 9000, trace="pre-0"), "operationName": "pkg.A/Read"},
+            {
+                **span("retry-child", "retry", "a", 11, 1000, trace="pre-0"),
+                "operationName": "pkg.A/Read",
+            },
+        ]
+    )
+    view = view_of({"front_cpu": [1] * 241, "a_cpu": [1] * 241}, incident=120, traces=rows)
+    obs = next(f for f in trace_facts(view, make_window(view)) if f.family == "rpc_wait")
+    assert obs.data["before_pairs"] == obs.data["after_pairs"] == 12
+    assert obs.data["before_wait_us"] == [1000, 1000, 1000]
+    assert obs.data["after_wait_us"] == [41000, 41000, 41000]
 
 
 def test_parent_ids_never_join_across_traces_or_duplicate_ids():
@@ -220,3 +301,20 @@ def test_template_prefix_collision_cannot_upgrade_keyword_to_structured_buckets(
     structured = [f for f in facts if f.family == "disk_error" and f.data["specific"]]
     assert len(structured) == 1 and structured[0].data["after_buckets"] == 1
     assert any(f.family == "disk_error" and not f.data["specific"] for f in facts)
+
+
+@pytest.mark.parametrize("errno_first", [True, False])
+def test_truncated_plain_errno_template_cannot_borrow_keyword_buckets(errno_first):
+    from app.core.single_pass import make_window
+    from app.evaluation.single_pass_events import log_facts
+
+    prefix = "EIO " + "x" * 300
+    rows = [
+        {"timestamp": 12, "container_name": "orders_1", "message": prefix + " errno=EIO"},
+        {"timestamp": 17, "container_name": "orders_1", "message": prefix + " generic message"},
+    ]
+    view = view_of({"orders_cpu": [1] * 20}, logs=rows if errno_first else rows[::-1])
+    facts = log_facts(view, make_window(view))
+    literal = [f for f in facts if f.data.get("literal_errno") == "EIO"]
+    assert len(literal) == 1 and literal[0].data["after_buckets"] == 1
+    assert any(f.family == "disk_error" and not f.data.get("literal_errno") for f in facts)

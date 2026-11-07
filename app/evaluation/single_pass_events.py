@@ -3,6 +3,7 @@
 import json
 import math
 import re
+from numbers import Real
 
 from app.core.data_safety import redact_sensitive
 from app.core.single_pass import fact_for
@@ -23,6 +24,7 @@ _PATTERNS = [(name, re.compile(pattern, re.I)) for name, pattern in _EVENTS]
 _CODES = {
     "ENOMEM": "memory_allocation",
     "EIO": "disk_error",
+    "EROFS": "disk_error",
     "EMFILE": "socket_limit",
     "ENFILE": "socket_limit",
     "packet_drop": "packet_loss",
@@ -30,6 +32,7 @@ _CODES = {
     "oom": "memory_allocation",
     "oom_killed": "memory_allocation",
 }
+_ERRNO = re.compile(r"\b(?:errno|error_code)\s*[=:]\s*(EIO|EROFS|EMFILE|ENFILE|ENOMEM)\b")
 
 
 def _template(text):
@@ -39,7 +42,15 @@ def _template(text):
     return text[:240]
 
 
-def log_facts(view, window):
+def log_facts(view, window, *, timestamp_unit="seconds"):
+    scales = {
+        "seconds": 1,
+        "milliseconds": 1000,
+        "microseconds": 1_000_000,
+        "nanoseconds": 1_000_000_000,
+    }
+    if timestamp_unit not in scales:
+        raise ValueError("unknown_log_timestamp_unit")
     if view.l.empty:
         return (
             fact_for(view.case_id, window, "", "logs", "coverage", {"status": "not_available"}),
@@ -51,15 +62,34 @@ def log_facts(view, window):
         "unmatched_services": 0,
         "excluded_control_rows": 0,
         "oversized_rows": 0,
+        "raw_rows": len(view.l),
+        "invalid_timestamp_rows": 0,
+        "window_rows": 0,
+        "outside_window_rows": 0,
+        "processed_rows": 0,
     }
-    frame = view.l.loc[view.l.timestamp.between(window.start, window.end)]
+
+    def normalize(value):
+        if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+            return float("nan")
+        return float(value) / scales[timestamp_unit]
+
+    frame = view.l.copy()
+    frame["timestamp"] = frame.timestamp.map(normalize).astype("float64")
+    valid = frame.timestamp.map(math.isfinite)
+    counts["invalid_timestamp_rows"] = int((~valid).sum())
+    if not valid.any():
+        raise ValueError("log_timestamps_unusable")
+    inside = valid & frame.timestamp.between(window.start, window.end)
+    counts["window_rows"] = counts["visible_rows"] = int(inside.sum())
+    counts["outside_window_rows"] = int(valid.sum()) - counts["window_rows"]
+    counts["timestamp_unit"] = timestamp_unit
+    counts["status"] = "present" if counts["window_rows"] else "no_data"
+    frame = frame.loc[inside]
     containers = {}
     for timestamp, container, message in frame[
         ["timestamp", "container_name", "message"]
     ].itertuples(index=False, name=None):
-        if not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
-            continue
-        counts["visible_rows"] += 1
         container = str(container)
         if container not in containers:
             parts = set(container.split("_")) | {container}
@@ -76,7 +106,10 @@ def log_facts(view, window):
         if len(text) > 4096:
             counts["oversized_rows"] += 1
             text = text[:4096]
+        counts["processed_rows"] += 1
         specific, event = False, None
+        literal_match = _ERRNO.search(text)
+        literal_errno = literal_match.group(1) if literal_match else None
         if text.lstrip().startswith("{"):
             try:
                 record = json.loads(text)
@@ -88,11 +121,13 @@ def log_facts(view, window):
                             break
             except (ValueError, RecursionError):
                 pass
-        event = event or next(
-            (name for name, pattern in _PATTERNS if pattern.search(text)), "template_shift"
+        event = (
+            event
+            or (_CODES[literal_errno] if literal_errno else None)
+            or next((name for name, pattern in _PATTERNS if pattern.search(text)), "template_shift")
         )
         template = _template(text)
-        key = (service, event, specific, template)
+        key = (service, event, specific, literal_errno, template)
         group = groups.setdefault(
             key,
             {
@@ -102,6 +137,7 @@ def log_facts(view, window):
                 "after_buckets": set(),
                 "specific": False,
                 "first_after": None,
+                **({"literal_errno": literal_errno} if literal_errno else {}),
             },
         )
         period = "before" if timestamp < window.incident else "after"
@@ -113,11 +149,19 @@ def log_facts(view, window):
     # Aggregate every recognized event before capping optional normal templates.
     # Separate structured and keyword observations so repetition cannot upgrade semantics.
     aggregated = {}
-    for (service, event, _specific, template), group in groups.items():
+    for (service, event, _specific, _literal_errno, template), group in groups.items():
         if event == "template_shift":
             aggregated[(service, event, template)] = group
             continue
-        key = (service, event, "structured" if group["specific"] else "keyword")
+        key = (
+            service,
+            event,
+            "structured"
+            if group["specific"]
+            else "literal:" + group["literal_errno"]
+            if group.get("literal_errno")
+            else "keyword",
+        )
         target = aggregated.setdefault(
             key,
             {
@@ -128,6 +172,7 @@ def log_facts(view, window):
                 "specific": group["specific"],
                 "first_after": None,
                 "templates": [],
+                **({"literal_errno": group["literal_errno"]} if group.get("literal_errno") else {}),
             },
         )
         for period in ("before", "after"):
@@ -168,5 +213,12 @@ def log_facts(view, window):
             }
             data["new_event"] = bool(data["after_count"] and not data["before_count"])
             facts.append(fact_for(view.case_id, window, service, "logs", event, data))
+    if counts["window_rows"] != (
+        counts["processed_rows"] + counts["unmatched_services"] + counts["excluded_control_rows"]
+    ):
+        raise ValueError("log_row_accounting_mismatch")
+    counts["generated_facts"] = len(facts)
+    if counts["processed_rows"] and not facts:
+        raise ValueError("log_fact_extraction_empty")
     facts.append(fact_for(view.case_id, window, "", "logs", "coverage", counts))
     return tuple(facts)

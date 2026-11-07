@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from app.agent.aiops.single_pass import SinglePassDecision, render_report, validate_decision
+from app.agent.aiops.single_pass import (
+    SinglePassChoice,
+    SinglePassDecision,
+    render_report,
+    validate_decision,
+)
 from app.evaluation.single_pass_hypotheses import rank_hypotheses
 from app.evaluation.single_pass_packet import build_packet
 from tests.test_single_pass_hypotheses import evidence
@@ -205,11 +210,12 @@ def test_large_development_packets_keep_all_material_values_without_reading_labe
     )
     request = model._get_request_payload(
         [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=packet.text)],
-        tools=[convert_to_openai_tool(SinglePassDecision)],
-        tool_choice={"type": "function", "function": {"name": "SinglePassDecision"}},
+        tools=[convert_to_openai_tool(SinglePassChoice)],
+        tool_choice={"type": "function", "function": {"name": "SinglePassChoice"}},
         parallel_tool_calls=False,
     )
     assert len(canonical(request).encode()) + OUTPUT_ALLOWANCE <= 16384
+    assert len(canonical(request).encode()) + OUTPUT_ALLOWANCE <= packet.transport_bytes
 
 
 def test_emitted_pool_has_unambiguous_literal_semantics_for_an_independent_consumer():

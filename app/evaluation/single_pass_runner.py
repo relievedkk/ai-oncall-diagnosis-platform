@@ -5,12 +5,14 @@ import asyncio
 import hashlib
 import json
 import math
+from collections import Counter
 from pathlib import Path
 
 from app.core.single_pass import REVISION, canonical
 from app.evaluation.single_pass_attribution import attribute_failure, write_attribution_report
 from app.evaluation.single_pass_hypotheses import collect_evidence, rank_hypotheses
 from app.evaluation.single_pass_packet import build_packet
+from app.evaluation.single_pass_storage import PersistenceError, atomic_json_write
 
 DEVELOPMENT_ROOT = Path(".runtime/rcaeval/heldout-18-v1/tasks")
 DEVELOPMENT_ANSWERS = Path(".runtime/rcaeval/heldout-18-v1-sealed/answers.parquet")
@@ -99,7 +101,7 @@ def _freeze(view, *, perturb=True, telemetry_profile=None):
 
 
 def audit_development(pilot, *, scope, progress=None, telemetry_profile=None):
-    from app.evaluation.rcaeval_v4 import DevelopmentScope
+    from app.evaluation.evaluation_scope import DevelopmentScope
 
     if (
         not isinstance(scope, DevelopmentScope)
@@ -195,24 +197,29 @@ def audit_development(pilot, *, scope, progress=None, telemetry_profile=None):
         "packet_passed": sum(r["packet_passed"] for r in rows),
         "errors": sum("error" in r for r in rows),
         "manual_review_required": True,
-        "limitation": "Development retrieval/permission audit, not model accuracy or causal proof. Sealed36 labels unopened.",
+        "limitation": "Development retrieval/permission audit, not model accuracy or causal proof. Only approved development18 labels are read; no additional evaluation labels.",
     }
     audit["paid_gate_passed"] = feasibility_gate(audit)
     return audit
 
 
 def _write(path, value):
-    # Atomic output replacement only after output ownership was checked by main.
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
-    )
-    tmp.replace(path)
+    # Ownership is checked by the caller; only local publication may retry.
+    atomic_json_write(path, value)
 
 
 def blocked_case(journal, experiment_id, case_id, error):
     row = journal.load(experiment_id, case_id)
     cached = journal.cached(row) if row and row["result"] else {}
+    if cached.get("status") == "error":
+        return {
+            **cached,
+            "case_id": case_id,
+            "model_calls": 1,
+            "new_model_calls": 0,
+            "attempt_state": row["state"],
+            "resume_block_reason": error,
+        }
     return {
         "case_id": case_id,
         "status": "error",
@@ -222,6 +229,23 @@ def blocked_case(journal, experiment_id, case_id, error):
         "usage": cached.get("usage", {"observed": False, "total_tokens": None}),
         "attempt_state": row["state"] if row else "not_reserved",
     }
+
+
+def attach_scores(result, truth):
+    from app.evaluation.rcaeval import score
+
+    failure = {"service_correct": False, "fault_correct": False, "joint_correct": False}
+    if result["status"] == "error":
+        result.update(
+            score=failure.copy(), candidate_score=failure.copy(), selection_score=failure.copy()
+        )
+        return
+    result["score"] = score(result, truth)
+    result["candidate_score"] = score(
+        {"service": result.get("candidate_service"), "fault": result.get("candidate_fault")}, truth
+    )
+    proposal = result.get("proposal") or {}
+    result["selection_score"] = score(proposal, truth)
 
 
 def summarize_runs(runs):
@@ -259,12 +283,41 @@ def summarize_runs(runs):
         "joint_wilson95": [max(0, center - half), min(1, center + half)] if n else None,
         "service_correct": sum(r["score"]["service_correct"] for r in runs),
         "fault_correct": sum(r["score"]["fault_correct"] for r in runs),
+        "candidate_count": sum(r["status"] == "candidate" for r in runs),
+        "candidate_joint_correct": sum(
+            (r.get("candidate_score") or {}).get("joint_correct", False) for r in runs
+        ),
+        "candidate_joint_accuracy": sum(
+            (r.get("candidate_score") or {}).get("joint_correct", False) for r in runs
+        )
+        / n
+        if n
+        else 0,
+        "selection_joint_correct": sum(
+            (r.get("selection_score") or {}).get("joint_correct", False) for r in runs
+        ),
+        "selection_joint_accuracy": sum(
+            (r.get("selection_score") or {}).get("joint_correct", False) for r in runs
+        )
+        / n
+        if n
+        else 0,
+        "protocol_success_rate": sum(r["status"] != "error" for r in runs) / n if n else 0,
+        "failure_details": dict(
+            Counter(
+                r.get("failure_detail_code", r.get("error", "unknown"))
+                for r in runs
+                if r["status"] == "error"
+            )
+        ),
+        "downgrade_counts": dict(Counter(g for r in runs for g in r.get("downgrade_reasons", []))),
         "failed": sum(r["status"] == "error" for r in runs),
         "insufficient_evidence": sum(r["status"] == "insufficient_evidence" for r in runs),
         "incorrect_confirmation": sum(
             r["status"] == "supported" and not r["score"]["joint_correct"] for r in runs
         ),
         "reserved_attempts": sum(r["model_calls"] for r in runs),
+        "new_model_calls": sum(r.get("new_model_calls", 0) for r in runs),
         "observed_tokens": sum(r.get("usage", {}).get("total_tokens") or 0 for r in runs),
         "usage_complete": all(r.get("usage", {}).get("observed") for r in runs if r["model_calls"]),
         "strata": strata,
@@ -274,7 +327,23 @@ def summarize_runs(runs):
 
 
 def main(argv=None):
+    selection = argparse.ArgumentParser(add_help=False)
+    selection.add_argument(
+        "--evaluation-set", choices=["development18", "all54"], default="development18"
+    )
+    selected, remaining = selection.parse_known_args(argv)
+    if selected.evaluation_set == "all54":
+        from app.evaluation.single_pass_batch import main as batch_main
+
+        return batch_main(remaining)
+    argv = remaining
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--evaluation-set",
+        choices=["development18", "all54"],
+        default="development18",
+        help="development18 preserves the feasibility gate; all54 selects explicit V5.1 measurement",
+    )
     parser.add_argument("--protocol-version", type=int, choices=[5], default=5)
     parser.add_argument("--data-dir", type=Path, default=DEVELOPMENT_ROOT)
     parser.add_argument("--answers-file", type=Path, default=DEVELOPMENT_ANSWERS)
@@ -313,7 +382,7 @@ def main(argv=None):
             parser.error(
                 "v5 development audit/live only permits the known 18-case development source"
             )
-    from app.evaluation.rcaeval import Pilot, score
+    from app.evaluation.rcaeval import Pilot
 
     pilot = Pilot(
         args.data_dir,
@@ -328,7 +397,7 @@ def main(argv=None):
             )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.audit_development or args.mode == "live":
-        from app.evaluation.rcaeval_v4 import DevelopmentScope
+        from app.evaluation.evaluation_scope import DevelopmentScope
 
         audit = audit_development(
             pilot,
@@ -436,6 +505,8 @@ def main(argv=None):
                     resume=args.resume,
                     timeout_seconds=args.timeout_seconds,
                 )
+            except PersistenceError:
+                raise
             except ValueError:
                 result = blocked_case(
                     journal, args.experiment_id, case_id, "attempt_or_evidence_blocked"
@@ -443,7 +514,7 @@ def main(argv=None):
             except Exception:
                 result = blocked_case(journal, args.experiment_id, case_id, "case_failed")
             truth = pilot.truth(case_id)
-            result["score"] = score(result, truth)
+            attach_scores(result, truth)
             result["ground_truth"] = {
                 "service": truth["root_cause_service"],
                 "fault": truth["fault"],

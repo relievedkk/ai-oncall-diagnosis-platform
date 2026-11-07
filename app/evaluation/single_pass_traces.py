@@ -1,15 +1,18 @@
 """Same-trace paths and conservative exclusive interval approximations."""
 
 import math
+import re
 
 from app.core.single_pass import fact_for
 
+_RPC_METHOD = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+/[A-Za-z_]\w*")
 
-def _quantile(values):
+
+def _quantile(values, fraction=0.9):
     if not values:
         return None
     ordered = sorted(values)
-    position = 0.9 * (len(ordered) - 1)
+    position = fraction * (len(ordered) - 1)
     lower = int(position)
     return ordered[lower] + (ordered[min(lower + 1, len(ordered) - 1)] - ordered[lower]) * (
         position - lower
@@ -36,6 +39,29 @@ def _error(value, semantics):
     if semantics == "http":
         return code >= 400 if 200 <= code <= 599 else None
     return None
+
+
+def _rpc_wait_facts(case_id, window, groups):
+    facts = []
+    for (caller, callee, operation), group in sorted(groups.items()):
+        data = {"callee": callee, "operation": operation[:120]}
+        for period, traces in group.items():
+            samples = list(traces.values())
+            buckets = sorted({int((start - window.incident) // 30) for start, _, _ in samples})
+            if len(samples) < 12 or len(buckets) < 3:
+                break
+            waits = [wait for _, wait, _ in samples]
+            data.update(
+                {
+                    period + "_pairs": len(samples),
+                    period + "_buckets": buckets,
+                    period + "_wait_us": [_quantile(waits, q) for q in (0.1, 0.5, 0.9)],
+                    period + "_handler_p90_us": _quantile([handler for _, _, handler in samples]),
+                }
+            )
+        else:
+            facts.append(fact_for(case_id, window, caller, "traces", "rpc_wait", data))
+    return facts
 
 
 def trace_facts(view, window, *, status_semantics=None):
@@ -98,7 +124,7 @@ def trace_facts(view, window, *, status_semantics=None):
         key = (str(row.traceID), str(row.spanID))
         spans[key] = {
             "service": service,
-            "op": str(row.operationName)[:120] if pd.notna(row.operationName) else "unknown",
+            "op": str(row.operationName) if pd.notna(row.operationName) else "",
             "parent": str(row.parentSpanID),
             "start": start,
             "end": start + duration / 1e6,
@@ -118,6 +144,7 @@ def trace_facts(view, window, *, status_semantics=None):
             node = (node[0], spans[node]["parent"])
         visited.update(path)
     incomplete_traces.update(cyclic_traces)
+    remote_pairs = {}
     for key, span in spans.items():
         if key[0] in cyclic_traces:
             continue
@@ -137,11 +164,43 @@ def trace_facts(view, window, *, status_semantics=None):
             edge = edges.setdefault(
                 (parent["service"], span["service"]), {"before": [], "after": []}
             )
-            edge["before" if span["start"] < window.incident else "after"].append(span["duration"])
+            period = "before" if span["start"] < window.incident else "after"
+            edge[period].append(span["duration"])
+            operation = parent["op"].removeprefix("grpc.")
+            if "/" in operation and operation == span["op"].removeprefix("grpc."):
+                remote_pairs[parent_key] = (edge, period, key)
+    # The format omits span kind. A sole nested remote span for the same qualified
+    # RPC method is evidence of a client/server pair. Its wait is not self time.
+    paired_clients, rpc_groups = set(), {}
+    for key, (edge, child_period, child_key) in remote_pairs.items():
+        if (
+            len(children[key]) == 1
+            and key not in invalid_nested
+            and key[0] not in incomplete_traces
+        ):
+            parent = spans[key]
+            period = "before" if parent["start"] < window.incident else "after"
+            if period == child_period:
+                edge.setdefault(period + "_client", []).append(parent["duration"])
+                child = spans[child_key]
+                method = parent["op"].removeprefix("grpc.").removeprefix("/")
+                if _RPC_METHOD.fullmatch(method) and (
+                    period == "after" or parent["end"] <= window.incident
+                ):
+                    wait = parent["duration"] - child["duration"]
+                    if wait >= 0:
+                        group = rpc_groups.setdefault(
+                            (parent["service"], child["service"], parent["op"]),
+                            {"before": {}, "after": {}},
+                        )[period]
+                        sample = (parent["start"], wait, child["duration"])
+                        # A trace can contain retries or fan-out to the same method.
+                        group[key[0]] = min(group.get(key[0], sample), sample)
+            paired_clients.add(key)
     operations = {}
     for key, span in spans.items():
         group = operations.setdefault(
-            (span["service"], span["op"]),
+            (span["service"], span["op"][:120] or "unknown"),
             {
                 "before": [],
                 "after": [],
@@ -153,7 +212,10 @@ def trace_facts(view, window, *, status_semantics=None):
         )
         period = "before" if span["start"] < window.incident else "after"
         group[period].append(span["duration"])
-        if key not in invalid_nested and key[0] not in incomplete_traces:
+        if key in paired_clients:
+            count = period + "_paired_remote_spans"
+            group[count] = group.get(count, 0) + 1
+        elif key not in invalid_nested and key[0] not in incomplete_traces:
             own = max(0, span["duration"] - _union(children.get(key, [])) * 1e6)
             group[period + "_self"].append(own)
         if span["status"] is not None:
@@ -174,8 +236,17 @@ def trace_facts(view, window, *, status_semantics=None):
                     period + "_known_status": len(group[period + "_status"]),
                 }
             )
+            count = period + "_paired_remote_spans"
+            if count in group:
+                data[count] = group[count]
         facts.append(fact_for(view.case_id, window, service, "traces", "operation", data))
     for (caller, callee), group in sorted(edges.items()):
+        paired = {}
+        if "before_client" in group or "after_client" in group:
+            for period in ("before", "after"):
+                values = group.get(period + "_client", [])
+                paired[period + "_client_spans"] = len(values)
+                paired[period + "_client_p90_us"] = _quantile(values)
         facts.append(
             fact_for(
                 view.case_id,
@@ -189,9 +260,11 @@ def trace_facts(view, window, *, status_semantics=None):
                     "after_spans": len(group["after"]),
                     "before_p90_us": _quantile(group["before"]),
                     "after_p90_us": _quantile(group["after"]),
+                    **paired,
                 },
             )
         )
+    facts += _rpc_wait_facts(view.case_id, window, rpc_groups)
     facts.append(
         fact_for(
             view.case_id,

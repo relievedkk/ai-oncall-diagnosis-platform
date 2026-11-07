@@ -13,6 +13,23 @@ def _median(values):
     return ordered[middle] if len(ordered) % 2 else ordered[middle - 1] / 2 + ordered[middle] / 2
 
 
+def aligned_latency_quantiles(view, window):
+    """Require P50 and P90 to describe the same finite sample timestamps."""
+    frame = view.m.loc[view.m.time.between(window.start, window.end)]
+    aligned = []
+    for service in sorted(view.services):
+        low, high = (f"{service}_latency-{p}" for p in (50, 90))
+        if low not in frame or high not in frame:
+            continue
+        try:
+            low_mask, high_mask = (frame[c].astype(float).map(math.isfinite) for c in (low, high))
+        except (TypeError, ValueError):
+            continue
+        if low_mask.any() and low_mask.equals(high_mask):
+            aligned.append(service)
+    return tuple(aligned)
+
+
 def metric_facts(view, window, *, semantics=None):
     frame = view.m.loc[view.m.time.between(window.start, window.end)].sort_values("time")
     facts = []
@@ -101,6 +118,7 @@ def metric_facts(view, window, *, semantics=None):
                 "lookback_seconds",
                 "evaluation_step_seconds",
                 "scrape_seconds",
+                "resource_limit",
             ):
                 if key in meta:
                     data[key] = meta[key]

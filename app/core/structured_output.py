@@ -16,7 +16,7 @@ _SAFE_FIELDS = frozenset(
     "root_cause_service fault_type cause_evidence_refs diagnosis_complete candidate_comparisons "
     "affected_services observations hypotheses missing_evidence next_checks limitations "
     "validation_issues termination_reason description service supporting_refs opposing_refs "
-    "status text evidence_refs".split()
+    "status text evidence_refs hypothesis_id decision reason gaps packet_id service_id contrast_refs excluded_hypotheses".split()
 )
 
 

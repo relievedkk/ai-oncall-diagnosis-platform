@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Fault = Literal["cpu", "mem", "disk", "socket", "loss", "delay"]
 FAULTS = ("cpu", "mem", "disk", "socket", "loss", "delay")
-REVISION = "single-pass-v5.1-20261103"
+REVISION = "single-pass-v5.1-r5-20261107"
 
 
 def canonical(value: Any) -> str:
@@ -71,6 +71,7 @@ class EvidenceSet(Frozen):
     services: tuple[str, ...]
     facts: tuple[Fact, ...]
     quality: dict[str, Any] = Field(default_factory=dict)
+    aligned_latency_quantiles: tuple[str, ...] = ()
 
 
 class Hypothesis(Frozen):
@@ -82,15 +83,24 @@ class Hypothesis(Frozen):
     gaps: tuple[str, ...] = ()
     alternatives: tuple[str, ...] = ()
     eligible: bool = False
+    candidate_supported: bool = False
     score: float = 0
 
 
 FAMILY_PREFIXES = {
     "cpu": ("cpu", "throttl"),
     "mem": ("mem", "memory"),
-    "disk": ("disk", "io_wait", "iowait"),
+    "disk": ("disk", "io_wait", "iowait", "storage_latency"),
     "socket": ("socket", "open_fds"),
-    "loss": ("packet_loss", "packet_drop", "retransmit", "network_loss"),
+    "loss": (
+        "packet_loss",
+        "packet_drop",
+        "retransmit",
+        "network_loss",
+        "network_receive_drop",
+        "network_transmit_drop",
+        "tcp_retrans",
+    ),
     "delay": ("latency", "delay"),
     "workload": ("workload", "request_rate"),
     "error": ("error", "failure_rate"),
