@@ -8,7 +8,7 @@
 
 **技术栈：** Python 3.11–3.13 · FastAPI · LangGraph · PostgreSQL · RabbitMQ / Celery · Milvus · MCP · Prometheus / Alertmanager
 
-[快速开始](#快速开始) · [工程设计](#关键工程设计) · [验证记录](#质量与验证) · [运行手册](docs/windows-operations.md) · [接口与安全](docs/api-and-security.md)
+[快速开始](#快速开始) · [工程设计](#关键工程设计) · [验证记录](#质量与验证) · [文档导航](docs/README.md) · [GitHub上传清单](docs/publication-guide.md)
 
 ## 无凭据重放与方案对照
 
@@ -118,14 +118,18 @@ Linux/macOS 开发启动、单组件排查及测试环境准备见 [开发指南
 
 ## 质量与验证
 
-以下为 **2026-10-25 本地验收快照**，用于说明验证范围；GitHub Actions 的最新执行结果见 [CI](https://github.com/relievedkk/ai-oncall-diagnosis-platform/actions)。
+新增[证据对账与分组留出评测](docs/grouped-holdout-evaluation.md)：在旧数据核查原始字段与提取缺口，排除历史服务故障组及重复实验后准备新的36例，诊断与评分分开运行。零费用预检只保存未评分基线与冻结证据，不将旧54例调参结果或本地排序当作独立模型准确率；当前 single-pass 为 r5 实验链路，在线 API 仍使用 Plan–Execute–Replan。
+
+公开验证摘要见[证据与分组留出摘要](docs/evaluation/evidence-and-holdout.md)：新36例预检35通过、1例包体超限，真实模型验收被阻断，尚无该批模型准确率。
+
+以下工程验证分别列出本地回归与历史部署演练；远端执行状态见 [CI](https://github.com/relievedkk/ai-oncall-diagnosis-platform/actions)。
 
 | 验证项 | 结果与范围 |
 | --- | --- |
-| Python 自动化回归 | **858 passed / 4 skipped**；Windows、Python 3.13、完成 Alembic 迁移的独立 PostgreSQL 测试库；4 项为显式外部集成门控 |
-| 前端回归 | **28 passed**；覆盖 SSE 分帧、断线恢复、幂等创建、刷新恢复、终态与账号隔离 |
-| Docker 隔离冷备恢复 | 合成 PostgreSQL / RabbitMQ / Milvus 数据及上传文件内容比对通过，详见 [验收记录](docs/windows-operations-verification.md) |
-| Windows 托管与镜像 | API / 两个 MCP 就绪、原生服务无即时重启、业务队列消费者及 Worker 镜像内服务目录检查通过 |
+| Python 自动化回归 | **1,346 passed / 49 skipped**；Windows、Python 3.13；需要独立 PostgreSQL、Docker/POSIX 等条件的集成项未全部验证 |
+| 前端回归 | **31 passed**；覆盖 SSE 分帧、断线恢复、幂等创建、刷新恢复、终态与账号隔离 |
+| Docker 隔离冷备恢复 | **历史验收**：合成 PostgreSQL / RabbitMQ / Milvus 数据及上传文件内容比对通过，详见 [验收记录](docs/windows-operations-verification.md) |
+| Windows 托管与镜像 | **历史验收**：API / 两个 MCP 就绪、原生服务、业务队列消费者及 Worker 服务目录检查通过 |
 | 持续集成 | 配置 Ruff、Bandit、依赖审计、迁移检查、PostgreSQL 回归与 Compose 校验；具体状态以 CI 为准 |
 
 ```bash

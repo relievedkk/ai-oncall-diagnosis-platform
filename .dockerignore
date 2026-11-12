@@ -2,6 +2,12 @@
 .worktrees
 .superpowers
 .runtime
+.local
+output
+tmp
+backups
+rca_experiments
+config/*.local.json
 .coverage
 .venv
 tools/cls-uploader/.venv

@@ -12,7 +12,7 @@ from app.core.single_pass import REVISION, canonical
 from app.evaluation.single_pass_attribution import attribute_failure, write_attribution_report
 from app.evaluation.single_pass_hypotheses import collect_evidence, rank_hypotheses
 from app.evaluation.single_pass_packet import build_packet
-from app.evaluation.single_pass_storage import PersistenceError, atomic_json_write
+from app.evaluation.single_pass_storage import atomic_json_write
 
 DEVELOPMENT_ROOT = Path(".runtime/rcaeval/heldout-18-v1/tasks")
 DEVELOPMENT_ANSWERS = Path(".runtime/rcaeval/heldout-18-v1-sealed/answers.parquet")
@@ -451,8 +451,8 @@ def main(argv=None):
         return 0 if report["passed"] else 1
 
     # Live imports/configuration are unreachable before the zero-model feasibility gate.
-    from app.agent.aiops.single_pass import run_single_pass
     from app.core.llm_factory import llm_factory
+    from app.evaluation.single_pass_batch import evaluate_cases
     from app.evaluation.single_pass_journal import AttemptJournal
 
     code = source_snapshot()
@@ -482,51 +482,22 @@ def main(argv=None):
         _write(manifest, experiment)
     journal = AttemptJournal(Path(".runtime/rcaeval/single-pass-attempts.sqlite"))
 
-    async def experiment_run():
-        runs = []
-        for case_id in pilot.ids:
-            availability = {"logs": "unknown", "traces": "unknown"}
-            try:
-                view = pilot.open(case_id)
-                availability = {
-                    "logs": "present" if not view.l.empty else "not_available",
-                    "traces": "present" if not view.t.empty else "not_available",
-                }
-                evidence = collect_evidence(view, telemetry_profile=args.telemetry_profile)
-                packet = build_packet(evidence, rank_hypotheses(evidence))
-                result = await run_single_pass(
-                    packet,
-                    journal=journal,
-                    experiment_id=args.experiment_id,
-                    config=config,
-                    model_factory=lambda: llm_factory.create_chat_model(
-                        model="qwen-max", temperature=0, streaming=False
-                    ).model_copy(update={"max_tokens": 384}),
-                    resume=args.resume,
-                    timeout_seconds=args.timeout_seconds,
-                )
-            except PersistenceError:
-                raise
-            except ValueError:
-                result = blocked_case(
-                    journal, args.experiment_id, case_id, "attempt_or_evidence_blocked"
-                )
-            except Exception:
-                result = blocked_case(journal, args.experiment_id, case_id, "case_failed")
-            truth = pilot.truth(case_id)
-            attach_scores(result, truth)
-            result["ground_truth"] = {
-                "service": truth["root_cause_service"],
-                "fault": truth["fault"],
-                "system": str(truth.get("system", "unknown")),
-            }
-            result["availability"] = availability
-            runs.append(result)
-            _write(args.output_dir / f"{case_id}-single-pass.json", result)
-        summary = summarize_runs(runs)
-        _write(args.output_dir / "summary.json", summary)
-
-    asyncio.run(experiment_run())
+    asyncio.run(
+        evaluate_cases(
+            pilot,
+            output_dir=args.output_dir,
+            journal=journal,
+            experiment_id=args.experiment_id,
+            config=config,
+            model_factory=lambda _: llm_factory.create_chat_model(
+                model="qwen-max", temperature=0, streaming=False
+            ).model_copy(update={"max_tokens": 384}),
+            telemetry_profile=args.telemetry_profile,
+            timeout_seconds=args.timeout_seconds,
+            resume=args.resume,
+            evaluation_set="development18",
+        )
+    )
     return 0
 
 

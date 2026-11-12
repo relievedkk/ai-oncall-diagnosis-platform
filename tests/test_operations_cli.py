@@ -176,7 +176,6 @@ def test_start_never_reports_ready_for_failed_mcp_or_foreign_supervisor(tmp_path
         }
 
     monkeypatch.setattr(cli, '_fresh_status', fresh_status)
-    monkeypatch.setattr(cli, '_probe_url', lambda *_args, **_kwargs: True)
     monkeypatch.setattr(cli, 'native_ready', lambda *_args, **_kwargs: False, raising=False)
     clock = iter([0, 1, 121])
     monkeypatch.setattr(cli.time, 'monotonic', lambda: next(clock, 121))
@@ -375,8 +374,8 @@ def test_managed_start_rejects_unsafe_infrastructure_credentials(key, value):
 
     environment = secure_environment(**{key: value})
 
-    with pytest.raises(ValueError, match="infrastructure credentials"):
-        cli.validate_infrastructure_credentials(environment)
+    with pytest.raises(ValueError, match="independent strong credentials"):
+        cli.validate_managed_credentials(environment)
 
 
 def test_cli_rejects_unrecoverable_online_credential_rotation():

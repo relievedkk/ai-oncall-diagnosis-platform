@@ -36,7 +36,7 @@ def test_independent_readers_do_not_serialize(manager):
 
 
 def test_embedding_work_does_not_hold_collection_write_lock(manager, monkeypatch):
-    from test_index_atomicity import MemoryCollection
+    from tests.test_index_atomicity import MemoryCollection
 
     collection = MemoryCollection("source")
     preparing, release = threading.Event(), threading.Event()

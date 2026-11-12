@@ -1,8 +1,10 @@
 # 单阶段诊断 v5：实现与验证
 
-> 2026-11-04 更新：V4 已退役，V5.1 新增显式 54 例测量入口，默认 18 例开发门槛保留。当前命令与边界见 [V5.1 全量评测](rcaeval-v51-full-evaluation.md)。以下是历史验证记录，其中“36 例未开答案”和“保留 V4 入口”等描述只适用于当时。
+> 历史材料：当前操作入口见[评测导航](../../evaluation/README.md)。正文中的版本和状态仅适用于当时。
 
-日期：2026-11-03。范围：本地 RCAEval 评测链路。既有在线诊断 API 未迁移到这条实验链路。
+> 协议说明：V4 已退役，V5.1 新增显式 54 例测量入口，默认 18 例开发门槛保留。当前命令与边界见 [V5.1 全量评测](../../rcaeval-v51-full-evaluation.md)。以下是历史验证记录，其中“36 例未开答案”和“保留 V4 入口”等描述只适用于当时。
+
+范围：本地 RCAEval 评测链路。既有在线诊断 API 未迁移到这条实验链路。
 
 后续 v5.1 已完成来源语义、逐例归因、候选与包体修复。最新结果为 Top5 联合召回18/18、包体18/18、正确类型资格3/18，仍未通过付费门槛；完整记录见 [证据修复报告](single-pass-evidence-recovery.md)。下文保留初版 v5 的历史验证口径与结果。
 
@@ -79,7 +81,7 @@ SQLite `.runtime/rcaeval/single-pass-attempts.sqlite` 以 experiment_id＋case_i
 
 case-014、case-030、case-041 仍超过硬预算，保持零次调用失败；未删除关键支持或反证凑长度。其余包体均在 16 KiB 内。
 
-最终完整记录：`.runtime/rcaeval/single-pass-v5-final-20261103/development-audit.json`；审计 SHA256：`a28aca6ac5d400ccc8cf478d645fb518b7dd524170133feb8cb9b8ed156aadae`。
+最终完整记录：`.runtime/rcaeval/<experiment>/development-audit.json`；审计 SHA256：`a28aca6ac5d400ccc8cf478d645fb518b7dd524170133feb8cb9b8ed156aadae`。
 
 ## 后续提升顺序
 

@@ -1,10 +1,10 @@
 import json
 
 import pytest
-from test_ops_backup import FakeDocker, FakeRuntime, source
 
 from oncall_ops.backup import BackupError, create_backup
 from oncall_ops.drill import restore_isolated
+from tests.test_ops_backup import FakeDocker, FakeRuntime, source
 
 
 class RestoreDocker:

@@ -1,6 +1,8 @@
 # RCAEval 18 例首轮模型盲测结果
 
-日期：2026-11-02。模型为 `qwen-max`，temperature=0；每个策略最多 4 次模型调用、
+> 历史材料：当前操作入口见[评测导航](../../evaluation/README.md)。正文中的版本和状态仅适用于当时。
+
+模型为 `qwen-max`，temperature=0；每个策略最多 4 次模型调用、
 180 秒。数据来自 54 例模型盲测集合，每个“3 套系统 × 6 类故障”格子选择 1 例，覆盖
 15 个根因服务，重复编号 1、2、3 各 6 例。原始结果保存在
 `.runtime/rcaeval/live-heldout-18-v1`。
@@ -65,8 +67,8 @@ Agent 在 `case-007`、`case-014`、`case-025`、`case-030` 返回
 36 例继续保持 sealed，作为修复后的最终盲测集。不能在这 18 例上调参后继续把它们称为独立
 盲测准确率，也不应在修复前直接运行剩余 36 例。
 
-## 2026-11-02 协议 v3 迁移说明
+## 协议 v3 迁移说明
 
-上述数字属于历史协议，不与新协议 v3 合并。新的两阶段实现已经完成零模型离线门禁：54/54 包体确定且 sanitizer-safe，16 KiB 边界内最大 15,028 bytes；18 例开发集初始候选召回 18/18。详情见 `docs/rcaeval-two-stage-offline-validation.md`。
+上述数字属于历史协议，不与新协议 v3 合并。新的两阶段实现已经完成零模型离线门禁：54/54 包体确定且 sanitizer-safe，16 KiB 边界内最大 15,028 bytes；18 例开发集初始候选召回 18/18。详情见 `docs/archive/evaluation/rcaeval-two-stage-offline-validation.md`。
 
 新实验策略名为 `single_stage` 和 `agent`，两者共享同一份不可变初始证据；旧 `baseline` 仅保留为显式别名。下一次 18 例 live 重跑预计 36–54 次模型调用，必须另行批准。剩余 36 例继续 sealed/unrun。

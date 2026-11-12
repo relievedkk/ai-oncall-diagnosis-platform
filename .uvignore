@@ -12,3 +12,6 @@ uploads/
 .env
 .venv/
 venv/
+.local/
+.runtime/
+.worktrees/
