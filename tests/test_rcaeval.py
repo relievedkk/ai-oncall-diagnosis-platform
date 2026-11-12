@@ -719,7 +719,10 @@ def _development_case(case_id):
     from app.evaluation.rcaeval import CaseView
 
     root = Path(__file__).resolve().parents[1] / ".runtime" / "rcaeval" / "heldout-18-v1" / "tasks"
-    return CaseView(root / case_id, case_id)
+    directory = root / case_id
+    if not directory.is_dir():
+        pytest.skip("optional recorded development telemetry is not installed")
+    return CaseView(directory, case_id)
 
 
 def test_case_032_bundle_preserves_downstream_direction_and_resources():

@@ -304,47 +304,6 @@ class VectorStoreManager:
                 raise KnowledgeRetrievalError("历史索引需要整理，无法可靠获取当前版本")
             limit = min(limit * 4, 512)
 
-    def delete_by_source(self, file_path: str) -> int:
-        with self._operation_guard():
-            return self._delete_by_source(file_path)
-
-    def _delete_by_source(self, file_path: str) -> int:
-        """
-        删除指定文件的所有文档
-
-        Args:
-            file_path: 文件路径
-
-        Returns:
-            int: 删除的文档数量
-        """
-        try:
-            # 使用 milvus_manager 获取已连接的 collection
-            collection = milvus_manager.get_collection()
-
-            # metadata 是 JSON 字段，使用 JSON 路径查询语法
-            # _source 是文档的来源文件路径
-            expr = f'metadata["_source"] == {json.dumps(file_path, ensure_ascii=False)}'
-
-            result = collection.delete(expr)
-            deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
-
-            logger.info(f"删除文件旧数据: {file_path}, 删除数量: {deleted_count}")
-            return deleted_count
-
-        except Exception as e:
-            logger.warning(f"删除旧数据失败 (可能是首次索引): {e}")
-            return 0
-
-    def get_vector_store(self) -> Milvus:
-        """
-        获取 VectorStore 实例
-
-        Returns:
-            Milvus: VectorStore 实例
-        """
-        return self._initialize_vector_store()
-
     def similarity_search(self, query: str, k: int = 3) -> list[Document]:
         """
         相似度搜索

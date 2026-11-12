@@ -1,6 +1,8 @@
 # 单阶段证据修复：推进与实测记录
 
-> 历史记录。2026-11-04 已增加 [V5.1 全量测量入口](rcaeval-v51-full-evaluation.md)，保留默认开发门槛和诊断证据规则；本页的未开答案/未付费描述仅适用于当时。
+> 历史材料：当前操作入口见[评测导航](../../evaluation/README.md)。正文中的版本和状态仅适用于当时。
+
+> 历史记录。已增加 [V5.1 全量测量入口](../../rcaeval-v51-full-evaluation.md)，保留默认开发门槛和诊断证据规则；本页的未开答案/未付费描述仅适用于当时。
 
 本轮按已批准顺序推进：核实 CPU 语义、18 例失败归因、候选与包体修复、零费用验收。保持一次请求额度及未知结果不重发，未访问剩余36例答案，未运行真实模型。
 
@@ -27,7 +29,7 @@
 - [维护者对 dashboard p90 的解释](https://github.com/phamquiluan/RCAEval/issues/80#issuecomment-5870300859)：仅 `ts-ui-dashboard_latency-90` 可核实为秒、尾随60秒、1秒评估/15秒抓取、包含下游耗时；不推广到所有服务或 CPU 指标。
 - [固定版本的读取器](https://github.com/phamquiluan/RCAEval/blob/2f703059960517b024c504c817771fa85294aa09/RCAEval/utility/__init__.py)：保持原始观测，缺失保留 NaN，不自动补齐。
 
-只读研究缓存位于 `.runtime/rcaeval/source-audit-20261103`；下载的代码未执行。未下载新样本、未获取全量案例索引或盲测答案。
+只读研究缓存位于 `.runtime/rcaeval/<experiment>/`；下载的代码未执行。未下载新样本、未获取全量案例索引或盲测答案。
 
 ## 18 例归因与候选修复
 
@@ -42,7 +44,7 @@
 
 ## 包体与单请求边界
 
-协议版本为 `single-pass-v5.1-20261103`。使用位置表、字段图例、服务前缀和重复 JSON 值/结构共享，保留浮点精度、null/缺字段区别及全部材料引用。普通显示摘要可省略；关键支持、反证与对照不删除。
+协议版本为 **V5.1初版**。使用位置表、字段图例、服务前缀和重复 JSON 值/结构共享，保留浮点精度、null/缺字段区别及全部材料引用。普通显示摘要可省略；关键支持、反证与对照不删除。
 
 原始数据里的 `$v`、`$literal` 等同形标记包进不透明 literal 块，模型和本地消费者均不能递归解释其中内容。新增独立协议消费者回归，复现并修正了仅本地复制能还原、模型却会误解为自引用的问题。
 
@@ -79,7 +81,7 @@
 
 ## 可复核文件与重跑
 
-- 全源审计：`.runtime/rcaeval/evidence-recovery-final-20261103/development-audit.json`。
+- 全源审计：`.runtime/rcaeval/<experiment>/development-audit.json`。
 - 逐例归因：同目录 `failure-attribution.md`，详细观测和来源在 JSON 的 `attribution` / `inventory` 字段。
 - 审查后的传输复验：同目录 `transport-revalidation.json`，绑定原始审计 SHA 与最终源码快照。
 - 完整测试：`.runtime/rcaeval/evidence-recovery-release-tests.xml`、对应 `.log`。

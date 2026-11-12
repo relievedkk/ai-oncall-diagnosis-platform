@@ -8,13 +8,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class ChatResponse(BaseModel):
-    """对话响应"""
-
-    answer: str = Field(..., description="AI 回答")
-    session_id: str = Field(..., description="会话 ID")
-
-
 class SessionInfoResponse(BaseModel):
     """会话信息响应"""
 
@@ -29,11 +22,3 @@ class ApiResponse(BaseModel):
     status: str = Field(..., description="状态")
     message: str = Field(..., description="消息")
     data: Any | None = Field(None, description="数据")
-
-
-class HealthResponse(BaseModel):
-    """健康检查响应"""
-
-    status: str = Field(..., description="状态")
-    service: str = Field(..., description="服务名称")
-    version: str = Field(..., description="版本号")

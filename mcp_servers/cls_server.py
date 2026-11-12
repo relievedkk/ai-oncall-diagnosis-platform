@@ -7,7 +7,7 @@ import functools
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from fastmcp import FastMCP
@@ -76,38 +76,6 @@ def log_tool_call(func):
             raise
 
     return wrapper
-
-
-def parse_time_or_default(time_str: str | None, default_offset_hours: int = 0) -> datetime:
-    """解析时间字符串或返回默认时间。
-
-    Args:
-        time_str: 时间字符串（格式：YYYY-MM-DD HH:MM:SS）
-        default_offset_hours: 默认时间偏移（小时）
-
-    Returns:
-        datetime: 解析后的时间对象
-    """
-    if time_str:
-        try:
-            return datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            pass
-    return datetime.now() + timedelta(hours=default_offset_hours)
-
-
-def generate_time_series(base_time: datetime, minutes_offset: int) -> str:
-    """生成基于基准时间的时间字符串。
-
-    Args:
-        base_time: 基准时间
-        minutes_offset: 分钟偏移量
-
-    Returns:
-        str: 格式化的时间字符串
-    """
-    result_time = base_time + timedelta(minutes=minutes_offset)
-    return result_time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 @mcp.tool()

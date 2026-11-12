@@ -178,3 +178,75 @@ def test_unidentified_dataset_can_opt_out_of_curated_profile(tmp_path):
 
     report = json.loads((output / "validation.json").read_text(encoding="utf-8"))
     assert report["model_calls"] == 0
+
+
+@pytest.mark.parametrize("paid_gate_passed", [False, True])
+def test_development_live_freezes_prediction_before_scoring_and_reuses_attempt(
+    tmp_path, monkeypatch, paid_gate_passed
+):
+    import hashlib
+    import json
+
+    from app.agent.aiops.single_pass import SinglePassChoice
+    from app.core.llm_factory import llm_factory
+    from app.core.single_pass import canonical
+    from app.evaluation import rcaeval, single_pass_journal, single_pass_runner
+    from tests.test_single_pass_execution import Model
+
+    data = tmp_path / "tasks"
+    data.mkdir()
+    answers = tmp_path / "answers.parquet"
+    answers.touch()
+    output = tmp_path / "output"
+    prediction = output / "case-001-prediction.json"
+    view = view_of({"a_cpu": [1.0] * 10 + [20.0] * 21})
+    view.case_id = "case-001"
+    model = Model(SinglePassChoice(hypothesis_id=None, decision="unknown"))
+    audit = {"paid_gate_passed": paid_gate_passed}
+    journal = single_pass_journal.AttemptJournal(tmp_path / "attempts.sqlite")
+
+    def truth(case_id):
+        assert case_id == "case-001" and model.calls == 1
+        raw = json.loads(prediction.read_text("utf-8"))
+        assert raw["status"] == "insufficient_evidence"
+        assert "score" not in raw and "ground_truth" not in raw
+        return {"root_cause_service": "a", "fault": "cpu"}
+
+    pilot = SimpleNamespace(ids={"case-001": "case-001"}, open=lambda _: view, truth=truth)
+    monkeypatch.setattr(rcaeval, "Pilot", lambda *args, **kwargs: pilot)
+    monkeypatch.setattr(single_pass_runner, "DEVELOPMENT_ROOT", data)
+    monkeypatch.setattr(single_pass_runner, "DEVELOPMENT_ANSWERS", answers)
+    monkeypatch.setattr(single_pass_runner, "audit_development", lambda *args, **kwargs: audit)
+    monkeypatch.setattr(single_pass_runner, "write_attribution_report", lambda *args: None)
+    monkeypatch.setattr(single_pass_journal, "AttemptJournal", lambda _: journal)
+    monkeypatch.setattr(
+        llm_factory, "create_chat_model", lambda **_: SimpleNamespace(model_copy=lambda **_: model)
+    )
+    argv = [
+        "--data-dir",
+        str(data),
+        "--answers-file",
+        str(answers),
+        "--output-dir",
+        str(output),
+        "--telemetry-profile",
+        "unknown",
+        "--mode",
+        "live",
+        "--allow-live",
+        "--experiment-id",
+        "development",
+        "--reviewed-audit-sha256",
+        hashlib.sha256(canonical(audit).encode()).hexdigest(),
+    ]
+    assert main(argv) == (0 if paid_gate_passed else 2)
+    if not paid_gate_passed:
+        assert model.calls == 0 and not prediction.exists()
+        return
+
+    frozen = prediction.read_bytes()
+    assert main([*argv, "--resume"]) == 0
+    assert prediction.read_bytes() == frozen and model.calls == 1
+    summary = json.loads((output / "summary.json").read_text("utf-8"))
+    assert summary["evaluation_set"] == "development18" and summary["complete"] is True
+    assert summary["new_model_calls"] == 0 and "smoke_gate_passed" not in summary

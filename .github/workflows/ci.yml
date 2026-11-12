@@ -35,6 +35,7 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --frozen --extra dev
+      - run: uv pip install -r requirements-rcaeval.txt
       - run: uv run ruff check app tests --select E9,F63,F7,F82
       - run: uv run ruff check app/harness app/repositories/remediation.py app/services/remediation_service.py app/tasks/remediation.py app/api/remediation.py tests/test_remediation_*.py
       - run: uv run bandit -q -r app mcp_servers

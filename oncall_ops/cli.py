@@ -12,24 +12,12 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from urllib.request import Request
 
 from app.local_env import protect_env_file, validate_strong_credentials
 from oncall_ops.common import atomic_json, read_env
-from oncall_ops.native_health import native_ready, open_http
+from oncall_ops.native_health import native_ready
 from oncall_ops.runtime import ManagedRuntime
 from oncall_ops.supervisor import ServiceSpec, Supervisor, lock_is_available
-
-
-def validate_infrastructure_credentials(environment: dict) -> None:
-    """Reject unsafe infrastructure credentials through the shared policy."""
-    try:
-        validate_strong_credentials(environment, (
-            'POSTGRES_PASSWORD', 'RABBITMQ_DEFAULT_PASS', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY'))
-    except ValueError:
-        raise ValueError(
-            'Configuration requires independent strong infrastructure credentials'
-        ) from None
 
 
 def validate_managed_credentials(environment: dict) -> None:
@@ -79,16 +67,6 @@ def _fresh_status(path: Path):
         return value
     except (OSError, KeyError, ValueError, TypeError):
         return None
-
-
-def _probe_url(url, key=None, expected_run_id=None):
-    headers = {'X-API-Key': key} if key else {}
-    try:
-        with open_http(Request(url, headers=headers), timeout=3) as response:
-            return response.status == 200 and (expected_run_id is None or
-                json.load(response).get('operations_run_id') == expected_run_id)
-    except (OSError, ValueError):
-        return False
 
 
 def _wait_stopped(state, run_id, *, timeout=55, poll=0.25, lock_free=None):

@@ -1,6 +1,8 @@
 # RCAEval 两阶段协议 v3：边界加固与验证记录
 
-初始验证日期：2026-11-02。边界加固复验及 18 例开发集实跑日期：2026-11-03。
+> 历史材料：当前操作入口见[评测导航](../../evaluation/README.md)。正文中的版本和状态仅适用于当时。
+
+验证范围：两阶段离线流程、边界加固及18例开发集运行。
 
 ## 验证结论
 
@@ -37,9 +39,9 @@ Agent 第一轮只生成扁平、严格校验的 `RouteDecision`，选择直接�
 - 54 例离线门禁验证的是证据、安全和执行协议，不是模型准确率。历史协议 v2 的准确率不能与未来 v3 结果直接合并。
 - 剩余 36 例仍保持 sealed/unrun；本轮没有运行模型或进行最终盲测。
 
-## 2026-11-03 边界加固复验
+## 边界加固复验
 
-加固后的 54 例无模型门禁产物为 `.runtime/rcaeval/heldout-54-v1-validation-boundary-20261103/validation.json`。门禁通过，模型调用为 0，协调器案例为 0，18 例开发集初始及“初始或 hint”候选召回均为 18/18，剩余 36 例保持 sealed/unrun；包体最大 14,999 bytes。
+加固后的 54 例无模型门禁产物为 `.runtime/rcaeval/<experiment>/validation.json`。门禁通过，模型调用为 0，协调器案例为 0，18 例开发集初始及“初始或 hint”候选召回均为 18/18，剩余 36 例保持 sealed/unrun；包体最大 14,999 bytes。
 
 边界加固还完成了以下协议检查：跨阶段完全相同的 evidence identity 会去重，真实身份冲突仍会被拒绝；协调器和补查构建器共用同一授权器；失败使用固定类别与 detail code；产物显式保存可空的 `route_action` 和 `evidence_request`，但不保存原始模型响应、provider exception 或遥测正文。
 
@@ -47,7 +49,7 @@ Agent 第一轮只生成扁平、严格校验的 `RouteDecision`，选择直接�
 
 ## 18 例开发集实跑结果
 
-新产物目录为 `.runtime/rcaeval/live-heldout-18-protocol-v3-boundary-20261103/`，没有覆盖旧结果。两种策略的端到端结果如下：
+新产物目录为 `.runtime/rcaeval/<experiment>/`，没有覆盖旧结果。两种策略的端到端结果如下：
 
 | 指标 | single_stage | agent |
 | --- | ---: | ---: |

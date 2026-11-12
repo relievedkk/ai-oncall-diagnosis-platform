@@ -45,7 +45,12 @@ poetry.lock
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Logs
 logs/
@@ -55,6 +60,10 @@ logs/
 # Database
 *.db
 *.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db-*
 
 # Milvus
 volumes/
@@ -87,6 +96,25 @@ dmypy.json
 # Isolated feature worktrees
 .worktrees/
 .runtime/
+
+# Local data, provenance, experiment answers and backups
+/.local/
+/output/
+/tmp/
+/backups/
+/rca_experiments/
+**/sealed/
+**/*-sealed/
+*.parquet
+*.arrow
+/config/*.local.json
+
+# Private development process notes; public designs belong in docs/.
+/docs/superpowers/
+/docs/local/
+/*面试*.md
+/*简历*.md
+/project_ai_oncall_diagnosis_platform.md
 
 
 # Local test artifacts and execution notes

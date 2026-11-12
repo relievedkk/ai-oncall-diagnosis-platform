@@ -5,10 +5,10 @@ import json
 from datetime import timedelta
 
 import pytest
-from test_remediation_service import NOW, build_service, restart_intent
 
 from app.config import config
 from app.harness.contracts import RemediationMode, ScaleOutIntent
+from tests.test_remediation_service import NOW, build_service, restart_intent
 
 
 def observations(*, count=None, now=NOW, instance="orders-1"):

@@ -100,10 +100,10 @@ API、诊断 Worker 及其他现有模型工厂调用共享 PostgreSQL 租约、
 
 ## 5. 发布与回滚
 
-先完成初始迁移并查询实际 `alembic_version`。以下 `20261024_0011` 仅为本次代码迁移头，必须核对当前环境的实际版本。包声明兼容当前 schema 才允许激活；流程不自动迁移或降级数据库。
+先完成初始迁移并查询实际 `alembic_version`。将下面的占位值替换为当前环境的实际版本。包声明兼容当前 schema 才允许激活；流程不自动迁移或降级数据库。
 
 ```powershell
-.\scripts\oncall-windows.ps1 package -Version 'v1.0.0' -Schema '20261024_0011'
+.\scripts\oncall-windows.ps1 package -Version 'v1.0.0' -Schema '<alembic-current-revision>'
 # 用 package 输出的绝对路径。首次纳入版本指针必须显式 Bootstrap：
 .\scripts\oncall-windows.ps1 deploy -Release 'D:\OnCallData\.runtime\operations\releases\v1.0.0' -Bootstrap
 # 后续发布：

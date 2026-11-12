@@ -13,8 +13,8 @@
       },
       "cls": {
         "region": "ap-guangzhou",
-        "logset_id": "c56a080f-4ef6-4a29-8e7d-d8281d33ea20",
-        "topic_id": "d7efb006-2c52-4cbd-b924-4d0fff59b5cf",
+        "logset_id": "00000000-0000-0000-0000-000000000001",
+        "topic_id": "00000000-0000-0000-0000-000000000002",
         "query_hint": "service:ai-oncall-agent"
       },
       "remediation": {

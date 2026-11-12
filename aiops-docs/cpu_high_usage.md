@@ -30,7 +30,7 @@
 ```
 地域: ap-guangzhou
 日志主题: system-metrics
-时间范围: 2024-01-20 14:00:00 到 2024-01-20 14:30:00
+查询范围: 围绕告警触发点选择诊断窗口
 查询语句: cpu_usage > 80 AND service_name:*
 ```
 

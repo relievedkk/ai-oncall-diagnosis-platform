@@ -73,13 +73,14 @@ async def evaluate_cases(
     resume=False,
     case_ids=None,
     prepared_packets=None,
+    evaluation_set="all54",
 ):
     """Persist each validated prediction before loading its label; never retry unknowns."""
     output_dir = Path(output_dir)
     runs = []
     expected = len(pilot.ids)
     selected = set(pilot.ids) if case_ids is None else set(case_ids)
-    if not selected <= set(pilot.ids):
+    if not selected or not selected <= set(pilot.ids):
         raise ValueError("evaluation_scope_mismatch")
     for case_id in sorted(selected):
         availability = {"logs": "unknown", "traces": "unknown"}
@@ -153,14 +154,16 @@ async def evaluate_cases(
         summary = summarize_runs(runs)
         summary.update(
             revision=REVISION,
-            evaluation_set="all54",
+            evaluation_set=evaluation_set,
             expected_case_count=expected,
             complete=len(runs) == expected,
-            smoke_gate_passed=protocol_gate(runs, set(config.get("smoke_case_ids", [])))
-            if config.get("smoke_case_ids")
-            else None,
-            limitation="Mixed previously exposed/development cases; not an independent blind benchmark. Unknowns and errors count as misses.",
         )
+        if evaluation_set == "all54":
+            smoke_ids = config.get("smoke_case_ids")
+            summary.update(
+                smoke_gate_passed=protocol_gate(runs, set(smoke_ids)) if smoke_ids else None,
+                limitation="Mixed previously exposed/development cases; not an independent blind benchmark. Unknowns and errors count as misses.",
+            )
         _write(output_dir / "summary.json", summary)
         print(
             canonical(

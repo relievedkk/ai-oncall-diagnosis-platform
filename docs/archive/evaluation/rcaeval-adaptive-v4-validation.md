@@ -1,8 +1,10 @@
 # RCAEval adaptive v4：完整性与安全验证
 
-> 历史归档：2026-11-04 已删除 V4 运行入口及专用协调器/补查实现。下列 V4 命令不可再执行。当前方案见 [V5.1 全量评测](rcaeval-v51-full-evaluation.md)，本页只保留历史测试与实验记录。
+> 历史材料：当前操作入口见[评测导航](../../evaluation/README.md)。正文中的版本和状态仅适用于当时。
 
-日期：2026-11-03。实现起点：`84ad887`。本轮实现用户批准的 P0–P2 修改，采用先诊断、按缺口补查的协议 v4。
+> 历史归档：已删除 V4 运行入口及专用协调器/补查实现。下列 V4 命令不可再执行。当前方案见 [V5.1 全量评测](../../rcaeval-v51-full-evaluation.md)，本页只保留历史测试与实验记录。
+
+实现起点：`84ad887`。本轮实现用户批准的 P0–P2 修改，采用先诊断、按缺口补查的协议 v4。
 
 ## 实现内容
 
@@ -47,7 +49,7 @@
 
 任务相关 13 个 Python 文件通过 Ruff check 和 format check，`git diff --check` 通过。工作区已有的其他修改未纳入本次提交。
 
-最终 54 例无模型门禁全部通过：模型调用 0、协调器案例 0、开发集初始及“初始或 hint”候选召回均为 18/18，剩余 36 例 sealed/unrun。包体 min/P50/P95/max 为 7,790 / 13,875 / 14,913 / 14,999 bytes。产物位于 `.runtime/rcaeval/adaptive-v4-final-validation-20261103/validation.json`。
+最终 54 例无模型门禁全部通过：模型调用 0、协调器案例 0、开发集初始及“初始或 hint”候选召回均为 18/18，剩余 36 例 sealed/unrun。包体 min/P50/P95/max 为 7,790 / 13,875 / 14,913 / 14,999 bytes。产物位于 `.runtime/rcaeval/<experiment>/validation.json`。
 
 18 例开发集审计已完成，模型调用为 0，候选召回 18/18；18/18 补查具有新增的时间观测或恢复的趋势细节，补查包最大 14,321 bytes。审计产物为同目录的 `development-audit.json`。
 

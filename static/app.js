@@ -965,7 +965,6 @@ class AIOnCallApp {
             
             // 统一响应格式：检查 data.code 或 data.message 判断请求是否成功
             if (data.code === 200 || data.message === 'success') {
-                // data.data 是 ChatResponse 对象
                 const chatResponse = data.data;
                 
                 if (chatResponse && chatResponse.success) {
@@ -1489,15 +1488,6 @@ class AIOnCallApp {
         }
     }
 
-    // 格式化文件大小
-    formatFileSize(bytes) {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-    }
-
     createDiagnosisClient() {
         let storage;
         try { storage = localStorage; } catch (error) { /* Optional cache. */ }
@@ -1802,26 +1792,6 @@ class AIOnCallApp {
             this.isStreaming = false;
             this.currentAIOpsMessage = null;
             this.updateUI();
-        }
-    }
-
-    // 显示/隐藏加载遮罩层
-    showLoadingOverlay(show) {
-        if (this.loadingOverlay) {
-            if (show) {
-                this.loadingOverlay.style.display = 'flex';
-                // 更新文字为智能运维
-                const loadingText = this.loadingOverlay.querySelector('.loading-text');
-                const loadingSubtext = this.loadingOverlay.querySelector('.loading-subtext');
-                if (loadingText) loadingText.textContent = '智能运维分析中，请稍候...';
-                if (loadingSubtext) loadingSubtext.textContent = '后端正在处理，请耐心等待';
-                // 防止页面滚动
-                document.body.style.overflow = 'hidden';
-            } else {
-                this.loadingOverlay.style.display = 'none';
-                // 恢复页面滚动
-                document.body.style.overflow = '';
-            }
         }
     }
 
